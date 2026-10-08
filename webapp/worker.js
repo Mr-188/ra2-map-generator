@@ -143,7 +143,7 @@ async function boot() {
     extract: Module.cwrap('mg_extract', 'number', ['number']),
     generate: Module.cwrap('mg_generate', 'number',
       ['number', 'number', 'number', 'number', 'number', 'number',
-       'number', 'number', 'number', 'string']),
+       'number', 'number', 'number', 'number', 'string']),
     readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
     error: Module.cwrap('mg_error', 'string', []),
     outputPath: Module.cwrap('mg_output_path', 'string', []),
@@ -189,7 +189,7 @@ self.onmessage = async (event) => {
       const p = msg.params;
       self.postMessage({ type: 'progress', stage: 'generating' });
       const rc = engine.generate(
-        p.land | 0, p.theater | 0, p.size | 0, p.players | 0,
+        p.land | 0, p.theater | 0, p.time | 0, p.size | 0, p.players | 0,
         p.ore | 0, p.water | 0, p.seed >>> 0, p.mapSeed >>> 0,
         p.single ? 1 : 0, p.outPath || '/mg/out.map');
       if (rc !== 0) {

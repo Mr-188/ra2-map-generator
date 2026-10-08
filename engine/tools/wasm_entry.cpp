@@ -135,7 +135,12 @@ EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
 }
 
 // Runs the reference pipeline.  The map is written to `outPath` in MEMFS.
-EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int size, int players,
+//
+// Argument order mirrors the reference GUI's parameter rows, with `timeOfDay`
+// where the GUI's 时间 combo sits.  It is a real input: the engine reads it for
+// LevelLight/AmbientLight and for the per-time ore-patch lamps
+// (TEMMORLAMP/TEMDAYLAMP/TEMDUSLAMP/TEMNITLAMP).
+EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, int size, int players,
                                      int ore, int water, unsigned seed,
                                      unsigned mapSeed, int single,
                                      const char* outPath)
@@ -149,7 +154,7 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int size, int player
     MapGenConfig cfg = {};
     cfg.landType = static_cast<LandType>(land);
     cfg.theater = theater;
-    cfg.timeOfDay = 0;
+    cfg.timeOfDay = timeOfDay;
     cfg.sizeSlider = size;
     cfg.playerCount = players;
     cfg.oreDensity = ore;

@@ -27,6 +27,7 @@ void usage()
         "usage: mgconsole --root <extract dir> [options]\n"
         "  --land 0..4      Archipelago/Continent/TeamContinent/Inland/Mountainous\n"
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
+        "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size 0..3      map size slider\n"
         "  --players 2..8\n"
         "  --ore N          ore density index\n"
@@ -37,11 +38,15 @@ void usage()
         "  --out PATH       output map path\n");
 }
 
+// UTF-8 -> UTF-16, via the shim.  The obvious byte-wise cast is WRONG here:
+// the shim's normaliseW() encodes wide paths back to UTF-8 before it touches the
+// filesystem, so a byte-wise widen double-encodes every non-ASCII byte and the
+// resulting path names nothing.  Symptom: SaveMapFile() fails with no further
+// explanation whenever --out sits under a directory whose name is not ASCII --
+// which is what broke verify_render, since it writes under build/.
 std::wstring widen(const std::string& s)
 {
-    std::wstring w;
-    for (char c : s) w.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
-    return w;
+    return mg_win32::fromUtf8(s.c_str(), static_cast<int>(s.size()));
 }
 
 }  // namespace
@@ -50,7 +55,7 @@ int main(int argc, char** argv)
 {
     std::string root;
     std::string out = "oracle.map";
-    int land = 1, theater = 0, size = 1, players = 2, ore = 1, water = -1;
+    int land = 1, theater = 0, time = 0, size = 1, players = 2, ore = 1, water = -1;
     unsigned seed = 1, mapSeed = 0;
     bool single = false;
 
@@ -65,6 +70,7 @@ int main(int argc, char** argv)
         else if (a == "--out") out = next();
         else if (a == "--land") land = std::atoi(next());
         else if (a == "--theater") theater = std::atoi(next());
+        else if (a == "--time") time = std::atoi(next());
         else if (a == "--size") size = std::atoi(next());
         else if (a == "--players") players = std::atoi(next());
         else if (a == "--ore") ore = std::atoi(next());
@@ -89,7 +95,7 @@ int main(int argc, char** argv)
     MapGenConfig cfg = {};
     cfg.landType = static_cast<LandType>(land);
     cfg.theater = theater;
-    cfg.timeOfDay = 0;
+    cfg.timeOfDay = time;
     cfg.sizeSlider = size;
     cfg.playerCount = players;
     cfg.oreDensity = ore;
@@ -100,8 +106,8 @@ int main(int argc, char** argv)
     cfg.mapRngSeed = mapSeed;
     cfg.waterAmount = (water >= 0) ? water : cfg.global.waterAmount;
 
-    std::fprintf(stderr, "[mgconsole] land=%d theater=%d size=%d players=%d ore=%d water=%d seed=%u\n",
-                 land, theater, size, players, ore, cfg.waterAmount, seed);
+    std::fprintf(stderr, "[mgconsole] land=%d theater=%d time=%d size=%d players=%d ore=%d water=%d seed=%u\n",
+                 land, theater, time, size, players, ore, cfg.waterAmount, seed);
 
     // ---- the pipeline, in WinMain.cpp's order -----------------------------
     if (!rmg.GenerateMapBody(cfg))                       // sub_599650

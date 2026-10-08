@@ -27,12 +27,12 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 function parseArgs(argv) {
-  const out = { theater: 0, land: 1, size: 1, players: 2, seed: 20260913 };
+  const out = { theater: 0, time: 0, land: 1, size: 1, players: 2, seed: 20260913 };
   for (let i = 2; i < argv.length; i += 2) {
     const key = argv[i].replace(/^--/, '');
     const value = argv[i + 1];
-    out[key] = key === 'theater' || key === 'land' || key === 'size' ||
-               key === 'players' ? Number(value) : value;
+    out[key] = key === 'theater' || key === 'time' || key === 'land' ||
+               key === 'size' || key === 'players' ? Number(value) : value;
   }
   return out;
 }
@@ -97,7 +97,7 @@ const api = {
   extract: Module.cwrap('mg_extract', 'number', ['number']),
   generate: Module.cwrap('mg_generate', 'number',
     ['number', 'number', 'number', 'number', 'number', 'number',
-     'number', 'number', 'number', 'string']),
+     'number', 'number', 'number', 'number', 'string']),
   readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
   error: Module.cwrap('mg_error', 'string', []),
   outputPath: Module.cwrap('mg_output_path', 'string', []),
@@ -155,7 +155,7 @@ check('MEMFS tile tree', tiles > 100, `${tiles} .tem files`);
 
 // ---- 4. generate ---------------------------------------------------------
 const outPath = args.single ? '/mg/out.map' : '/mg/out.yrm';
-const rcGen = api.generate(args.land, args.theater, args.size, args.players, 1, -1,
+const rcGen = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
                            args.seed >>> 0, 0, args.single ? 1 : 0, outPath);
 check('mg_generate', rcGen === 0, rcGen === 0 ? '' : api.error());
 
