@@ -45,8 +45,16 @@ check_file() {
     status="ok"
     [ "$code" != "200" ] && status="FAIL http=$code"
     if [ -n "$want" ]; then
+        # application/javascript is the legacy spelling of text/javascript and
+        # both are accepted by browsers; only a genuinely wrong type matters.
+        alt=""
+        case "$want" in
+            text/javascript) alt="application/javascript" ;;
+            application/javascript) alt="text/javascript" ;;
+        esac
         case "$ctype" in
             "$want"*) ;;
+            "$alt"*) ;;
             *) status="FAIL content-type=$ctype (want $want)" ;;
         esac
     fi

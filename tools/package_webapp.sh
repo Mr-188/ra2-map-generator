@@ -51,6 +51,12 @@ HOME_DIR_EARLY=$(cd ~ && pwd)
 find "$OUT" -name '*.js' -type f -exec \
     sed -i "s|$HOME_DIR_EARLY|/build|g" {} +
 
+# GitHub Pages runs Jekyll unless told not to, and Jekyll silently DROPS any
+# directory whose name starts with an underscore -- which is where the .NET
+# runtime puts every one of its assemblies (`render/_framework`).  A 404 on 59
+# files that are plainly present in the branch is a confusing way to find out.
+: > "$OUT/.nojekyll"
+
 # Nothing may point back at this machine.
 #
 # The patterns are deliberately narrow.  A bare /home/ match flags Emscripten's
