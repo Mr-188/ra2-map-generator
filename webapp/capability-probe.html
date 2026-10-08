@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>浏览器能力探针 · file://</title>
+<style>
+  body { font: 14px/1.6 system-ui, "Segoe UI", sans-serif; background: #14161a;
+         color: #e6e8ea; max-width: 780px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.sub { color: #939aa3; margin: 0 0 22px; }
+  table { border-collapse: collapse; width: 100%; }
+  td { border-bottom: 1px solid #2a2f36; padding: 9px 6px; vertical-align: top; }
+  td.k { width: 42%; color: #b9c0c8; }
+  .yes { color: #7fd1a8; } .no { color: #e06c6c; } .maybe { color: #e0b155; }
+  code { background: #1c2026; padding: 1px 5px; border-radius: 4px; }
+  #verdict { margin-top: 22px; padding: 14px 16px; border-radius: 10px;
+             border: 1px solid #2a2f36; background: #191d23; }
+</style>
+</head>
+<body>
+<h1>浏览器能力探针</h1>
+<p class="sub">双击这个文件打开（地址栏应是 <code>file:///...</code>）。
+它只测当前浏览器的能力，不读你的游戏文件、不发任何网络请求。</p>
+<table id="rows"></table>
+<div id="verdict">检测中……</div>
+
+<script>
+const rows = document.getElementById('rows');
+const results = {};
+
+function add(key, label, value, cls) {
+  results[key] = value;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="k">${label}</td><td class="${cls || ''}">${value}</td>`;
+  rows.appendChild(tr);
+}
+
+function verdict(text, cls) {
+  const el = document.getElementById('verdict');
+  el.innerHTML = text;
+  el.className = cls || '';
+}
+
+// 1. are we actually on file:// ?
+add('protocol', '当前协议', location.protocol);
+
+// 2. module scripts (needed for the ES-module build of the engine)
+(async () => {
+  try {
+    await import('data:text/javascript,export default 1');
+    add('module', 'ES 模块 import', '可用', 'yes');
+  } catch (e) {
+    add('module', 'ES 模块 import', '不可用 — ' + e.name, 'no');
+  }
+})();
+
+// 3. a classic worker from a same-directory script
+try {
+  const w = new Worker('capability-probe-worker.js');
+  w.terminate();
+  add('worker_file', 'Worker（同目录 .js 文件）', '可用', 'yes');
+} catch (e) {
+  add('worker_file', 'Worker（同目录 .js 文件）', '不可用 — ' + e.name, 'no');
+}
+
+// 4. a worker built from a Blob -- the only way to get one inside a single HTML
+(async () => {
+  const src = `
+    self.onmessage = () => {
+      let frs = 'no';
+      try { new FileReaderSync(); frs = 'yes'; } catch (e) {}
+      self.postMessage({ ok: true, fileReaderSync: frs,
+                         wasm: typeof WebAssembly });
+    };
+  `;
+  try {
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const w = new Worker(url);
+    const reply = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), 4000);
+      w.onmessage = (ev) => { clearTimeout(timer); resolve(ev.data); };
+      w.onerror = (ev) => { clearTimeout(timer); reject(new Error(ev.message || 'error')); };
+      w.postMessage('go');
+    });
+    w.terminate();
+    URL.revokeObjectURL(url);
+    add('worker_blob', 'Worker（内联 Blob）',
+        `可用 · FileReaderSync=${reply.fileReaderSync} · WebAssembly=${reply.wasm}`, 'yes');
+  } catch (e) {
+    add('worker_blob', 'Worker（内联 Blob）', '不可用 — ' + e.message, 'no');
+  }
+})();
+
+// 5. wasm instantiated from inline bytes (no fetch) -- what -sSINGLE_FILE relies on
+(async () => {
+  const bytes = new Uint8Array([0,97,115,109,1,0,0,0]);  // an empty wasm module
+  try {
+    await WebAssembly.instantiate(bytes);
+    add('wasm_inline', 'WebAssembly 内联字节实例化', '可用', 'yes');
+  } catch (e) {
+    add('wasm_inline', 'WebAssembly 内联字节实例化', '不可用 — ' + e.message, 'no');
+  }
+})();
+
+// 6. can we fetch a sibling file at all?
+(async () => {
+  try {
+    const r = await fetch('capability-probe-worker.js');
+    add('fetch', 'fetch() 同目录文件', r.ok ? '可用' : `HTTP ${r.status}`, r.ok ? 'yes' : 'no');
+  } catch (e) {
+    add('fetch', 'fetch() 同目录文件', '不可用 — ' + e.name, 'no');
+  }
+})();
+
+// 7. APIs the page wants
+add('dirpicker', 'showDirectoryPicker（选游戏目录）',
+    typeof window.showDirectoryPicker === 'function' ? '可用' : '不可用', 
+    typeof window.showDirectoryPicker === 'function' ? 'yes' : 'no');
+add('webkitdir', 'input[webkitdirectory]',
+    'webkitdirectory' in document.createElement('input') ? '可用' : '不可用',
+    'webkitdirectory' in document.createElement('input') ? 'yes' : 'no');
+
+// verdict, once the async probes have settled
+setTimeout(() => {
+  const blobWorker = results.worker_blob && results.worker_blob.startsWith('可用');
+  const frs = /FileReaderSync=yes/.test(results.worker_blob || '');
+  const wasmOk = results.wasm_inline && results.wasm_inline.startsWith('可用');
+
+  if (blobWorker && frs && wasmOk) {
+    verdict('<b class="yes">可以做成单个 HTML。</b><br>' +
+      'Blob Worker 可用，且 Worker 里有 FileReaderSync，' +
+      '所以现在这套"按需读 269 MB 归档"的设计不用改。' +
+      '只需把 wasm 用 <code>-sSINGLE_FILE=1</code> 内联。', '');
+  } else if (blobWorker && wasmOk && !frs) {
+    verdict('<b class="maybe">能做成单个 HTML，但要改提取逻辑。</b><br>' +
+      '有 Worker，但里面没有 FileReaderSync ⇒ 读归档要改成两阶段异步' +
+      '（先解索引，再异步取需要的区间）。工作量中等。', '');
+  } else if (!blobWorker) {
+    verdict('<b class="maybe">单个 HTML 里可能没有 Worker。</b><br>' +
+      '那所有代码都跑在主线程：不能同步读归档（<code>File.arrayBuffer()</code> 是异步的），' +
+      '生成期间页面会冻结。建议改用静态托管，或接受卡顿。', '');
+  } else {
+    verdict('<b class="no">内联 wasm 不可用</b>，' +
+      '那就必须有一个 http 源（本地静态服务器或静态托管站）。', '');
+  }
+}, 2500);
+</script>
+
+<!-- A sibling file, so the Worker-from-file and fetch probes have something to
+     resolve.  Its content is never used; only whether it can be reached. -->
+<script type="text/plain" id="placeholder"></script>
+</body>
+</html>

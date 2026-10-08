@@ -1,0 +1,240 @@
+// Browser entry point.
+//
+// The desktop CLI reads archives from disk.  A browser cannot: ra2.mix is 269 MB
+// and ra2md.mix 195 MB, so neither fits in MEMFS alongside everything else.
+// Instead the picked Files stay on the JS side and this translation unit hands
+// the engine a ByteSource that slices them on demand.
+//
+// The reads must be SYNCHRONOUS because ByteSource::read is, so the worker that
+// hosts this module uses FileReaderSync -- which is exactly why the wasm runs in
+// a worker rather than on the page.
+//
+// What lands in MEMFS is only the extracted loose-file tree (about 9 MB), which
+// is the layout the unmodified generator reads.
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <sys/stat.h>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "MapGen.h"
+
+#include "byte_source.h"
+#include "extract.h"
+#include "win32/windows.h"
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+
+// Implemented in the worker (webapp/worker.js): both reach into the JS-side map
+// of picked Files.
+EM_JS(double, mg_js_file_size, (int id), { return Module.mgFileSize(id); });
+EM_JS(int, mg_js_read, (int id, double offset, double length, std::uint8_t* out), {
+    return Module.mgRead(id, offset, length, out);
+});
+
+namespace {
+
+std::string basenameOf(const std::string& path)
+{
+    const std::size_t slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? path : path.substr(slash + 1);
+}
+
+// id (a JS handle) keyed by lower-case file name.
+std::map<std::string, int>& registry()
+{
+    static std::map<std::string, int> r;
+    return r;
+}
+
+std::string g_root = "/mg";
+std::string g_error;
+std::string g_output;
+
+class JsFileSource final : public mg::ByteSource
+{
+public:
+    JsFileSource(int id, std::size_t size) : id_(id), size_(size) {}
+
+    std::size_t size() const override { return size_; }
+
+    bool read(std::size_t offset, std::size_t len, std::uint8_t* out) override
+    {
+        if (offset > size_ || len > size_ - offset) return false;
+        if (len == 0) return true;
+        return mg_js_read(id_, static_cast<double>(offset),
+                          static_cast<double>(len), out) != 0;
+    }
+
+private:
+    int id_;
+    std::size_t size_;
+};
+
+std::shared_ptr<mg::ByteSource> jsFactory(const std::string& path)
+{
+    std::string name = basenameOf(path);
+    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto it = registry().find(name);
+    if (it == registry().end()) return nullptr;
+    const double size = mg_js_file_size(it->second);
+    if (size < 0) return nullptr;
+    return std::make_shared<JsFileSource>(it->second, static_cast<std::size_t>(size));
+}
+
+}  // namespace
+
+extern "C" {
+
+// Registers a File the player picked.  `id` is opaque to us; `name` is the bare
+// file name, e.g. "ra2.mix".
+EMSCRIPTEN_KEEPALIVE void mg_add_file(int id, const char* name)
+{
+    if (!name) return;
+    std::string key = basenameOf(name);
+    for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    registry()[key] = id;
+}
+
+EMSCRIPTEN_KEEPALIVE void mg_set_root(const char* root)
+{
+    g_root = (root && *root) ? root : "/mg";
+    mg::setSourceFactory(jsFactory);
+}
+
+EMSCRIPTEN_KEEPALIVE const char* mg_error() { return g_error.c_str(); }
+EMSCRIPTEN_KEEPALIVE const char* mg_output_path() { return g_output.c_str(); }
+
+// Materialises the generator's loose-file tree in MEMFS from the registered
+// archives.  Returns 0 on success.
+EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
+{
+    g_error.clear();
+    // MEMFS starts empty; the extractor's gameDir and root have to exist before
+    // it will write anything.
+    ::mkdir("/game", 0755);
+    ::mkdir(g_root.c_str(), 0755);
+
+    mg::ExtractOptions opt;
+    opt.gameDir = "/game";
+    opt.theater = theater;
+    opt.root = g_root;
+
+    const mg::ExtractReport rep = mg::extractForGenerator(opt);
+    if (!rep.ok)
+    {
+        g_error = rep.error;
+        return 1;
+    }
+    return 0;
+}
+
+// Runs the reference pipeline.  The map is written to `outPath` in MEMFS.
+EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int size, int players,
+                                     int ore, int water, unsigned seed,
+                                     unsigned mapSeed, int single,
+                                     const char* outPath)
+{
+    g_error.clear();
+    const std::string root = g_root;
+    mg_win32::setModulePath(root + "/x64/Release/MapGenerator.exe");
+
+    static RandomMapGenerator rmg;  // one generator per module, as in the GUI
+
+    MapGenConfig cfg = {};
+    cfg.landType = static_cast<LandType>(land);
+    cfg.theater = theater;
+    cfg.timeOfDay = 0;
+    cfg.sizeSlider = size;
+    cfg.playerCount = players;
+    cfg.oreDensity = ore;
+    cfg.multiplayer = single ? false : true;
+
+    cfg.global = rmg.RollGlobalOptions(seed ? seed : GetTickCount());
+    cfg.randomSeed = static_cast<std::uint32_t>(cfg.global.seed04C);
+    cfg.mapRngSeed = mapSeed;
+    cfg.waterAmount = (water >= 0) ? water : cfg.global.waterAmount;
+
+    if (!rmg.GenerateMapBody(cfg))
+    {
+        g_error = "GenerateMapBody failed";
+        return 2;
+    }
+    if (cfg.landType == LandType::Inland || cfg.landType == LandType::Mountainous)
+    {
+        if (rmg.GetWaterAmount() != 0) rmg.GenerateSpecialTerrain();
+    }
+    else
+    {
+        rmg.GenerateTerrain();
+    }
+    rmg.DecorateWaterTiles();
+    rmg.InitRegions();
+    rmg.MakeRegions();
+    rmg.RecalculateCellAttributes();
+    rmg.CreateStartingPoints();
+    rmg.AddTechBuildings();
+    rmg.AddTiberium();
+    rmg.RecalculateCellAttributes();
+    rmg.RecalculateCellAttributes();
+    rmg.CreateHills();
+    rmg.CreateLATs();
+    rmg.RecalculateCellAttributes();
+    rmg.PruneTerrainTrees();
+    rmg.Cleanup();
+    rmg.ComputeRadarImage();
+    rmg.Done();
+
+    std::wstring wout;
+    for (const char* p = outPath; p && *p; ++p)
+        wout.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+    if (!rmg.SaveMapFile(wout.c_str()))
+    {
+        g_error = "SaveMapFile failed";
+        return 3;
+    }
+    g_output = outPath ? outPath : "";
+    return 0;
+}
+
+// Copies a MEMFS file out to the caller.
+//
+// Two-call protocol: with `buf == nullptr` it returns the file's length so the
+// caller can size its buffer; with a buffer it returns the number of bytes read.
+// Returns -1 when the file is missing or `cap` is too small.
+EMSCRIPTEN_KEEPALIVE int mg_read_output(const char* path, std::uint8_t* buf, int cap)
+{
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return -1;
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < 0 || (cap >= 0 && size > cap))
+    {
+        std::fclose(f);
+        return -1;
+    }
+    if (!buf)
+    {
+        std::fclose(f);
+        return static_cast<int>(size);   // sizing call
+    }
+    const std::size_t got = std::fread(buf, 1, static_cast<std::size_t>(size), f);
+    std::fclose(f);
+    return static_cast<int>(got);
+}
+
+}  // extern "C"
+
+#else  // !__EMSCRIPTEN__
+
+// A native build of this file has no JS to talk to; keep the translation unit
+// compilable so the source is type-checked by the desktop build too.
+extern "C" int mg_wasm_entry_placeholder() { return 0; }
+
+#endif  // __EMSCRIPTEN__

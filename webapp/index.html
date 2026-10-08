@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RA2 随机地图生成器</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+         background: #14161a; color: #e6e8ea; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #939aa3; margin: 0 0 24px; }
+  fieldset { border: 1px solid #2a2f36; border-radius: 10px; padding: 16px;
+             margin: 0 0 16px; }
+  legend { padding: 0 8px; color: #939aa3; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+          gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; color: #b9c0c8; }
+  input, select, button { font: inherit; }
+  input[type=number], select { background: #1c2026; color: #e6e8ea;
+      border: 1px solid #2f353d; border-radius: 6px; padding: 6px 8px; }
+  input[type=range] { width: 100%; }
+  output { color: #7fd1a8; }
+  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px;
+           padding: 9px 18px; cursor: pointer; }
+  button:disabled { background: #333a42; color: #7b838c; cursor: default; }
+  #status { color: #b9c0c8; min-height: 1.5em; }
+  .warn { color: #e0b155; }
+  .err { color: #e06c6c; white-space: pre-wrap; }
+  .ok { color: #7fd1a8; }
+  #log { font: 12px/1.45 ui-monospace, monospace; color: #7b838c;
+         max-height: 200px; overflow: auto; white-space: pre-wrap; margin-top: 12px; }
+  #result { display: none; }
+  a.dl { display: inline-block; margin-top: 12px; color: #7fd1a8; }
+  #preview { display: none; margin-top: 16px; }
+  #preview img { max-width: 100%; border: 1px solid #2a2f36; border-radius: 8px;
+                 display: block; background: #0d0f12; }
+  #preview .cap { color: #939aa3; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RA2 / YR 随机地图生成器</h1>
+  <p class="sub">纯前端：地图在你的浏览器里生成，游戏文件和产物都不会上传到任何服务器。</p>
+
+  <fieldset>
+    <legend>1. 选游戏目录</legend>
+    <p>需要 <code>ra2.mix</code>、<code>ra2md.mix</code>、<code>expandmd01.mix</code>。
+       这些文件只在本页内被读取，不会离开你的机器。</p>
+    <input id="dir" type="file" webkitdirectory directory multiple>
+    <p id="picked" class="sub"></p>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. 参数</legend>
+    <div class="grid">
+      <label>地形类型
+        <select id="land">
+          <option value="0">群岛</option>
+          <option value="1" selected>大陆</option>
+          <option value="2">团队大陆</option>
+          <option value="3">内陆</option>
+          <option value="4">山地</option>
+        </select>
+      </label>
+      <label>剧场
+        <select id="theater">
+          <option value="0" selected>温带</option>
+          <option value="1">雪地</option>
+        </select>
+      </label>
+      <label>尺寸滑块
+        <select id="size">
+          <option value="0">0 · 小</option>
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3 · 大</option>
+        </select>
+      </label>
+      <label>玩家数
+        <select id="players">
+          <option>2</option><option>3</option><option>4</option>
+          <option>5</option><option>6</option><option>7</option><option>8</option>
+        </select>
+      </label>
+      <label>矿量 <output id="ore-out">1</output>
+        <input id="ore" type="range" min="0" max="4" value="1">
+      </label>
+      <label>水量 <output id="water-out">自动</output>
+        <input id="water" type="range" min="-1" max="100" value="-1">
+      </label>
+      <label>种子（0 = 自动）
+        <input id="seed" type="number" value="1" min="0">
+      </label>
+      <label>地图类型
+        <select id="kind">
+          <option value="0" selected>多人 .yrm</option>
+          <option value="1">单人 .map</option>
+        </select>
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. 生成</legend>
+    <button id="go" disabled>生成地图</button>
+    <p id="status"></p>
+    <p id="error" class="err"></p>
+    <div id="result">
+      <p class="ok" id="done"></p>
+      <a class="dl" id="download" download>下载地图</a>
+      <button id="render" type="button">渲染预览</button>
+    </div>
+    <div id="preview">
+      <img id="preview-img" alt="地图预览">
+      <p class="cap" id="preview-cap"></p>
+      <a class="dl" id="preview-dl" download="preview.png">下载预览图</a>
+    </div>
+    <pre id="log"></pre>
+  </fieldset>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

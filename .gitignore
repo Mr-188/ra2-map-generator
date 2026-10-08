@@ -1,0 +1,43 @@
+# ---- build output ----------------------------------------------------------
+# Everything here is reproduced from source by the scripts in engine/ and
+# tools/, so none of it belongs in the tree.
+build/
+
+# The generator engine, staged next to the page by engine/build_web.sh.  The
+# worker imports ./mg_engine.js, so it has to sit beside worker.js, but it is
+# build output.
+webapp/mg_engine.js
+webapp/mg_engine.wasm
+webapp/package.json
+
+# The renderer, staged by engine/build_render_web.sh.  This one is GPL v3 code
+# built from reference_impl/ccmaps-net; it is compiled, never committed.
+webapp/render/
+
+# ---- local oracles, never committed ----------------------------------------
+# The reference map generator (no licence) and the CNCMaps source.  Both are
+# build-time inputs that live on the builder's own machine.
+reference_impl/
+CNCMaps/
+
+# The player's game directory, symlinked in only so tools/verify_browser.mjs can
+# feed the page real archives over HTTP.
+webapp/game
+
+# ---- local scratch ---------------------------------------------------------
+runs/
+saves/
+_probe/
+_probe2/
+*.7z
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Windows alternate-data-stream metadata that rides along with extracted files.
+*:Zone.Identifier
+
+# ---- the browser test harness ---------------------------------------------
+node_modules/
+package.json
+package-lock.json
