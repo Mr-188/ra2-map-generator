@@ -3,8 +3,6 @@
 浏览器里**生成并渲染** RA2/YR 随机地图。**没有后端，不打包任何游戏素材** ——
 一切从玩家自己的游戏目录读，全部在本机完成。
 
-旧的自研 Python 生成器已放弃，见文末「已废弃」。
-
 ---
 
 ## 目录
@@ -15,8 +13,8 @@
 | `webapp/` | 前端页面（单页 HTML + Worker） | ✅ |
 | `tools/` | 验收脚本与工具链脚本 | ✅ |
 | `maptools/` | Python 格式层，**仅作验收 oracle** | ✅ |
-| `reference_impl/` | 参考 RMG 实现（无许可证） | ❌ 本机对照 |
-| `CNCMaps/` | .NET 渲染器（本机对照 / 潜在渲染器来源） | ❌ 本机对照 |
+| `reference_impl/` | 参考 RMG 实现（无许可证）与 CNCMaps 源码 | ❌ 本机对照 |
+| `CNCMaps/` | .NET 渲染器的预编译发布包 | ❌ 本机对照 |
 | `build/` | 构建产物 | ❌ |
 
 ## 引擎分层
@@ -57,15 +55,18 @@ tools/wasm_entry    浏览器入口
 sh tools/verify_all.sh
 ```
 
-五套，全绿才算过：
+八套，全绿才算过：
 
 | 套件 | 证明什么 |
 |---|---|
 | `verify_mix` | C++ MIX 层与 Python oracle 逐字节一致（35 项） |
 | `verify_extract` | 提取的散文件树覆盖归档里所有被请求的 tile |
-| `verify_oracle` | 参考管线出图，且同种子逐字节可复现 |
+| `verify_oracle` | 参考管线出图，同种子逐字节可复现，且结构不退化 |
 | `verify_wasm` | WASM 与原生**逐字节相同** |
-| `verify_webapi` | 浏览器入口契约成立，且**产品产物无 node 专属依赖** |
+| `verify_render` | 散文件树渲染结果与用游戏 MIX 渲染**逐像素相同** |
+| `verify_webapi` | 浏览器入口契约，含 worker 的摊平 + 渲染流程 |
+| `verify_uicontract` | 页面与 worker 的消息词表一致 |
+| `verify_browser` | **真实浏览器**里页面能生成 + 渲染 |
 
 **任何一条红了都不许往下走。** 加了新逻辑就加新套件，不要只靠肉眼。
 
@@ -77,6 +78,7 @@ sh tools/verify_all.sh
 sh engine/build_oracle.sh                                  # 原生（需要 reference_impl/）
 sh -c '. tools/emenv.sh && sh engine/build_wasm.sh'        # Node 目标，用于对拍
 sh -c '. tools/emenv.sh && sh engine/build_web.sh'         # 浏览器目标（会暂存进 webapp/）
+sh engine/build_render_web.sh                              # 浏览器渲染器（CNCMaps → wasm）
 ```
 
 Emscripten 不在机器上：`tools/fetch_emscripten.sh` 无 root 取，
@@ -97,15 +99,3 @@ Emscripten 不在机器上：`tools/fetch_emscripten.sh` 无 root 取，
 - **浏览器产物不能带 `node` 环境**：`import { createRequire } from 'module'` 会让
   worker 在浏览器里直接死掉，按钮永远是灰的。`build_web.sh` 暂存时会检查。
 - 失败要**看得见**：页面必须把引擎的错误显示出来，不许静默禁用按钮。
-
----
-
-## 已废弃
-
-旧的自研 Python 生成器（`opents_rmg.py` / `generate.py` / `serve.py` /
-`acceptance.py` 及其管线）**已放弃**。它带来的那条规则 ——
-「唯一参考是 `gamemd.exe` 的反汇编，不得用 OpenTS / OpenRA 作为依据」——
-**随之失效**。
-
-`maptools/` **保留**：它仍是 `verify_mix` / `verify_extract` 的 oracle，
-是这两套验收的真值来源。

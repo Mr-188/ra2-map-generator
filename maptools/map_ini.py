@@ -1,12 +1,12 @@
-"""Read RA2 / YR .yrm / .map INI sections.
+"""Read and write the INI sections of a RA2 / YR .map / .yrm.
 
-**Classification: class D -- format IO, not map logic** (rounds 101, 177, 197/256).  This module
-reads and writes the parts of a ``.yrm``/``.map`` file that are plain INI text (waypoints, terrain
-object lists, and the like); the four importers are the reader/writer side of the pipeline
-(``maptools.__init__``, ``overlay_layer``, ``slope_connect`` and one more).  Its basis is therefore
-the **file format and the corpus** -- retail maps decode and re-encode through it -- and, by the
-class-D criterion, it needs no ``gamemd.exe`` address: there is no engine routine that "is" an INI
-parser.  It should be checked against real files, not against the disassembly.
+The parts of a map file that are plain INI text: its own metadata (size,
+theater), the IsoMapPack5 block, waypoints, and the terrain object lists.
+Sections are kept as ordered (name, lines) pairs so a map can be read, edited
+and written back without reordering what it did not touch.
+
+This is a file format rather than map logic, so it is checked against real map
+files.
 """
 
 from __future__ import annotations
