@@ -168,6 +168,55 @@ try {
     }
   }
 
+  // ---- non-square maps, all the way through the worker --------------------
+  //
+  // The page is the only place worker.js's argument marshalling is exercised, and
+  // that is exactly where a silent truncation hides: `p.size | 0` turned the
+  // slider's 1.5 into 1, and a missing width/height pair would leave the engine
+  // making a square with no error anywhere.  So drive the UI and read the bytes
+  // the engine actually wrote, rather than trusting the round-trip.
+  console.log('  rect     switching to 长 × 宽 and asking for 380x100');
+  await page.evaluate(() => {
+    // Capture the map the page hands to the download link.
+    if (!window.__mapBlob) {
+      window.__mapBlob = null;
+      const orig = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { window.__mapBlob = blob; return orig(blob); };
+    }
+  });
+  await page.click('#size-mode button[data-mode="rect"]');
+  await page.evaluate(() => {
+    const w = document.getElementById('rect-w');
+    const h = document.getElementById('rect-h');
+    w.value = '380';
+    h.value = '100';
+    w.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const rectUi = await page.evaluate(() => ({
+    w: document.getElementById('rect-w').value,
+    h: document.getElementById('rect-h').value,
+    out: document.getElementById('size-out').textContent,
+  }));
+  check('rect mode takes both sides', rectUi.w === '380' && rectUi.h === '100',
+        `${rectUi.w} x ${rectUi.h} -> ${rectUi.out}`);
+
+  await page.click('#go');
+  await page.waitForFunction(
+    () => { const d = document.getElementById('result'); return d && d.style.display !== 'none'; },
+    { timeout: args.timeout });
+  const size = await page.evaluate(async () => {
+    if (!window.__mapBlob) return null;
+    const text = new TextDecoder('latin1').decode(await window.__mapBlob.arrayBuffer());
+    const m = text.match(/Size=\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)/);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  });
+  // The writer's +4 / +12, which is what makes a request for 380x100 come out as
+  // 384x112 -- and proves the two sides really are independent.
+  check('rect map is non-square', Array.isArray(size) && size[0] === 384 && size[1] === 112,
+        size ? `engine wrote Size=0,0,${size[0]},${size[1]}` : 'no map bytes captured');
+  check('rect exceeds the square cap', Array.isArray(size) && size[0] > 247,
+        size ? `width ${size[0]} vs the ~247 square cap` : 'no map bytes captured');
+
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);
 } catch (err) {

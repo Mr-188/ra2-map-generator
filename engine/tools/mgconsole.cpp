@@ -29,6 +29,8 @@ void usage()
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
+        "  --width N        explicit visible width  } together these replace --size and\n"
+        "  --height N       explicit visible height } are the only way to get a non-square map\n"
         "  --players 2..8\n"
         "  --ore N          ore density index\n"
         "  --water 0..100   -1 = roll it (default)\n"
@@ -58,6 +60,7 @@ int main(int argc, char** argv)
     std::string out = "oracle.map";
     int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
     double size = 1.0;
+    int width = 0, height = 0;   // explicit rectangle, overrides --size when both > 0
     unsigned seed = 1, mapSeed = 0;
     bool single = false;
     bool sizeRange = false;
@@ -75,6 +78,8 @@ int main(int argc, char** argv)
         else if (a == "--theater") theater = std::atoi(next());
         else if (a == "--time") time = std::atoi(next());
         else if (a == "--size") size = std::strtod(next(), nullptr);
+        else if (a == "--width") width = std::atoi(next());
+        else if (a == "--height") height = std::atoi(next());
         else if (a == "--players") players = std::atoi(next());
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
@@ -93,9 +98,10 @@ int main(int argc, char** argv)
     {
         const RandomMapGenerator::SizeRange r =
             RandomMapGenerator::SizeSliderRange(static_cast<LandType>(land), players);
-        std::printf("land=%d players=%d useful=%.3f legal=%.3f step=%.3f\n",
+        std::printf("land=%d players=%d useful=%.3f legal=%.3f step=%.3f rectsum=%d\n",
                     land, players, r.usefulMax, r.legalMax,
-                    RandomMapGenerator::kSizeSliderStep);
+                    RandomMapGenerator::kSizeSliderStep,
+                    RandomMapGenerator::MaxRectCellSum());
         return 0;
     }
 
@@ -115,6 +121,8 @@ int main(int argc, char** argv)
     cfg.theater = theater;
     cfg.timeOfDay = time;
     cfg.sizeSlider = size;
+    cfg.widthCells = width;
+    cfg.heightCells = height;
     cfg.playerCount = players;
     cfg.oreDensity = ore;
     cfg.multiplayer = !single;
@@ -129,6 +137,21 @@ int main(int argc, char** argv)
 
     // Refuse a size the writer would silently truncate.  The limit comes from the
     // engine's own tables (SizeSliderRange), not from a second copy of them here.
+    if (width > 0 && height > 0)
+    {
+        const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
+        if (ms.workSide > RandomMapGenerator::kOverlayGridSide)
+        {
+            std::fprintf(stderr,
+                "[mgconsole] %dx%d cells needs workSide %d > %d (the 512-cell "
+                "overlay grid); the overlays would be truncated\n",
+                width, height, ms.workSide, RandomMapGenerator::kOverlayGridSide);
+            return 5;
+        }
+        std::fprintf(stderr, "[mgconsole] explicit %dx%d -> mapWidth=%d mapHeight=%d workSide=%d\n",
+                     width, height, ms.mapWidth, ms.mapHeight, ms.workSide);
+    }
+    else
     {
         const RandomMapGenerator::SizeRange r =
             RandomMapGenerator::SizeSliderRange(cfg.landType, cfg.playerCount);

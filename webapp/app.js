@@ -94,20 +94,66 @@ const WATER_FROM_GLOBAL_ROLL = -1;
 // why the slider's max is sizeMax and the note explains the cap.
 let sizeMax = null;
 let sizeLimit = null;
-let sizeStep = 0.1;      // replaced by the engine's kSizeSliderStep at boot
+let sizeStep = 0.1;        // replaced by the engine's kSizeSliderStep at boot
+let rectMaxSum = 495;      // replaced by the engine's MaxRectCellSum() at boot
+let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × 宽)
 
 const sizeInput = el('size');
 const sizeOut = el('size-out');
 const sizeNote = el('size-note');
+const rectPair = el('rect-pair');
+const rectW = el('rect-w');
+const rectH = el('rect-h');
+const sizeModeBox = el('size-mode');
 
 // 3.6, not 3.6000000000000005.  Two decimals is past the engine's own
 // granularity (one cell per size step), so nothing is lost.
 const fmtSize = (v) => String(Number(Number(v).toFixed(2)));
+const group = (n) => n.toLocaleString('en-US');
+
+// The engine caps width + height, not either one, because the 512-cell overlay
+// grid is indexed over mapWidth + mapHeight.  Clamp the field being edited
+// against the other, so the pair is always one the writer will accept.
+function clampedRect() {
+  let w = Math.max(1, Math.round(Number(rectW.value) || 1));
+  let h = Math.max(1, Math.round(Number(rectH.value) || 1));
+  const over = (w + h) - rectMaxSum;
+  if (over > 0) {                  // shrink whichever is larger, keeping w*h high
+    if (w >= h) w = Math.max(1, w - over); else h = Math.max(1, h - over);
+    const stillOver = (w + h) - rectMaxSum;
+    if (stillOver > 0) h = Math.max(1, h - stillOver);
+  }
+  return { w, h };
+}
+
+function setSizeMode(mode) {
+  sizeMode = mode;
+  for (const b of sizeModeBox.querySelectorAll('button')) {
+    b.classList.toggle('on', b.dataset.mode === mode);
+  }
+  sizeInput.hidden = (mode !== 'square');
+  rectPair.hidden = (mode !== 'rect');
+  syncSize();
+}
 
 function syncSize() {
   const land = Number(el('land').value);
   const players = Number(el('players').value);
   const idx = Math.max(0, Math.min(6, players - 2));
+
+  if (sizeMode === 'rect') {
+    const { w, h } = clampedRect();
+    rectW.value = String(w);
+    rectH.value = String(h);
+    // The area is the readout: it is what "how big is this map" actually means,
+    // and the diamond's cell count is 2*w*h, so w*h orders maps correctly.
+    sizeOut.value = `${group(w * h)} 格`;
+    sizeNote.textContent =
+      `地图大小：长 ${w} × 宽 ${h}，面积约 ${group(w * h)} 格。`
+      + `引擎把长 + 宽限制在 ${rectMaxSum} 以内（overlay 网格按两者之和寻址）；`
+      + `方图的边长上限约 247，所以这种长宽比能做出方图做不到的尺寸。`;
+    return;
+  }
 
   if (!sizeMax) {                    // engine table not here yet (still booting)
     sizeOut.value = fmtSize(sizeInput.value);
@@ -135,7 +181,13 @@ function syncSize() {
     : '';
 }
 
+sizeModeBox.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]');
+  if (b) setSizeMode(b.dataset.mode);
+});
 sizeInput.addEventListener('input', syncSize);
+rectW.addEventListener('input', syncSize);
+rectH.addEventListener('input', syncSize);
 el('land').addEventListener('change', syncSize);
 el('players').addEventListener('change', syncSize);
 syncSize();
@@ -185,6 +237,7 @@ worker.addEventListener('message', async (event) => {
       if (Array.isArray(msg.sizeMax)) sizeMax = msg.sizeMax;
       if (Array.isArray(msg.sizeLimit)) sizeLimit = msg.sizeLimit;
       if (typeof msg.sizeStep === 'number' && msg.sizeStep > 0) sizeStep = msg.sizeStep;
+      if (typeof msg.rectMaxSum === 'number' && msg.rectMaxSum > 0) rectMaxSum = msg.rectMaxSum;
       syncSize();
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
       if (archives) goBtn.disabled = false;
@@ -466,6 +519,9 @@ goBtn.addEventListener('click', () => {
     seed: Number(el('seed').value) >>> 0,
     mapSeed: Number(el('map-seed').value) >>> 0,
     single,
+    // 0/0 tells the engine to use `size`; anything else is an explicit rectangle.
+    width: sizeMode === 'rect' ? clampedRect().w : 0,
+    height: sizeMode === 'rect' ? clampedRect().h : 0,
     outPath,
   };
 

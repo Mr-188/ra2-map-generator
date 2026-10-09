@@ -138,6 +138,14 @@ EMSCRIPTEN_KEEPALIVE double mg_size_step()
     return RandomMapGenerator::kSizeSliderStep;
 }
 
+// The largest widthCells + heightCells an explicit rectangle may use.  The page
+// clamps its two number inputs with this, so it never has to re-derive the grid
+// arithmetic -- and never offers a pair the writer would refuse.
+EMSCRIPTEN_KEEPALIVE int mg_rect_max_sum()
+{
+    return RandomMapGenerator::MaxRectCellSum();
+}
+
 // Materialises the generator's loose-file tree in MEMFS from the registered
 // archives.  Returns 0 on success.
 EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
@@ -171,6 +179,7 @@ EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
 EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, double size, int players,
                                      int ore, int water, unsigned seed,
                                      unsigned mapSeed, int single,
+                                     int width, int height,
                                      const char* outPath)
 {
     g_error.clear();
@@ -190,12 +199,29 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     cfg.theater = theater;
     cfg.timeOfDay = timeOfDay;
     cfg.sizeSlider = size;
+    cfg.widthCells = width;
+    cfg.heightCells = height;
     cfg.playerCount = players;
     cfg.oreDensity = ore;
     cfg.multiplayer = single ? false : true;
 
     // Refuse a size the writer would silently truncate, using the engine's own
     // tables rather than a second copy of them.
+    if (width > 0 && height > 0)
+    {
+        const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
+        if (ms.workSide > RandomMapGenerator::kOverlayGridSide)
+        {
+            char buf[200];
+            std::snprintf(buf, sizeof buf,
+                "%dx%d cells needs workSide %d > %d (the overlay grid); the "
+                "overlays would be truncated",
+                width, height, ms.workSide, RandomMapGenerator::kOverlayGridSide);
+            g_error = buf;
+            return 5;
+        }
+    }
+    else
     {
         const RandomMapGenerator::SizeRange r =
             RandomMapGenerator::SizeSliderRange(cfg.landType, cfg.playerCount);

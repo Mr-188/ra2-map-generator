@@ -97,7 +97,7 @@ const api = {
   extract: Module.cwrap('mg_extract', 'number', ['number']),
   generate: Module.cwrap('mg_generate', 'number',
     ['number', 'number', 'number', 'number', 'number', 'number',
-     'number', 'number', 'number', 'number', 'string']),
+     'number', 'number', 'number', 'number', 'number', 'number', 'string']),
   readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
   error: Module.cwrap('mg_error', 'string', []),
   outputPath: Module.cwrap('mg_output_path', 'string', []),
@@ -156,7 +156,7 @@ check('MEMFS tile tree', tiles > 100, `${tiles} .tem files`);
 // ---- 4. generate ---------------------------------------------------------
 const outPath = args.single ? '/mg/out.map' : '/mg/out.yrm';
 const rcGen = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
-                           args.seed >>> 0, 0, args.single ? 1 : 0, outPath);
+                           args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, outPath);
 check('mg_generate', rcGen === 0, rcGen === 0 ? '' : api.error());
 
 // ---- 5. two-call read-out ------------------------------------------------
@@ -201,7 +201,7 @@ if (produced) {
 // parameters + same seed -> byte-identical" hold for the product and not just
 // for the command line.
 const rcAgain = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
-                             args.seed >>> 0, 0, args.single ? 1 : 0, outPath);
+                             args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, outPath);
 check('mg_generate again, same instance', rcAgain === 0,
       rcAgain === 0 ? '' : api.error());
 

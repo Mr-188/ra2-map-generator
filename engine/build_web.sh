@@ -51,7 +51,7 @@ EMFLAGS="-sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB -sINITIAL_MEMORY=64MB \
  -fexceptions -sFORCE_FILESYSTEM=1 -sENVIRONMENT=$ENVIRONMENTS \
  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createMgEngine \
  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,FS \
- -sEXPORTED_FUNCTIONS=_mg_add_file,_mg_set_root,_mg_extract,_mg_generate,_mg_read_output,_mg_error,_mg_output_path,_mg_size_useful_max,_mg_size_legal_max,_mg_size_step,_malloc,_free"
+ -sEXPORTED_FUNCTIONS=_mg_add_file,_mg_set_root,_mg_extract,_mg_generate,_mg_read_output,_mg_error,_mg_output_path,_mg_size_useful_max,_mg_size_legal_max,_mg_size_step,_mg_rect_max_sum,_malloc,_free"
 
 echo "[web] compiling the browser module"
 "$EMXX" $FLAGS $EMFLAGS \

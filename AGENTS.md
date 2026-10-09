@@ -83,6 +83,11 @@ sh engine/build_render_web.sh                              # 浏览器渲染器�
 
 Emscripten 不在机器上：`tools/fetch_emscripten.sh` 无 root 取，
 `tools/emenv.sh` 接上（`.emscripten` 的 `FROZEN_CACHE` 与 `/usr/bin` 路径都要覆盖）。
+`emenv.sh` 会**校验版本**并拒绝不能用的：本机发行版给的 3.1.6 不支持 `-sSTACK_SIZE`，
+且会把 `main(int,char**)` 静默剥成空程序，所以默认从 questing 取 3.1.69。
+
+**改过参考实现就要重新生成 `engine/reference_patches/`**，否则改动只存在于这台机器上，
+别人克隆下来编译不过。`sh tools/apply_reference_patches.sh` 幂等应用。
 
 ---
 

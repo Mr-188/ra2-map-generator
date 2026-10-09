@@ -6,7 +6,7 @@
  
  #include <cstdint>
  #include <cstddef>
-@@ -419,7 +419,14 @@
+@@ -419,8 +419,24 @@
      LandType   landType;     // this[15]
      int        theater;      // this[14]
      int        timeOfDay;    // this[18]  (0-3)
@@ -20,9 +20,19 @@
 +                             // CalcMapSize, which still does the arithmetic in
 +                             // float.
      int        playerCount;  // this[20]  (2-8)
++    // Explicit visible dimensions, in cells.  When BOTH are > 0 they replace the
++    // sizeSlider table lookup entirely.  That is the only way to get a NON-SQUARE
++    // map: CalcMapSize feeds W and H from the same tables and the same fraction,
++    // so sizeSlider can only ever produce width == height.  Nothing below the
++    // size calculation assumes squareness -- the diamond formula, the slot array
++    // (slotRows_ * 512, slotRows_ = mapWidth + mapHeight + 1) and every
++    // size_.width / size_.height use are already independent.
++    int        widthCells;   // 0 = derive both from sizeSlider
++    int        heightCells;
      int        oreDensity;   // ore density index
      bool       multiplayer;  // false = single-player map (.map), true =
-@@ -952,6 +959,50 @@
+                              // multiplayer map (.yrm). Only the writer reads it:
+@@ -952,6 +968,59 @@
      RandomMapGenerator();
      ~RandomMapGenerator();
  
@@ -50,6 +60,15 @@
 +    // them.
 +    static constexpr float kSizeFractionMax = 1.2f;
 +
++    // The largest widthCells + heightCells a rectangle may use.  The grid limit is
++    // on mapWidth + mapHeight -- the SUM, not either side -- which is why an
++    // explicit rectangle reaches sizes sizeSlider cannot: a square is capped at
++    // workSide = 2*(maxWidth + 8) + 1 while 380x100 fits comfortably.
++    //
++    // Exposed so a UI can clamp two explicit dimensions without re-deriving the
++    // +4 / +12 / +1 in CalcMapSize.
++    static int MaxRectCellSum();
++
 +    // The sizeSlider bounds for one (land, players) pair.  Doubles, because the
 +    // useful bound is fractional: kSizeFractionMax of 1.2 is a size of 3.6, and
 +    // the retail dialog's integer 0-3 could not reach it.
@@ -73,7 +92,7 @@
      bool GenerateMapBody(const MapGenConfig& cfg);
  
      // Re-initialize map data from RMGMD.INI (replicates sub_5981F0)
-@@ -1677,7 +1728,6 @@
+@@ -1677,7 +1746,6 @@
      }
  
  private:
@@ -99,7 +118,7 @@
  
  // F2I64 (Game::F2I64 0x7C5F00, truncate toward zero) moved to MapGen.h - both
  // this file and MapGenRiver.cpp use it.
-@@ -402,13 +401,16 @@
+@@ -402,16 +401,33 @@
  //
  //   i = clamp(playerCount - 2, 0, 6)
  //   wFrac = hFrac = sizeSlider / 3.0
@@ -118,7 +137,24 @@
  {
      MapSizeResult result = {};
  
-@@ -422,8 +424,8 @@
++    // An explicit rectangle replaces the table lookup.  The tables give W and H
++    // the same value from the same fraction, so this is the only way to get a
++    // non-square map.  Everything after this point (mapWidth/mapHeight/workSide)
++    // is the same arithmetic either way.
++    if (cfg.widthCells > 0 && cfg.heightCells > 0)
++    {
++        result.width     = cfg.widthCells;
++        result.height    = cfg.heightCells;
++        result.mapWidth  = result.width + 4;
++        result.mapHeight = result.height + 12;
++        result.workSide  = result.mapWidth + result.mapHeight + 1;
++        return result;
++    }
++
+     int playerIdx = cfg.playerCount - 2;
+     if (playerIdx < 0) playerIdx = 0;
+     if (playerIdx > 6) playerIdx = 6;
+@@ -422,8 +438,8 @@
      LandType lt = cfg.landType;
      if (lt != LandType::Inland && lt != LandType::Mountainous)
      {
@@ -129,7 +165,7 @@
      }
  
      float w = kWmin[playerIdx] * (1.0f - wFrac) + kWmax[playerIdx] * wFrac;
-@@ -439,7 +441,89 @@
+@@ -439,7 +455,116 @@
  }
  
  // ---------------------------------------------------------------------------
@@ -214,6 +250,33 @@
 +    out.usefulMax = snap(out.usefulMax);
 +    out.legalMax = snap(out.legalMax);
 +    return out;
++}
++
++// ---------------------------------------------------------------------------
++// MaxRectCellSum -- the largest widthCells + heightCells that still fits the
++// overlay grid.
++//
++// The grid limit is on mapWidth + mapHeight, so a WIDE rectangle reaches sizes a
++// square cannot: maxRectCellSum is 495, i.e. 380x100 fits, and a square can only
++// ever be 247x247.  Measured against the retail tables, the Inland square cap and
++// a 380x100 rectangle both come out inside the same 512 grid.
++//
++// Derived by asking CalcMapSize with a 1-cell-tall rectangle, so the +4 / +12 / +1
++// in that function stay the only copy of them.
++// ---------------------------------------------------------------------------
++int RandomMapGenerator::MaxRectCellSum()
++{
++    int best = 0;
++    for (int w = 1; w <= 2 * kOverlayGridSide; ++w)
++    {
++        MapGenConfig cfg = {};
++        cfg.widthCells = w;
++        cfg.heightCells = 1;
++        if (CalcMapSize(cfg).workSide > kOverlayGridSide)
++            break;
++        best = w + 1;                                   // widthCells + heightCells
++    }
++    return best;
 +}
 +
 +

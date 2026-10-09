@@ -31,6 +31,9 @@ This suite pins all of it:
      exit and no map written
   5. the wasm build reports the same bounds as the native one, so the page cannot
      be shown a different range than the generator enforces
+  6. EXPLICIT RECTANGLES work: the writer's +4 / +12 apply per axis, a 380-wide
+     map really is wider than the ~247-cell square cap, and the limit is the SUM
+     of the two sides (rectsum-1 fits, rectsum is refused)
 
 Usage::
 
@@ -63,7 +66,8 @@ WASM_JS = ROOT / "build" / "engine-wasm" / "mgconsole.js"
 OVERLAY_GRID = 512
 
 RANGE_LINE = re.compile(
-    r"land=(\d+) players=(\d+) useful=([0-9.]+) legal=([0-9.]+) step=([0-9.]+)")
+    r"land=(\d+) players=(\d+) useful=([0-9.]+) legal=([0-9.]+) step=([0-9.]+) "
+    r"rectsum=(\d+)")
 SIZE_LINE = re.compile(r"^\s*Size\s*=\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)", re.M)
 
 TOL = 1e-6
@@ -73,15 +77,23 @@ def run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def size_range(mg: str, land: int, players: int) -> tuple[float, float, float]:
-    """Ask the engine itself for the bounds and the step it scans at."""
+def size_range(mg: str, land: int, players: int) -> tuple[float, float, float, int]:
+    """Ask the engine itself for the bounds, the step and the rectangle cap."""
     proc = run([mg, "--size-range", "--land", str(land), "--players", str(players)])
     if proc.returncode != 0:
         raise RuntimeError(f"--size-range failed: {proc.stderr.strip()}")
     m = RANGE_LINE.search(proc.stdout)
     if not m:
         raise RuntimeError(f"--size-range printed nothing parseable: {proc.stdout!r}")
-    return float(m.group(3)), float(m.group(4)), float(m.group(5))
+    return (float(m.group(3)), float(m.group(4)), float(m.group(5)), int(m.group(6)))
+
+
+def generate_rect(mg: str, assets: Path, w: int, h: int, out: Path,
+                  land: int = 3) -> subprocess.CompletedProcess:
+    return run([mg, "--root", str(assets), "--land", str(land), "--theater", "0",
+                "--time", "0", "--width", str(w), "--height", str(h),
+                "--players", "2", "--ore", "1", "--water", "30",
+                "--seed", "20260913", "--out", str(out)])
 
 
 def dimensions(map_path: Path) -> tuple[int, int] | None:
@@ -145,7 +157,7 @@ def main() -> int:
         # legal bound is the grid itself and can never be reached.
         for land in range(5):
             for players in (2, 4, 8):
-                useful, legal, step = size_range(args.mgconsole, land, players)
+                useful, legal, step, rect_sum = size_range(args.mgconsole, land, players)
 
                 checks += 1
                 if not (0.0 <= useful <= legal + TOL):
@@ -254,18 +266,73 @@ def main() -> int:
                                 f"wasm --size-range land={land} players={players} "
                                 f"failed: rc={proc.returncode} {proc.stderr.strip()[:80]}")
                             continue
-                        wasm = (float(m.group(3)), float(m.group(4)), float(m.group(5)))
+                        wasm = (float(m.group(3)), float(m.group(4)), float(m.group(5)),
+                                int(m.group(6)))
                         if any(abs(a - b) > TOL for a, b in zip(wasm, nat)):
                             failures.append(
                                 f"wasm and native disagree on the size range for "
                                 f"land={land} players={players}: "
-                                f"wasm useful={wasm[0]} legal={wasm[1]} step={wasm[2]} vs "
-                                f"native useful={nat[0]} legal={nat[1]} step={nat[2]}")
+                                f"wasm {wasm} vs native {nat}")
                 print("  wasm     compared against native")
             else:
                 print("  wasm     (skipped: node not on PATH)")
         else:
             print("  wasm     (skipped: build/engine-wasm/mgconsole.js absent)")
+
+        # ---- 6. explicit rectangles -----------------------------------------
+        # sizeSlider feeds width and height from the same tables and the same
+        # fraction, so it can only ever make a SQUARE.  widthCells/heightCells
+        # override it.  And because the overlay grid is indexed over
+        # mapWidth + mapHeight -- the SUM, not either side -- a wide rectangle
+        # reaches sizes a square cannot: the square cap is ~247 cells a side while
+        # 380x100 fits inside the same grid.
+        _, _, _, rect_sum = size_range(args.mgconsole, 3, 2)
+        checks += 1
+        if rect_sum <= 0:
+            failures.append(f"the engine reported rectsum={rect_sum}")
+        else:
+            for (w, h) in ((200, 100), (100, 200), (380, 100), (460, 30)):
+                checks += 1
+                p = work / f"rect_{w}x{h}.map"
+                if p.exists():
+                    p.unlink()
+                proc = generate_rect(args.mgconsole, assets, w, h, p)
+                d = dimensions(p)
+                if proc.returncode != 0 or d is None:
+                    failures.append(f"rectangle {w}x{h} wrote no map "
+                                    f"(rc={proc.returncode})")
+                elif d != (w + 4, h + 12):
+                    failures.append(f"rectangle {w}x{h} wrote Size={d}, expected "
+                                    f"{(w + 4, h + 12)} -- the writer's +4 / +12 "
+                                    f"must apply per axis")
+
+            # A wide rectangle must beat the square cap, or the feature buys
+            # nothing over the slider.
+            checks += 1
+            wide = work / "rect_wide.map"
+            if wide.exists():
+                wide.unlink()
+            generate_rect(args.mgconsole, assets, 380, 100, wide)
+            dw = dimensions(wide)
+            if dw is None or dw[0] <= 247:
+                failures.append(f"a 380-wide rectangle gave Size={dw}, which does not "
+                                f"exceed the ~247-cell square cap")
+
+            # The limit is the SUM: rectsum-1 cells across fits, rectsum is refused.
+            for (w, h, want_ok) in ((rect_sum - 1, 1, True), (rect_sum, 1, False)):
+                checks += 1
+                p = work / f"sum_{w}.map"
+                if p.exists():
+                    p.unlink()
+                proc = generate_rect(args.mgconsole, assets, w, h, p)
+                wrote = p.exists()
+                if want_ok and (proc.returncode != 0 or not wrote):
+                    failures.append(f"{w}x{h} (sum {w + h}, one under rectsum "
+                                    f"{rect_sum}) was refused (rc={proc.returncode})")
+                if not want_ok and (proc.returncode == 0 or wrote):
+                    failures.append(f"{w}x{h} (sum {w + h} = rectsum {rect_sum}) was "
+                                    f"accepted; the overlay grid would truncate it")
+            print(f"  rect     width + height capped at {rect_sum}")
 
         print()
         if failures:

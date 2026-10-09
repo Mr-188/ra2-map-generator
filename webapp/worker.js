@@ -143,13 +143,14 @@ async function boot() {
     extract: Module.cwrap('mg_extract', 'number', ['number']),
     generate: Module.cwrap('mg_generate', 'number',
       ['number', 'number', 'number', 'number', 'number', 'number',
-       'number', 'number', 'number', 'number', 'string']),
+       'number', 'number', 'number', 'number', 'number', 'number', 'string']),
     readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
     error: Module.cwrap('mg_error', 'string', []),
     outputPath: Module.cwrap('mg_output_path', 'string', []),
     sizeUsefulMax: Module.cwrap('mg_size_useful_max', 'number', ['number', 'number']),
     sizeLegalMax: Module.cwrap('mg_size_legal_max', 'number', ['number', 'number']),
     sizeStep: Module.cwrap('mg_size_step', 'number', []),
+    rectMaxSum: Module.cwrap('mg_rect_max_sum', 'number', []),
   };
 
   // The sizeSlider bounds come from the engine, so the page never carries its own
@@ -169,7 +170,8 @@ async function boot() {
     sizeMax.push(useful);
     sizeLimit.push(legal);
   }
-  self.postMessage({ type: 'ready', sizeMax, sizeLimit, sizeStep: engine.sizeStep() });
+  self.postMessage({ type: 'ready', sizeMax, sizeLimit, sizeStep: engine.sizeStep(),
+                     rectMaxSum: engine.rectMaxSum() });
 }
 
 self.onmessage = async (event) => {
@@ -209,10 +211,12 @@ self.onmessage = async (event) => {
     if (msg.type === 'generate') {
       const p = msg.params;
       self.postMessage({ type: 'progress', stage: 'generating' });
+      // p.size must NOT go through `| 0`: it is a double, and truncating it would
+      // quietly turn the slider's 1.5 into 1.
       const rc = engine.generate(
-        p.land | 0, p.theater | 0, p.time | 0, p.size | 0, p.players | 0,
+        p.land | 0, p.theater | 0, p.time | 0, Number(p.size) || 0, p.players | 0,
         p.ore | 0, p.water | 0, p.seed >>> 0, p.mapSeed >>> 0,
-        p.single ? 1 : 0, p.outPath || '/mg/out.map');
+        p.single ? 1 : 0, p.width | 0, p.height | 0, p.outPath || '/mg/out.map');
       if (rc !== 0) {
         fail(`generation failed: ${engine.error()}`);
         return;

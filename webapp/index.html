@@ -194,6 +194,29 @@ h1 b { color: var(--amber); font-weight: 400; }
 
 input, select, button { font: inherit; color: inherit; }
 
+/* Segmented switch (地图大小: 正方形 / 长 × 宽).  Kept to the same 36px row
+   height as the other controls so swapping it in does not change the cell's
+   height and stretch its neighbours. */
+.seg {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  height: 36px; border: 1px solid var(--rule-2); border-radius: 2px;
+  overflow: hidden; background: var(--well);
+}
+.seg button {
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+  background: transparent; border: 0; border-right: 1px solid var(--rule-2);
+  font: 400 12.5px/1 var(--mono); letter-spacing: .06em; color: var(--ink-3);
+  transition: color .15s linear, background-color .15s linear;
+}
+.seg button:last-child { border-right: 0; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { color: var(--bg); background: var(--amber); }
+
+/* 长 × 宽 entry: two number inputs on one 36px row. */
+.pair { display: grid; grid-template-columns: 1fr 14px 1fr; align-items: center; }
+.pair input[type=number] { text-align: center; }
+.pair-x { text-align: center; color: var(--ink-3); font: 400 13px/1 var(--mono); }
+
 input[type=number], select {
   width: 100%; height: 36px; padding: 0 10px;
   background: var(--well); color: var(--ink);
@@ -429,10 +452,24 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="size">地图大小 <output id="size-out">1</output></label>
+          <div class="seg" id="size-mode" role="group" aria-label="尺寸模式">
+            <button type="button" data-mode="square" class="on">正方形</button>
+            <button type="button" data-mode="rect">长 × 宽</button>
+          </div>
           <!-- min/max/step are all replaced by app.js from the engine's
                SizeSliderRange as soon as the worker reports ready; these are just
                a sane pre-boot default.  The value is fractional on purpose. -->
           <input id="size" type="range" min="0" max="3.6" value="1" step="0.1">
+          <!-- Non-square maps: CalcMapSize feeds width and height from the same
+               tables and the same fraction, so the slider above can only ever
+               make a square.  These two override it.  The ceiling is the engine's
+               rectMaxSum (width + height), because the 512-cell overlay grid is
+               indexed over mapWidth + mapHeight -- the SUM. -->
+          <div class="pair" id="rect-pair" hidden>
+            <input id="rect-w" type="number" min="1" step="1" value="200" aria-label="长">
+            <span class="pair-x">×</span>
+            <input id="rect-h" type="number" min="1" step="1" value="200" aria-label="宽">
+          </div>
         </div>
 
         <div class="cell"><label for="players">玩家数</label>

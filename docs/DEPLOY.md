@@ -56,7 +56,8 @@
 ```sh
 cd <项目目录>
 
-# 1. Emscripten（~380 MB 的 apt 包，解到 ~/opt/emscripten）
+# 1. Emscripten（解到 ~/opt/emscripten）
+#    默认从 questing 取 3.1.69，而不是本机发行版的版本——见下方说明。
 sh tools/fetch_emscripten.sh
 
 # 2. .NET 10 SDK + 一个缺失的系统库（同样走 apt，不用 root）
@@ -73,6 +74,10 @@ dotnet workload install wasm-tools
 git clone https://github.com/zzattack/ccmaps-net reference_impl/ccmaps-net
 #   参考 RMG 实现放 reference_impl/src/（本项目来源，非公开）
 
+# 4b. 把本仓库对参考实现的补丁打上去（**必须**，否则编译不过：
+#     我们的驱动调用 RandomMapGenerator::SizeSliderRange，干净版没有）
+sh tools/apply_reference_patches.sh
+
 # 5. 【可选】Chromium + puppeteer，用于真实浏览器自测
 sh tools/fetch_chromium.sh
 npm install puppeteer-core
@@ -80,6 +85,16 @@ npm install puppeteer-core
 
 > **为什么用 apt 包而不是官网下载**：微软 CDN 从国内几乎拉不动（实测 70 秒只有 4 KB）。
 > 所有下载脚本都用**并行分块**，因为单条长连接会被限速到几百 KB/s。
+
+> **为什么 Emscripten 不取本机发行版的版本**：Ubuntu 24.04 带的是 3.1.6，它**
+> 不支持 `-sSTACK_SIZE`**，而且早于 clang 把 `main()` 改名为 `__main_argc_argv` 的
+> 版本——于是链接时找不到入口根，**把整个程序当死代码剥光**，产出一个 11 KB、
+> exit 0、什么都不做的 wasm，且全程无报错。所以 `fetch_emscripten.sh` 默认从
+> `questing`（3.1.69）取，并在解包后**剔掉该 suite 自带的 libc / ld-linux**：它们会被
+> `emenv.sh` 放进 `LD_LIBRARY_PATH`，让环境里每个进程（含 python3）去加载比本机
+> 更新的 glibc，直接 `stack smashing detected`。工具链自身的库是兼容的（实测最高
+> 需要 GLIBC_2.38 / GLIBCXX_3.4.30，本机 2.39 / 3.4.33）。用 `SUITE=` 可换，
+> `SUITE=native` 用本机 apt 列表。
 
 ---
 
