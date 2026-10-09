@@ -99,3 +99,23 @@ Emscripten 不在机器上：`tools/fetch_emscripten.sh` 无 root 取，
 - **浏览器产物不能带 `node` 环境**：`import { createRequire } from 'module'` 会让
   worker 在浏览器里直接死掉，按钮永远是灰的。`build_web.sh` 暂存时会检查。
 - 失败要**看得见**：页面必须把引擎的错误显示出来，不许静默禁用按钮。
+
+---
+
+## 版本控制
+
+**拉取和推送一律走 SSH**，不用 HTTPS：
+
+```
+origin  git@github.com:Mr-188/ra2-map-generator.git
+```
+
+- `gh` 也用 SSH：`gh auth status` 应显示 `Git operations protocol: ssh`。
+  若显示 `https`，改回来：`gh config set git_protocol ssh --host github.com`
+- 新克隆：`git clone git@github.com:Mr-188/ra2-map-generator.git`
+- **不要**用 `https://github.com/...` 形式的远程，也不要让任何脚本去拼 HTTPS URL。
+
+原因：这台机器上 HTTPS 到 GitHub 不稳定（会话里遇到过超时和连接重置），
+而 SSH 在 22 端口和 `ssh.github.com:443` 上都实测可用。
+
+**唯一例外**是 CI/托管服务的构建脚本——它们在自己的环境里跑，用不到本机密钥。
