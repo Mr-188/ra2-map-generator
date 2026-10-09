@@ -22,6 +22,15 @@ if [ ! -d "$REF" ]; then
     exit 2
 fi
 
+# Our drivers call RandomMapGenerator::SizeSliderRange, which only exists once
+# engine/reference_patches/ has been applied.  Say so plainly instead of letting
+# the compiler produce "no member named 'SizeSliderRange'".
+if ! grep -q 'SizeSliderRange' "$REF/MapGen.h" 2>/dev/null; then
+    echo "the reference sources lack this repository's patches" >&2
+    echo "  run: sh tools/apply_reference_patches.sh" >&2
+    exit 2
+fi
+
 mkdir -p "$OUT/obj"
 
 CXX=${CXX:-g++}

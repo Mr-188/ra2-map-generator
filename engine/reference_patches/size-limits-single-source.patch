@@ -1,0 +1,254 @@
+--- a/MapGenerator/MapGen.h
++++ b/MapGenerator/MapGen.h
+@@ -1,4 +1,4 @@
+-﻿#pragma once
++#pragma once
+ 
+ #include <cstdint>
+ #include <cstddef>
+@@ -419,7 +419,14 @@
+     LandType   landType;     // this[15]
+     int        theater;      // this[14]
+     int        timeOfDay;    // this[18]  (0-3)
+-    int        sizeSlider;   // this[25] = this[26]  (0-3)
++    double     sizeSlider;   // this[25] = this[26].  Fractional on purpose: the
++                             // engine interpolates Wmin..Wmax by sizeSlider/3, so a
++                             // whole number only ever reaches every third of the
++                             // way.  The retail dialog offered integers 0-3;
++                             // anything in 0..SizeSliderRange().usefulMax is valid
++                             // here.  Integer inputs are unchanged -- see
++                             // CalcMapSize, which still does the arithmetic in
++                             // float.
+     int        playerCount;  // this[20]  (2-8)
+     int        oreDensity;   // ore density index
+     bool       multiplayer;  // false = single-player map (.map), true =
+@@ -952,6 +959,50 @@
+     RandomMapGenerator();
+     ~RandomMapGenerator();
+ 
++    // -----------------------------------------------------------------------
++    // Parameter limits -- the SINGLE definition of them.
++    //
++    // Every consumer (this class, engine/tools/mgconsole, engine/tools/
++    // wasm_entry and through it the web page) must ask here instead of
++    // restating the numbers.  They used to be scattered: the "the size slider
++    // stops growing past 4" figure the page carried was a hand copy of
++    // kSizeFractionMax, and the 512-cell overlay wall was not written down
++    // anywhere -- it existed only as a `continue` in the writer.
++    // -----------------------------------------------------------------------
++
++    // [OverlayPack] is a fixed 512x512 byte grid (262144 bytes, indexed
++    // x + 512*y), so the isometric diamond -- workSide = mapWidth +
++    // mapHeight + 1 -- has to stay inside it.  Past this the writer would drop
++    // whole rows of overlays with no error.
++    static constexpr int kOverlayGridSide = 512;
++
++    // CalcMapSize extrapolates W = Wmin*(1-f) + Wmax*f.  For every land type
++    // EXCEPT Inland and Mountainous the fraction is capped here, i.e. the size
++    // tables may be extrapolated by at most 20%.  Inland and Mountainous are
++    // not capped and keep extrapolating linearly until kOverlayGridSide stops
++    // them.
++    static constexpr float kSizeFractionMax = 1.2f;
++
++    // The sizeSlider bounds for one (land, players) pair.  Doubles, because the
++    // useful bound is fractional: kSizeFractionMax of 1.2 is a size of 3.6, and
++    // the retail dialog's integer 0-3 could not reach it.
++    struct SizeRange
++    {
++        double usefulMax;   // last value worth offering: a larger one changes nothing
++        double legalMax;    // last value that is not silently truncated by the writer
++    };
++    static SizeRange SizeSliderRange(LandType land, int playerCount);
++
++    // The granularity SizeSliderRange() scans at -- and the step the page's slider
++    // should use.  Defined here rather than restated there so the two cannot
++    // drift, the same rule the bounds themselves follow.
++    static constexpr double kSizeSliderStep = 0.1;
++
++    // Replicates 0x599665 - 0x599748.  Static because it depends on nothing but
++    // the config and the size tables -- which is also what lets
++    // SizeSliderRange() be derived from it rather than re-deriving it.
++    static MapSizeResult CalcMapSize(const MapGenConfig& cfg);
++
+     bool GenerateMapBody(const MapGenConfig& cfg);
+ 
+     // Re-initialize map data from RMGMD.INI (replicates sub_5981F0)
+@@ -1677,7 +1728,6 @@
+     }
+ 
+ private:
+-    MapSizeResult CalcMapSize(const MapGenConfig& cfg) const;
+     void InitCells();
+     void InitWorkArray();
+     void FillWorkCoords();
+--- a/MapGenerator/MapGen.cpp
++++ b/MapGenerator/MapGen.cpp
+@@ -1,4 +1,4 @@
+-﻿#include "pch.h"
++#include "pch.h"
+ #include "MapGen.h"
+ #include "MapGenFastSqrt.h"
+ 
+@@ -64,8 +64,7 @@
+ static const int kHmin[7] = { 70, 70, 70, 80, 90, 100, 100 };
+ static const int kHmax[7] = { 80, 80, 80, 90, 100, 110, 120 };
+ 
+-static const float kSizeClamp = 1.2f;
+-static const float kOneThird  = 1.0f / 3.0f;
++static const float kOneThird  = 1.0f / 3.0f;   // kSizeFractionMax lives on the class
+ 
+ // F2I64 (Game::F2I64 0x7C5F00, truncate toward zero) moved to MapGen.h - both
+ // this file and MapGenRiver.cpp use it.
+@@ -402,13 +401,16 @@
+ //
+ //   i = clamp(playerCount - 2, 0, 6)
+ //   wFrac = hFrac = sizeSlider / 3.0
+-//   if LandType != Inland and != Mountainous: clamp both to 1.2
++//   if LandType != Inland and != Mountainous: clamp both to kSizeFractionMax
+ //   W = F2I64(Wmin[i]*(1-wFrac) + Wmax[i]*wFrac)   (visible size)
+ //   H = F2I64(Hmin[i]*(1-hFrac) + Hmax[i]*hFrac)
+ //   W' = W + 4, H' = H + 12  (MapRect, sub_42AC00)
+ //   workSide = W' + H' + 1  (dword_89C2DC)
++//
++// Static, and public, so SizeSliderRange() can be built on it instead of
++// re-deriving the same arithmetic from a second copy of the tables.
+ // ---------------------------------------------------------------------------
+-MapSizeResult RandomMapGenerator::CalcMapSize(const MapGenConfig& cfg) const
++MapSizeResult RandomMapGenerator::CalcMapSize(const MapGenConfig& cfg)
+ {
+     MapSizeResult result = {};
+ 
+@@ -422,8 +424,8 @@
+     LandType lt = cfg.landType;
+     if (lt != LandType::Inland && lt != LandType::Mountainous)
+     {
+-        if (wFrac > kSizeClamp) wFrac = kSizeClamp;
+-        if (hFrac > kSizeClamp) hFrac = kSizeClamp;
++        if (wFrac > kSizeFractionMax) wFrac = kSizeFractionMax;
++        if (hFrac > kSizeFractionMax) hFrac = kSizeFractionMax;
+     }
+ 
+     float w = kWmin[playerIdx] * (1.0f - wFrac) + kWmax[playerIdx] * wFrac;
+@@ -439,7 +441,89 @@
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// InitCells (MapClass::CreateEmptyMap + cell reset 0x599e86 - 0x599eaa)
++// SizeSliderRange -- the legal (and useful) sizeSlider bounds for one
++// (land, players) pair.  Both are DOUBLES: the parameter is continuous, and the
++// interesting bound is fractional (kSizeFractionMax of 1.2 is a size of 3.6).
++//
++// Derived by *asking CalcMapSize*, not by re-implementing it, so the two cannot
++// drift: this and the generator read the same tables and the same
++// kSizeFractionMax.
++//
++//   legalMax   the last value whose diamond still fits the fixed 512x512
++//              [OverlayPack] grid.  The grid is addressed x + 512*y over rows
++//              running to workSide - 1, so the test is on workSide, not on
++//              mapWidth/mapHeight separately (a 274x282 map is inside 512 on
++//              both axes yet needs 557 rows).  One step past this the writer
++//              would silently drop whole rows of overlays, so callers must
++//              reject it.
++//   usefulMax  the last value that actually CHANGES the map size.  The map size
++//              is a step function of the slider -- F2I64 quantises it to whole
++//              cells -- so "the next step changes nothing" would fire on the
++//              very first plateau.  What matters is where the changes stop: for
++//              the three clamped land types the fraction pins at
++//              kSizeFractionMax, so 3.6 is the final step that moves anything and
++//              every larger value repeats it; Inland and Mountainous keep growing
++//              and their usefulMax is their legalMax.
++//
++// The scan is quantised to kSizeSliderStep, which is also the step the page's
++// slider uses -- so the bounds reported here are values a caller can actually
++// ask for, and never one the writer would refuse.
++//
++// Concretely, with the retail tables:
++//   players 2-4  usefulMax 3.6,  legalMax 53.3
++//   players 5/6/7                legalMax 50.4 / 47.5 / 44.6
++//   players 8    usefulMax 3.6,  legalMax 22.1
++//   Inland/Mtn   usefulMax == legalMax
++//
++// For the three clamped land types legalMax comes back as the top of the scan
++// (just under kOverlayGridSide): the fraction is pinned at kSizeFractionMax, so
++// the map stops growing and every value is legal.  That is the intended answer,
++// not a sentinel -- those land types have no input the writer would refuse.
++// ---------------------------------------------------------------------------
++RandomMapGenerator::SizeRange
++RandomMapGenerator::SizeSliderRange(LandType land, int playerCount)
++{
++    SizeRange out = { 0.0, 0.0 };
++    int prevW = -1, prevH = -1;
++
++    const double step = kSizeSliderStep;
++    // Repeated += on a binary fraction accumulates error (3.6 comes out as
++    // 3.6000000000000005), and these values are handed to a UI as a slider's
++    // bounds.  Report them at the step's own precision.
++    auto snap = [step](double v) {
++        // Divide by the scale rather than multiply by step: 5119 * 0.1 comes out
++        // as 511.90000000000003, while 5119 / 10 gives the correctly rounded 511.9.
++        const double scale = (step > 0.0) ? (1.0 / step) : 1.0;
++        return std::floor(v * scale + 0.5) / scale;
++    };
++
++    // kOverlayGridSide / step is the worst case; for the clamped land types the
++    // scan does reach the end (nothing ever exceeds the grid), which is fine.
++    for (double s = 0.0; s <= static_cast<double>(kOverlayGridSide); s += step)
++    {
++        MapGenConfig cfg = {};
++        cfg.landType = land;
++        cfg.playerCount = playerCount;
++        cfg.sizeSlider = s;
++
++        const MapSizeResult here = CalcMapSize(cfg);
++        if (here.workSide > kOverlayGridSide)
++            break;                                  // s is illegal
++
++        out.legalMax = s;
++        if (here.mapWidth != prevW || here.mapHeight != prevH)
++        {
++            out.usefulMax = s;                      // this step moved the size
++            prevW = here.mapWidth;
++            prevH = here.mapHeight;
++        }
++    }
++    out.usefulMax = snap(out.usefulMax);
++    out.legalMax = snap(out.legalMax);
++    return out;
++}
++
++
+ //
+ // Diamond existence: W' < x+y <= W'+2H' and |x-y| < W' (CellExists).
+ // Slot array: 512-stride rows, nullptr outside the diamond - this is the
+--- a/MapGenerator/MapGenMapFile.cpp
++++ b/MapGenerator/MapGenMapFile.cpp
+@@ -1,4 +1,4 @@
+-﻿// ============================================================================
++// ============================================================================
+ // MapGenMapFile.cpp - the ".map" writer
+ //
+ // The vanilla RMG itself never writes a file (the game saves the finished map
+@@ -646,6 +646,23 @@
+     if (!slots)
+         return false;
+ 
++    // The overlay sections below are a FIXED 512x512 grid (see kOverlayGridSide)
++    // and the loop that fills them skips anything past it with `continue`.  The
++    // grid is addressed x + 512*y over a diamond whose rows run to
++    // workSide - 1, so it is workSide -- NOT mapWidth/mapHeight individually --
++    // that has to fit: a 274x282 map is well inside 512 on both axes yet needs
++    // 557 rows.  Such a map would come out missing ore and objects, silently,
++    // looking entirely normal.  Refuse it instead.  Callers are expected to keep
++    // sizeSlider inside RandomMapGenerator::SizeSliderRange(); this is the
++    // backstop for anyone who does not.
++    if (size_.workSide > kOverlayGridSide)
++    {
++        DiagLog("SAVE-FILE REFUSED workSide=%d (mapWidth=%d mapHeight=%d) exceeds "
++                "the %d-cell overlay grid; the overlays would be truncated",
++                size_.workSide, size_.mapWidth, size_.mapHeight, kOverlayGridSide);
++        return false;
++    }
++
+     // The port's slot array is slotRows_ * 512, slotRows_ = mapWidth + mapHeight
+     // + 1 (AllocateCells). Walk it whole and skip the empty slots, so no cell
+     // can be missed regardless of how the diamond was laid out.

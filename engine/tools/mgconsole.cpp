@@ -28,13 +28,14 @@ void usage()
         "  --land 0..4      Archipelago/Continent/TeamContinent/Inland/Mountainous\n"
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
-        "  --size 0..3      map size slider\n"
+        "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
         "  --players 2..8\n"
         "  --ore N          ore density index\n"
         "  --water 0..100   -1 = roll it (default)\n"
         "  --seed N         global seed (0 = GetTickCount)\n"
         "  --map-seed N     terrain RNG seed (0 = the vanilla constant)\n"
         "  --single         write a single-player .map instead of a .yrm\n"
+        "  --size-range     print the legal/useful --size bounds for --land/--players, exit\n"
         "  --out PATH       output map path\n");
 }
 
@@ -55,9 +56,11 @@ int main(int argc, char** argv)
 {
     std::string root;
     std::string out = "oracle.map";
-    int land = 1, theater = 0, time = 0, size = 1, players = 2, ore = 1, water = -1;
+    int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
+    double size = 1.0;
     unsigned seed = 1, mapSeed = 0;
     bool single = false;
+    bool sizeRange = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -71,16 +74,31 @@ int main(int argc, char** argv)
         else if (a == "--land") land = std::atoi(next());
         else if (a == "--theater") theater = std::atoi(next());
         else if (a == "--time") time = std::atoi(next());
-        else if (a == "--size") size = std::atoi(next());
+        else if (a == "--size") size = std::strtod(next(), nullptr);
         else if (a == "--players") players = std::atoi(next());
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
         else if (a == "--seed") seed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--map-seed") mapSeed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--single") single = true;
+        else if (a == "--size-range") sizeRange = true;
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else { std::fprintf(stderr, "unknown argument: %s\n", a.c_str()); usage(); return 2; }
     }
+
+    // --size-range answers a question rather than generating, and needs no root.
+    // It is how tools/verify_size.py reads the engine's own limits instead of
+    // restating them.
+    if (sizeRange)
+    {
+        const RandomMapGenerator::SizeRange r =
+            RandomMapGenerator::SizeSliderRange(static_cast<LandType>(land), players);
+        std::printf("land=%d players=%d useful=%.3f legal=%.3f step=%.3f\n",
+                    land, players, r.usefulMax, r.legalMax,
+                    RandomMapGenerator::kSizeSliderStep);
+        return 0;
+    }
+
     if (root.empty()) { usage(); return 2; }
 
     // The generator derives every path from GetModuleFileNameW, so point it at
@@ -106,8 +124,32 @@ int main(int argc, char** argv)
     cfg.mapRngSeed = mapSeed;
     cfg.waterAmount = (water >= 0) ? water : cfg.global.waterAmount;
 
-    std::fprintf(stderr, "[mgconsole] land=%d theater=%d time=%d size=%d players=%d ore=%d water=%d seed=%u\n",
+    std::fprintf(stderr, "[mgconsole] land=%d theater=%d time=%d size=%.3f players=%d ore=%d water=%d seed=%u\n",
                  land, theater, time, size, players, ore, cfg.waterAmount, seed);
+
+    // Refuse a size the writer would silently truncate.  The limit comes from the
+    // engine's own tables (SizeSliderRange), not from a second copy of them here.
+    {
+        const RandomMapGenerator::SizeRange r =
+            RandomMapGenerator::SizeSliderRange(cfg.landType, cfg.playerCount);
+        if (size < 0 || size > r.legalMax)
+        {
+            std::fprintf(stderr,
+                "[mgconsole] size %.3f is out of range for land=%d players=%d: "
+                "legal 0..%.3f, of which 0..%.3f change the map (a larger value is either "
+                "clamped or would overflow the 512-cell overlay grid)\n",
+                size, land, players, r.legalMax, r.usefulMax);
+            return 5;
+        }
+        if (size > r.usefulMax)
+        {
+            std::fprintf(stderr,
+                "[mgconsole] note: size %.3f is legal but identical to size %.3f "
+                "(fraction pinned at %.2f)\n",
+                size, r.usefulMax,
+                static_cast<double>(RandomMapGenerator::kSizeFractionMax));
+        }
+    }
 
     // ---- the pipeline, in WinMain.cpp's order -----------------------------
     if (!rmg.GenerateMapBody(cfg))                       // sub_599650

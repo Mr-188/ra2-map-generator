@@ -45,7 +45,11 @@ if [ "${MG_SKIP_BUILD:-0}" != "1" ]; then
         || { echo "  native build failed; see /tmp/verify_build_native.log"; exit 1; }
 
     echo "[verify] building the wasm console"
-    if [ -x "$HOME/opt/emscripten/usr/share/emscripten/emcc" ]; then
+    # Ask tools/emenv.sh whether a usable toolchain exists, rather than pinning a
+    # path: it is the one place that knows both where emscripten lives and whether
+    # the version can build this project at all (noble's 3.1.6 cannot, and fails
+    # by silently producing an empty program).
+    if sh -c '. tools/emenv.sh' >/dev/null 2>&1; then
         sh -c '. tools/emenv.sh && sh engine/build_wasm.sh' > /tmp/verify_build_wasm.log 2>&1 \
             || { echo "  wasm build failed; see /tmp/verify_build_wasm.log"; exit 1; }
         sh -c '. tools/emenv.sh && sh engine/build_web.sh' > /tmp/verify_build_web.log 2>&1 \
@@ -56,6 +60,9 @@ if [ "${MG_SKIP_BUILD:-0}" != "1" ]; then
                 sh engine/build_web.sh build/engine-web-node' \
             > /tmp/verify_build_webnode.log 2>&1 \
             || { echo "  node web build failed; see /tmp/verify_build_webnode.log"; exit 1; }
+    else
+        echo "  no usable emscripten; skipping the wasm targets:"
+        sh -c '. tools/emenv.sh' 2>&1 | sed 's/^/    /'
     fi
     if [ -f reference_impl/ccmaps-net/CNCMaps.Renderer/CNCMaps.Renderer.csproj ] \
             && [ -x "$HOME/opt/dotnet-apt/usr/bin/dotnet" ]; then
@@ -63,7 +70,7 @@ if [ "${MG_SKIP_BUILD:-0}" != "1" ]; then
             > /tmp/verify_build_render.log 2>&1 \
             || echo "  (renderer build failed; see /tmp/verify_build_render.log)"
     else
-        echo "  (emscripten not installed; skipping the wasm targets)"
+        echo "  (no reference_impl/ccmaps-net or dotnet; skipping the renderer build)"
     fi
 fi
 
@@ -97,6 +104,16 @@ if [ -f build/engine-wasm/mgconsole.js ]; then
     else
         step verify_wasm python3 tools/verify_wasm.py
     fi
+fi
+
+# The sizeSlider limits, which now exist in exactly one place
+# (RandomMapGenerator::SizeSliderRange).  This pins that the native and wasm
+# builds agree on them and that SaveMapFile refuses an oversized map instead of
+# dropping its overlays silently.
+if [ -n "$GAME" ]; then
+    step verify_size python3 tools/verify_size.py --game-dir "$GAME"
+else
+    step verify_size python3 tools/verify_size.py
 fi
 
 if [ -f build/engine-web-node/mg_engine.js ]; then

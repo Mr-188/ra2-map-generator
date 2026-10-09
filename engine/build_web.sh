@@ -29,6 +29,15 @@ if [ ! -d "$REF" ]; then
     exit 2
 fi
 
+# Our drivers call RandomMapGenerator::SizeSliderRange, which only exists once
+# engine/reference_patches/ has been applied.  Say so plainly instead of letting
+# the compiler produce "no member named 'SizeSliderRange'".
+if ! grep -q 'SizeSliderRange' "$REF/MapGen.h" 2>/dev/null; then
+    echo "the reference sources lack this repository's patches" >&2
+    echo "  run: sh tools/apply_reference_patches.sh" >&2
+    exit 2
+fi
+
 EMXX=${EMXX:-em++}
 if ! command -v "$EMXX" >/dev/null 2>&1; then
     echo "$EMXX not on PATH; run tools/fetch_emscripten.sh and add it" >&2
@@ -42,7 +51,7 @@ EMFLAGS="-sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB -sINITIAL_MEMORY=64MB \
  -fexceptions -sFORCE_FILESYSTEM=1 -sENVIRONMENT=$ENVIRONMENTS \
  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createMgEngine \
  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,FS \
- -sEXPORTED_FUNCTIONS=_mg_add_file,_mg_set_root,_mg_extract,_mg_generate,_mg_read_output,_mg_error,_mg_output_path,_malloc,_free"
+ -sEXPORTED_FUNCTIONS=_mg_add_file,_mg_set_root,_mg_extract,_mg_generate,_mg_read_output,_mg_error,_mg_output_path,_mg_size_useful_max,_mg_size_legal_max,_mg_size_step,_malloc,_free"
 
 echo "[web] compiling the browser module"
 "$EMXX" $FLAGS $EMFLAGS \

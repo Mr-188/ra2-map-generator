@@ -147,8 +147,29 @@ async function boot() {
     readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
     error: Module.cwrap('mg_error', 'string', []),
     outputPath: Module.cwrap('mg_output_path', 'string', []),
+    sizeUsefulMax: Module.cwrap('mg_size_useful_max', 'number', ['number', 'number']),
+    sizeLegalMax: Module.cwrap('mg_size_legal_max', 'number', ['number', 'number']),
+    sizeStep: Module.cwrap('mg_size_step', 'number', []),
   };
-  self.postMessage({ type: 'ready' });
+
+  // The sizeSlider bounds come from the engine, so the page never carries its own
+  // copy of the size tables.  A 5x7 table (land 0..4 x players 2..8) is small
+  // enough to send once here instead of asking on every parameter change:
+  // sizeMax[land][players - 2].  All three values are fractional -- the useful
+  // bound is 3.6, which an integer slider cannot name.
+  const sizeMax = [];
+  const sizeLimit = [];
+  for (let land = 0; land < 5; ++land) {
+    const useful = [];
+    const legal = [];
+    for (let p = 2; p <= 8; ++p) {
+      useful.push(engine.sizeUsefulMax(land, p));
+      legal.push(engine.sizeLegalMax(land, p));
+    }
+    sizeMax.push(useful);
+    sizeLimit.push(legal);
+  }
+  self.postMessage({ type: 'ready', sizeMax, sizeLimit, sizeStep: engine.sizeStep() });
 }
 
 self.onmessage = async (event) => {

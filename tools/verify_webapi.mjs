@@ -191,7 +191,39 @@ if (produced) {
   }
 }
 
-// ---- 7. the render half, through the same flattening the worker does -----
+// ---- 7. the same call again, in the SAME module instance -----------------
+//
+// This is the one thing a per-process test cannot see.  wasm_entry.cpp used to
+// hold `static RandomMapGenerator rmg`, so the first map of a session matched
+// the native oracle and every later one did not -- same parameters, same seed,
+// different bytes.  Every other suite starts a fresh process, or generates once,
+// and therefore passed.  Regenerating here is what makes the red line "same
+// parameters + same seed -> byte-identical" hold for the product and not just
+// for the command line.
+const rcAgain = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
+                             args.seed >>> 0, 0, args.single ? 1 : 0, outPath);
+check('mg_generate again, same instance', rcAgain === 0,
+      rcAgain === 0 ? '' : api.error());
+
+let regen = null;
+{
+  const n = api.readOutput(outPath, 0, -1);
+  if (n > 0) {
+    const ptr = Module._malloc(n);
+    try {
+      if (api.readOutput(outPath, ptr, n) === n) {
+        regen = Buffer.from(Module.HEAPU8.slice(ptr, ptr + n));
+      }
+    } finally {
+      Module._free(ptr);
+    }
+  }
+}
+check('regeneration is idempotent',
+      produced !== null && regen !== null && md5(produced) === md5(regen),
+      regen ? `md5=${md5(regen).slice(0, 16)}` : 'no output');
+
+// ---- 8. the render half, through the same flattening the worker does -----
 // webapp/worker.js copies the extracted tree out of the engine's MEMFS into the
 // renderer's own (separate) filesystem, flattening on the way because CNCMaps'
 // DirArchive is non-recursive.  This is that exact loop.

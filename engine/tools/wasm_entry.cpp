@@ -110,6 +110,34 @@ EMSCRIPTEN_KEEPALIVE void mg_set_root(const char* root)
 EMSCRIPTEN_KEEPALIVE const char* mg_error() { return g_error.c_str(); }
 EMSCRIPTEN_KEEPALIVE const char* mg_output_path() { return g_output.c_str(); }
 
+// The engine's own sizeSlider bounds for one (land, players) pair, so the page
+// can size its slider from the tables that actually drive CalcMapSize instead of
+// carrying a hand copy of them.  (The page used to hard-code "past 4 nothing
+// changes", which was a transcription of kSizeFractionMax.)
+//
+// Doubles: the parameter is fractional, and the interesting bound is 3.6, which
+// the retail dialog's integer slider could not name.
+//
+// useful: the last value after which a larger slider changes nothing.
+// legal:  the last value that does not overflow the 512-cell overlay grid.
+EMSCRIPTEN_KEEPALIVE double mg_size_useful_max(int land, int players)
+{
+    return RandomMapGenerator::SizeSliderRange(
+        static_cast<LandType>(land), players).usefulMax;
+}
+
+EMSCRIPTEN_KEEPALIVE double mg_size_legal_max(int land, int players)
+{
+    return RandomMapGenerator::SizeSliderRange(
+        static_cast<LandType>(land), players).legalMax;
+}
+
+// The granularity to offer, from the same place the bounds come from.
+EMSCRIPTEN_KEEPALIVE double mg_size_step()
+{
+    return RandomMapGenerator::kSizeSliderStep;
+}
+
 // Materialises the generator's loose-file tree in MEMFS from the registered
 // archives.  Returns 0 on success.
 EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
@@ -140,7 +168,7 @@ EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
 // where the GUI's 时间 combo sits.  It is a real input: the engine reads it for
 // LevelLight/AmbientLight and for the per-time ore-patch lamps
 // (TEMMORLAMP/TEMDAYLAMP/TEMDUSLAMP/TEMNITLAMP).
-EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, int size, int players,
+EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, double size, int players,
                                      int ore, int water, unsigned seed,
                                      unsigned mapSeed, int single,
                                      const char* outPath)
@@ -149,7 +177,13 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, int s
     const std::string root = g_root;
     mg_win32::setModulePath(root + "/x64/Release/MapGenerator.exe");
 
-    static RandomMapGenerator rmg;  // one generator per module, as in the GUI
+    // A FRESH generator per call, exactly as the reference GUI does it: WinMain
+    // constructs one inside its generate handler (WinMain.cpp:463).  Holding it
+    // in a function-static instead made generation order-dependent -- the first
+    // map of a session matched the native oracle and every later one did not,
+    // with identical parameters and an identical seed.  tools/verify_webapi.mjs
+    // regenerates on purpose to guard against a relapse.
+    RandomMapGenerator rmg;
 
     MapGenConfig cfg = {};
     cfg.landType = static_cast<LandType>(land);
@@ -159,6 +193,23 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, int s
     cfg.playerCount = players;
     cfg.oreDensity = ore;
     cfg.multiplayer = single ? false : true;
+
+    // Refuse a size the writer would silently truncate, using the engine's own
+    // tables rather than a second copy of them.
+    {
+        const RandomMapGenerator::SizeRange r =
+            RandomMapGenerator::SizeSliderRange(cfg.landType, cfg.playerCount);
+        if (size < 0 || size > r.legalMax)
+        {
+            char buf[220];
+            std::snprintf(buf, sizeof buf,
+                "size %.3f is out of range for land=%d players=%d: legal 0..%.3f, "
+                "of which 0..%.3f change the map", size, land, players,
+                r.legalMax, r.usefulMax);
+            g_error = buf;
+            return 5;
+        }
+    }
 
     cfg.global = rmg.RollGlobalOptions(seed ? seed : GetTickCount());
     cfg.randomSeed = static_cast<std::uint32_t>(cfg.global.seed04C);

@@ -72,6 +72,74 @@ let booted = false;
 // how the sweep above was measured.)
 const WATER_FROM_GLOBAL_ROLL = -1;
 
+// ---- 地图大小 --------------------------------------------------------------
+//
+// The engine's `sizeSlider` is an integer (0..3 in the retail dialog): it goes
+// straight into `f = size / 3` and then `W = Wmin*(1-f) + Wmax*f`, so it walks
+// the size tables in thirds of the way from Wmin to Wmax.
+//
+// The VALID RANGE IS NOT COMPUTED HERE.  The engine owns it -- the tables, the
+// clamp and the 512-cell overlay wall all live together in CalcMapSize /
+// SizeSliderRange -- and the worker asks for it at boot and forwards it in the
+// `ready` message.  This file used to hard-code "past 4 nothing changes", which
+// was a hand transcription of kSizeFractionMax and would have gone stale
+// silently the moment that constant moved.
+//
+//   sizeMax[land][players - 2]    the last value that changes the map size
+//   sizeLimit[land][players - 2]  the last value the writer will not truncate
+//
+// For 内陆/山地 the two are equal (no clamp, so the slider keeps growing until
+// the overlay grid stops it); for the other three sizeMax is 4 and sizeLimit is
+// the grid bound, so anything past sizeMax is legal but redundant -- which is
+// why the slider's max is sizeMax and the note explains the cap.
+let sizeMax = null;
+let sizeLimit = null;
+let sizeStep = 0.1;      // replaced by the engine's kSizeSliderStep at boot
+
+const sizeInput = el('size');
+const sizeOut = el('size-out');
+const sizeNote = el('size-note');
+
+// 3.6, not 3.6000000000000005.  Two decimals is past the engine's own
+// granularity (one cell per size step), so nothing is lost.
+const fmtSize = (v) => String(Number(Number(v).toFixed(2)));
+
+function syncSize() {
+  const land = Number(el('land').value);
+  const players = Number(el('players').value);
+  const idx = Math.max(0, Math.min(6, players - 2));
+
+  if (!sizeMax) {                    // engine table not here yet (still booting)
+    sizeOut.value = fmtSize(sizeInput.value);
+    return;
+  }
+
+  const useful = sizeMax[land] ? sizeMax[land][idx] : Number(sizeInput.max);
+  const legal = sizeLimit && sizeLimit[land] ? sizeLimit[land][idx] : useful;
+
+  // Ceiling and step are both the engine's, so the slider cannot offer a value
+  // the generator refuses, nor a position that changes nothing.
+  sizeInput.step = String(sizeStep);
+  sizeInput.max = String(useful);
+  if (Number(sizeInput.value) > useful) sizeInput.value = String(useful);
+
+  sizeOut.value = fmtSize(sizeInput.value);
+  // Only the three clamped land types need the explanation, and the way to tell
+  // them apart needs no land-type knowledge in the page: a clamped map stops
+  // growing while the overlay grid is still far away, so its legal bound is
+  // hundreds of steps above its useful one.  On Inland/Mountainous the two differ
+  // only by the last quantisation step (0.2 at most).  Comparing on that gap is
+  // why this text is not shown on a map that does have head-room.
+  sizeNote.textContent = (legal - useful) > 1
+    ? '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆与山地没有这个上限。'
+    : '';
+}
+
+sizeInput.addEventListener('input', syncSize);
+el('land').addEventListener('change', syncSize);
+el('players').addEventListener('change', syncSize);
+syncSize();
+
 function setStatus(text, cls) {
   statusEl.textContent = text || '';
   statusEl.className = cls || '';
@@ -112,6 +180,12 @@ worker.addEventListener('message', async (event) => {
       booted = true;
       clearTimeout(bootWatchdog);
       errorEl.textContent = '';
+      // The engine's sizeSlider bounds arrive with the ready message; adopt them
+      // before the first syncSize() so the slider is never sized from a guess.
+      if (Array.isArray(msg.sizeMax)) sizeMax = msg.sizeMax;
+      if (Array.isArray(msg.sizeLimit)) sizeLimit = msg.sizeLimit;
+      if (typeof msg.sizeStep === 'number' && msg.sizeStep > 0) sizeStep = msg.sizeStep;
+      syncSize();
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
       if (archives) goBtn.disabled = false;
       break;

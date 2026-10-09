@@ -187,6 +187,11 @@ h1 b { color: var(--amber); font-weight: 400; }
 }
 .cell output { color: var(--amber); font-variant-numeric: tabular-nums; }
 
+.note {
+  margin: 9px 0 0; font: 400 12.5px/1.6 var(--sans); color: var(--ink-3);
+}
+.note:empty { display: none; }
+
 input, select, button { font: inherit; color: inherit; }
 
 input[type=number], select {
@@ -423,13 +428,11 @@ a.dl svg { width: 12px; height: 12px; }
           </select>
         </div>
 
-        <div class="cell"><label for="size">地图大小</label>
-          <select id="size">
-            <option value="0">小</option>
-            <option value="1" selected>中</option>
-            <option value="2">大</option>
-            <option value="3">特大</option>
-          </select>
+        <div class="cell"><label for="size">地图大小 <output id="size-out">1</output></label>
+          <!-- min/max/step are all replaced by app.js from the engine's
+               SizeSliderRange as soon as the worker reports ready; these are just
+               a sane pre-boot default.  The value is fractional on purpose. -->
+          <input id="size" type="range" min="0" max="3.6" value="1" step="0.1">
         </div>
 
         <div class="cell"><label for="players">玩家数</label>
@@ -466,6 +469,9 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
       </div>
+      <!-- Outside the grid on purpose: a note inside a cell makes that cell
+           taller and stretches every neighbour in the same row. -->
+      <p class="note" id="size-note"></p>
     </section>
 
   </div>
