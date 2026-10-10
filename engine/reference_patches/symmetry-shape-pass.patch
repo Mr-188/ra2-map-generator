@@ -34,16 +34,17 @@
  };
  
  // ============================================================================
-@@ -962,6 +982,8 @@
+@@ -962,6 +982,9 @@
      uint8_t ok;         // 1 stamped, 0 blocked
  };
  
 +unsigned long long MgShoreProfilePicked();
++unsigned long long MgShoreStyleFallback();
 +
  class RandomMapGenerator
  {
  public:
-@@ -1467,6 +1489,60 @@
+@@ -1467,6 +1490,60 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
  
@@ -104,7 +105,7 @@
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -2002,6 +2078,38 @@
+@@ -2002,6 +2079,38 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -139,10 +140,20 @@
 +    // not enough, because the original piece's occupied cells are its own mask, so
 +    // a transformed offset would index sub-images it does not have.
 +    int MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
-+                   bool* approximate = nullptr) const;
++                   bool* approximate = nullptr, bool* styleFallback = nullptr) const;
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
+@@ -2180,6 +2289,9 @@
+     GlobalMapOptions globalOptions_;
+ 
+     MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
++    // [移植侧] 对称：每个权威侧岸格记下自己的 roll，镜像格沿用同一签（见 SelectShoreTile）。
++    // 放进成员而不是文件级 static：浏览器 worker 会连续生成多张图，必须逐张清空。
++    std::map<uint32_t, int> shoreRoll_;
+     MapCell** cellSlots_;   // 512-stride pointer array with nullptr sentinel
+     int       slotRows_;    // slot array height (W' + H' + 1)
+     int       cellCount_;   // number of diamond cells
 --- a/MapGenerator/MapGen.cpp
 +++ b/MapGenerator/MapGen.cpp
 @@ -809,6 +809,25 @@
@@ -204,7 +215,46 @@
  // MapGenRiver.cpp - river / water-body subsystem of the random map generator
  //
  // Everything in this file was moved verbatim out of MapGen.cpp; the addresses
-@@ -3169,6 +3169,215 @@
+@@ -2172,7 +2172,37 @@
+ bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
+ {
+     // 0. One RNG draw per visited cell.
+-    const int roll = rng_.RandomFloatRange(0, 5);
++    // -----------------------------------------------------------------------
++    // [移植侧] 对称：镜像半场不自己抽签，改用镜像伙伴那一格的 roll 去走同一棵官方决策树。
++    //
++    // 地形已经对称，所以每格的 8 方向连通掩码本来就是镜像对应的；两半唯一的差别是哪次
++    // roll 落在谁头上。镜像格沿用伙伴的 roll，决策树就给出"同一随机输入下的对应输出" ——
++    // 两半的岸片变体因此一致（不再一边平滑、一边格纹）。
++    // 关键：镜像格照样消耗这次抽签（结果丢弃），随机流与 --symmetry 0 完全不受影响。
++    // -----------------------------------------------------------------------
++    const int ownRoll = rng_.RandomFloatRange(0, 5);
++    int roll = ownRoll;
++    if (config_.symmetry != mg::MapSymmetry::None && cell != nullptr)
++    {
++        const int rx = cell->MapCoords & 0xFFFF;
++        const int ry = (uint32_t)cell->MapCoords >> 16;
++
++        int mx = 0, my = 0;
++        if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, rx, ry, &mx, &my)
++            && !(rx < mx || (rx == mx && ry < my)))          // 这一格在镜像侧
++        {
++            const uint32_t key = static_cast<uint32_t>(mx)
++                               | (static_cast<uint32_t>(my) << 16);
++            std::map<uint32_t, int>::const_iterator it = shoreRoll_.find(key);
++            if (it != shoreRoll_.end())
++                roll = it->second;
++        }
++        else                                                 // 权威侧：记下自己的 roll
++        {
++            shoreRoll_[static_cast<uint32_t>(rx)
++                     | (static_cast<uint32_t>(ry) << 16)] = ownRoll;
++        }
++    }
+ 
+     // Trigger coordinates, used by the shore anchor / placement tail.
+     const int cellX = cell->MapCoords & 0xFFFF;
+@@ -3169,6 +3199,250 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -292,12 +342,28 @@
 +    return o;
 +}
 +
++// ---------------------------------------------------------------------------
++// [移植侧] 风格偏好表：水向吻合的候选往往不止一个，取哪一个？
++// 出处（实测）：对每片先筛"足印转置 + 水向吻合"的全部候选，再用渲染接近度
++// |渲染(P) − 水平翻转(渲染(Q))| 挑最像的（图库 28 片两两矩阵）。实测平均 36.9 -> 32.4
++// （省 12%：片 39 省 20.6、32 省 16.6、40 省 16.0、31 省 15.9）。0 = 无偏好。
++// ---------------------------------------------------------------------------
++static const unsigned char kShoreMirrorPreference[43] = {
++     0,  0,  3,  2,  0,  0,  0,  0, 33,
++    32, 27, 27,  0,  0,  0, 31, 24, 25,
++    19, 18,  0,  0,  0,  0, 16, 17, 10,
++    10,  0,  0,  0, 15,  8,  8, 40, 40,
++    39, 39, 37, 37, 34,  0,  0,
++};
++
 +// 按信息表（而不是"第一个匹配"）挑中对称件的次数 —— 失败/降级要看得见。
 +static unsigned long long g_shoreProfilePicked = 0;
++static unsigned long long g_shoreStyleFallback = 0;
 +unsigned long long MgShoreProfilePicked() { return g_shoreProfilePicked; }
++unsigned long long MgShoreStyleFallback() { return g_shoreStyleFallback; }
 +
 +int RandomMapGenerator::MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
-+                                   bool* approximate) const
++                                   bool* approximate, bool* styleFallback) const
 +{
 +    // The five multi-cell families.  kWaterfallFootprints is [4][4] and each row
 +    // is contiguous, so each compass family is its own run - a mirrored waterfall
@@ -355,14 +421,16 @@
 +    // piece can share a footprint exactly, and matching across them swaps a cliff
 +    // for a beach.  Measured before this was restricted: the decoded kind
 +    // distribution moved 474 cells from terrain to shore.
-+    // [移植侧] 对称：同族里若有多片共用这个转置足印，按"外围水向"挑，而不是撞第一个。
-+    // 只有海岸族有信息表（它是唯一逐格选片、且朝向直接影响水岸观感的族）。
++        // [移植侧] 对称：同族里若有多片共用这个转置足印，先按"外围水向"挑、再按风格偏好二级挑。
 +    if (shorePieces_ >= 0 && tile > shorePieces_ && tile < shorePieces_ + 43)
 +    {
-+        const unsigned char srcProf = kShoreWaterProfile[tile - shorePieces_ + 1];
++        const int srcIdx = tile - shorePieces_ + 1;
++        const unsigned char srcProf = kShoreWaterProfile[srcIdx];
 +        if (srcProf != 0)
 +        {
 +            const unsigned char want = MirrorWaterProfile(srcProf);
++            const int prefer = kShoreMirrorPreference[srcIdx];
++            int firstCand = -1, prefCand = -1;
 +            for (int k = 0; k < runs[ownRun].count; ++k)
 +            {
 +                const IsoFootprint& g = runs[ownRun].table[k];
@@ -373,6 +441,17 @@
 +                    continue;
 +                if (kShoreWaterProfile[cand - shorePieces_ + 1] != want)
 +                    continue;
++                if (firstCand < 0)
++                    firstCand = cand;
++                if (prefer != 0 && cand - shorePieces_ + 1 == prefer)
++                {
++                    prefCand = cand;
++                    break;
++                }
++            }
++            const int chosen = (prefCand >= 0) ? prefCand : firstCand;
++            if (chosen >= 0)
++            {
 +                if (inoutHeight != nullptr)
 +                {
 +                    const int off = *inoutHeight;
@@ -386,7 +465,13 @@
 +                    *inoutHeight = moved;
 +                }
 +                ++g_shoreProfilePicked;
-+                return cand;
++                if (prefCand < 0 && prefer != 0)
++                {
++                    ++g_shoreStyleFallback;
++                    if (styleFallback != nullptr)
++                        *styleFallback = true;
++                }
++                return chosen;
 +            }
 +        }
 +    }
@@ -420,7 +505,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +3951,55 @@
+@@ -3742,6 +4016,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -476,7 +561,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4020,45 @@
+@@ -3762,36 +4085,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -872,7 +957,7 @@
 +}
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,761 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1382,7 +1467,7 @@
 +    const int W = size_.mapWidth;
 +    const int H = size_.mapHeight;
 +
-+    long long cells = 0, turned = 0, approximated = 0;
++    long long cells = 0, turned = 0, approximated = 0, shoreKept = 0;
 +    for (int y = 0; y < slotRows_; ++y)
 +    {
 +        for (int x = 0; x < 512; ++x)
@@ -1405,16 +1490,24 @@
 +            int tile = a->IsoTileTypeIndex;
 +            int height = a->Height;
 +            bool approx = false;
-+            // [A/B 已测并撤销] 曾经试过"岸族的片不覆盖、留给生成器按各自几何自己选"，实测
-+            // 更差：渲染出来河岸变成细密格纹（build/render_test/coast_ab_compare.png 右列），
-+            // 而本 pass 换上去的那张（左列）是干净的大斜带。所以这里保持覆盖。
-+            const int partner = MirrorTile(tile, kind, &height, &approx);
++            // [移植侧] 岸族交还给生成器自己的镜像感知选择：SelectShoreTile 已让镜像半场用
++            // 镜像伙伴那一格的 roll 走同一棵官方决策树，选出来的片就是"同一随机输入下的对应
++            // 输出"（形状与变体都对应）。这里若再按"形状转置"覆盖一次，反而打散那份对应关系
++            // —— 实测两者同时开着时，roll 共享对最终图完全没有影响。
++            // （先前那次 A/B 结论是"交还更差"，但那时 roll 没有共享，镜像侧是另一次独立抽签。）
++            const bool isShore = shorePieces_ >= 0
++                && tile >= shorePieces_ && tile < shorePieces_ + 42;
++            const int partner = isShore ? -1 : MirrorTile(tile, kind, &height, &approx);
 +            if (partner >= 0)
 +            {
 +                tile = partner;
 +                ++turned;
 +                if (approx)
 +                    ++approximated;
++            }
++            else if (isShore)
++            {
++                ++shoreKept;
 +            }
 +            b->IsoTileTypeIndex = tile;
 +            b->Height = height;
@@ -1472,10 +1565,12 @@
 +                 "[symmetry] special: %s, copied %lld cell pairs whole, %lld art pieces "
 +                 "turned (%lld of them to a best-approximation piece - the tileset has no "
 +                 "exact mirrored partner for those; %llu coast pieces chosen by the measured "
-+                 "water-direction table); self-check %lld pairs, %lld disagree "
++                 "water-direction table, %llu of them by the style preference); %lld shore tiles left "
++                 "to the generator's own mirror-aware decision; self-check "
++                 "%lld pairs, %lld disagree "
 +                 "about water (water=%lld land=%lld other=%lld)\n",
 +                 mg::MapSymmetryName(kind), cells, turned, approximated,
-+                 MgShoreProfilePicked(), pairs, disagree,
++                 MgShoreProfilePicked(), MgShoreStyleFallback(), shoreKept, pairs, disagree,
 +                 water, land, other);
 +    return disagree == 0;
 +}
