@@ -15,7 +15,8 @@
 - [五、打包](#五打包)
 - [六、部署到 EdgeOne Makers（免费）](#六部署到-edgeone-makers免费)
 - [七、验证线上](#七验证线上)
-- [八、以后怎么更新](#八以后怎么更新)
+- [八、以后怎么更新（一条命令）](#八以后怎么更新一条命令)
+- [八点五、为什么不能"推 GitHub 就自动构建"](#八点五为什么不能推-github-就自动构建)
 - [九、日常开发](#九日常开发)
 - [十、出问题怎么查](#十出问题怎么查)
 
@@ -131,7 +132,7 @@ sh engine/build_render_web.sh
 
 ## 四、验收
 
-✅ 八套全绿，含**真实浏览器端到端**。
+✅ 十一套全绿，含**真实浏览器端到端**。
 
 ```sh
 sh tools/verify_all.sh
@@ -143,9 +144,12 @@ sh tools/verify_all.sh
 | `verify_extract` | 提取覆盖归档里所有被请求的 tile（954 个） |
 | `verify_oracle` | 参考管线出图，同种子逐字节可复现 |
 | `verify_wasm` | WASM 与原生**逐字节相同** |
+| `verify_size` | 尺寸上限由引擎单点决定，且它自己拒绝越界参数 |
+| `verify_symmetry` | 对称映射是双射、各族朝向闭合、生成出的图自身对称 |
 | `verify_render` | 散文件树渲染结果与用游戏 MIX 渲染**逐像素相同** |
 | `verify_webapi` | 浏览器入口契约成立，含 worker 的摊平+渲染流程 |
 | `verify_uicontract` | 页面和 worker 的消息词表一致 |
+| `verify_deploy` | 部署路径拒绝发布未构建/过期/空的字节，且 token 不进命令行（离线，用桩 CLI） |
 | `verify_browser` | **真实浏览器**里页面能生成 + 渲染 |
 
 **任何一条红了都不要往下走。**
@@ -163,13 +167,14 @@ sh tools/package_webapp.sh
 产出：
 
 ```
-build/webapp/        67 个文件 / 16 MB   ← 可直接部署
-build/webapp.zip     5.7 MB              ← 拖拽上传用（内容在根层）
+build/webapp/        69 个文件 / 16 MB   ← 可直接部署
+build/webapp.zip     5.7 MB             ← 拖拽上传用（内容在根层）
 ```
 
 脚本会：
 
 - 只拷该发布的文件（排除测试用的 `game` 符号链接和探针页面）
+- 带上 `edgeone.json`（给托管商看的规则：`.wasm` 的 Content-Type + 缓存策略）
 - 抹掉产物里烤进的**构建机路径**（Emscripten 的注释里带着 `/home/xxx/...`）
 - 检查有没有残留的绝对路径或本机 URL，**有就让构建失败**
 
@@ -177,7 +182,14 @@ build/webapp.zip     5.7 MB              ← 拖拽上传用（内容在根层�
 
 ## 六、部署到 EdgeOne Makers（免费）
 
-> ⚠️ **这一节的界面步骤来自腾讯官方文档，我没有账号，无法实测。** 命令行的部分我验证过。
+> **证据状态**：界面步骤来自腾讯官方文档，**没有账号，未实测**。
+> CLI 侧实测过的只有：`edgeone@1.6.41` 的参数表（`makers deploy`，`pages` 已弃用）、
+> 静态目录的本地构建阶段（只拷贝文件，不跑 npm）、`edgeone validate` 接受了
+> `webapp/edgeone.json` 的规则、以及无 token 时在上传前就失败（exit 1）。
+> **真正的上传没有跑过**——那需要一个属于你的 API Token（或 `edgeone login`）。
+> 所以每次部署都会自动调 `tools/verify_deployed.sh` 核对线上：13 个关键文件的
+> HTTP 状态和 Content-Type 对不上（尤其 `.wasm` 不是 `application/wasm`）就当场报错，
+> 而不是等你在浏览器里发现按钮是灰的。
 
 **为什么选它**：官网写明免费版"permanently available"，包含**自定义域名**和**免费 SSL 证书**；
 单文件上限 25 MB（我们最大 1.3 MB）；不用 Git，可以直接传文件夹。
@@ -191,11 +203,16 @@ build/webapp.zip     5.7 MB              ← 拖拽上传用（内容在根层�
 
 ### 6.2 上传
 
+> 这一步只做**一次**（创建项目）。之后的每次更新走第八节的一条命令，
+> 不用再拖文件；`tools/deploy_edgeone.sh` 部署到同名项目就是原地更新。
+
 解压 `build/webapp.zip`，把**里面的内容**（不是外层目录）拖进去。
 或者直接把 `build/webapp/` 目录整体拖上去。
 
 ⚠️ **必须保留目录结构**——`render/_framework/` 里有 59 个文件，拍平了就跑不起来。
 上传完在控制台里看一眼，`render/_framework/dotnet.js` 这个路径要存在。
+
+⚠️ 项目要是**直接上传**类型：命令行部署只能更新这种类型的项目（`edgeone makers deploy` 的帮助里明说了）。
 
 ### 6.3 绑定你的域名
 
@@ -214,9 +231,9 @@ build/webapp.zip     5.7 MB              ← 拖拽上传用（内容在根层�
 
 ### 6.4 缓存配置（建议）
 
-控制台里给 `render/_framework/*` 设置较长缓存（7 天），
-`index.html` / `app.js` / `worker.js` 保持不缓存或短缓存。
-`tools/deploy_cos.sh` 里有每个文件应该用的 `Cache-Control`，可以对照。
+`webapp/edgeone.json` 已经把这些规则写进仓库，部署时会一起上传，所以**控制台里不用手配**：
+`render/_framework/*` 缓存 7 天，`index.html` / `app.js` / `worker.js` 不缓存。
+想核对每个文件该用什么 `Cache-Control`，`tools/deploy_cos.sh` 里那份表是同样的口径。
 
 ---
 
@@ -247,16 +264,83 @@ WebAssembly**，页面会永远卡在"引擎加载中"。
 
 ---
 
-## 八、以后怎么更新
+## 八、以后怎么更新（一条命令）
 
-改完代码：
+✅ 脚本实测通过（离线部分 32 项断言；上传本身需要你的账号，见下）。
+
+改完代码之后：
 
 ```sh
-sh tools/verify_all.sh          # 八套全绿
-sh tools/package_webapp.sh      # 重新打包
+sh tools/deploy_edgeone.sh
 ```
 
-然后把 `build/webapp/` 的内容重新上传，或者推 Git 让 EdgeOne 自动构建。
+它按顺序做这几件事：
+
+1. **检查暂存产物是不是当前的** —— `webapp/mg_engine.wasm`、`webapp/render/` 比 `engine/src`、`engine/render` 旧就**拒绝发布**（提示该重跑哪个构建命令），而不是把旧字节传上去。
+2. **打包**（`tools/package_webapp.sh`）
+3. **体检**：引擎 wasm 小于 300 KB 就拒绝（那是 Emscripten 用错工具链时产出的 11 KB 空程序）；渲染器 `render/_framework` 少于 50 个文件或小于 10 MB 就拒绝；测试用的 `game` 软链在包里就拒绝。
+4. **上传**：`edgeone makers deploy`（`edgeone pages` 已弃用），只走环境变量传 token。
+5. **验证线上**：调 `tools/verify_deployed.sh`，逐个文件查 HTTP 状态和 **Content-Type**。
+
+### 8.1 一次性配置
+
+在项目根目录建 `.env`（**已在 `.gitignore`，别提交**），之后 `sh tools/deploy_edgeone.sh` 就是全部：
+
+```sh
+# .env
+EDGEONE_PROJECT=<控制台里那个项目名>
+EDGEONE_URL=https://你的域名/
+EDGEONE_API_TOKEN=<API Token>
+```
+
+- **项目名**：EdgeOne 控制台里那个项目的名字。用同一个名字部署就是**原地更新**，自定义域名和 HTTPS 证书都不用再配一遍。（命令行更新要求项目是**直接上传**类型——你当初就是拖拽上传的，符合。）
+  ⚠️ 名字写错**不会报错**：CLI 会直接新建一个项目，你的真实站点还在跑旧构建。脚本会拿日志里的
+  `Creating new project with name` 当场提醒你，别把那条警告当成成功。
+- **API Token**：控制台里创建，有效期可选 1 天～1 年（**建议设过期时间**）：
+  - **国内站**：<https://console.cloud.tencent.com/edgeone/pages?tab=api> → **API Token** 标签页 → **创建 API Token** → 填描述、选过期时间 → 提交。官方文档：<https://cloud.tencent.com/document/product/1552/127422>
+  - **国际站**：<https://console.tencentcloud.com/edgeone/pages>（`API Token` 标签页）→ 同样步骤。官方文档：<https://pages.edgeone.ai/zh/document/api-token>
+  - **不需要设置区域**：CLI 会拿这个 token 依次试 `pages-api.cloud.tencent.com`（国内站）和 `pages-api.edgeone.ai`（国际站），谁认就用谁。`-a` 是**新建项目**时才用到的属性（`Area`），更新已有项目用不上。
+  - `.env` 里写 `EDGEONE_API_TOKEN` 或 CLI 自己的名字 `EDGEONE_PAGES_API_TOKEN` 都可以。
+- **不想用 token** 也行：在本机跑一次 `npx edgeone@1.6.41 login`（国内站加 `--site china`，会开浏览器），登录态存在 `~/.edgeone`，脚本不带 token 也能部署。
+
+### 8.2 常用变体
+
+```sh
+sh tools/deploy_edgeone.sh --verify        # 先跑 tools/verify_all.sh，红了就不发布
+sh tools/deploy_edgeone.sh -e preview      # 先发到 preview 环境，拿预览 URL 试
+sh tools/deploy_edgeone.sh --dry-run       # 打包 + 体检 + 打印将要执行的命令，不上传
+sh tools/deploy_edgeone.sh --force         # 明知产物比源码旧也要发（慎用）
+```
+
+`--verify` 会重建引擎；想省时间就 `MG_SKIP_BUILD=1 sh tools/verify_all.sh` 复用已有构建。
+
+### 8.3 关于缓存
+
+`webapp/edgeone.json` 已经写好了规则：`*.wasm` 一律 `Content-Type: application/wasm`，
+`index.html` / `app.js` / `worker.js` / `mg_engine.js` 不缓存，14 MB 的渲染器缓存 7 天。
+如果浏览器里看着还是旧的（改完 `worker.js` 之后尤其容易），**Ctrl+Shift+R 硬刷新一次**。
+
+---
+
+## 八点五、为什么不能"推 GitHub 就自动构建"
+
+EdgeOne Pages 支持导入 Git 仓库、push 自动构建，但**这个项目用不了**，原因是硬的：
+
+1. 引擎是 C++ 编译出来的 wasm。构建要 **Emscripten 3.1.69**（本机发行版的版本会静默产出空程序）。
+2. 引擎的生成逻辑来自**参考 RMG 实现**，它**不在仓库里**（无许可证，红线 1），云端 checkout 拿不到。
+3. 渲染器是 CNCMaps 编成的 wasm，源码同样只在构建机上；而且它是 **GPL v3**，产物是构建输出、不入库。
+
+也就是说：**云端无论如何都造不出 `mg_engine.wasm` 和 `render/`**。能让云端部署的唯一办法，是先把这两个产物送到云端能读到的地方——而它们正是不能提交进仓库的东西。
+
+三条路，按推荐顺序：
+
+| 方案 | 怎么跑 | 代价 |
+|---|---|---|
+| **A. 本机一条命令**（推荐，已实现） | `sh tools/deploy_edgeone.sh` | 无。红线全部保持；只是"更新"这一步在本机跑 |
+| **B. GitHub Actions 部署** | 本机打包成 Release 资产 → Actions 在 tag/release 时下载并 `edgeone makers deploy` | 编译产物（含 GPL 的渲染器）要挂到**公开仓库的 Release** 上；碰红线 1 的边界，得你拍板。好处是 token 只存在 GitHub Secrets |
+| **C. 自托管 runner** | 在你这台机器上跑 GitHub Actions runner，push 后在本机构建并部署 | 真·push 即部署，但公开仓库 + 自托管 runner 意味着别人提 PR 就能在你机器上执行代码，风险明显更大 |
+
+**B 和 C 我都没有替你选**：它们各自要动红线或暴露本机，得你明确同意再动。A 已经能覆盖日常更新，且和现在这套验收完全一致。
 
 ---
 
@@ -292,6 +376,14 @@ node tools/verify_browser.mjs --game /path/to/RA2MD \
 | 卡在 `引擎加载中` 且 `.wasm` 是 200 | `.wasm` 的 Content-Type 不是 `application/wasm` |
 | 渲染出来了但页面没反应 | worker 发的消息类型页面没接（`verify_uicontract` 能提前抓到） |
 | 地图比预期小 25% | 剧场 tile 路径里的非 ASCII 被截断（musl 的 `vswprintf` 在 C locale 下的行为） |
+| 部署脚本说 REFUSING，提到某个 `engine/src/...` | 产物比源码旧，先按提示重跑构建；确认无误再用 `--force` |
+| 部署脚本说 wasm 只有 11 KB | 用错 Emscripten（本机发行版的 3.1.6）编出了空程序，用 `tools/emenv.sh` 里的 3.1.69 重建 |
+| `edgeone` 说项目类型不对 | 只有**直接上传**类型的项目能被 CLI 更新；Git 集成建的项目不行 |
+| 部署看着成功、线上却没变 | 项目名写错了，CLI 另外**新建**了一个项目（脚本会警告 `CREATED a new one`），去控制台核对名字 |
+| `Invalid EDGEONE_PAGES_API_TOKEN` | token 过期、复制不全，或用的是另一个站点的 token（国内站和国际站不通用） |
+| 部署成功但浏览器里还是旧页面 | `worker.js` / `app.js` 被浏览器缓存，Ctrl+Shift+R 硬刷新 |
+| `verify_deployed` 说 `.wasm` 不是 `application/wasm` | `edgeone.json` 的 headers 没生效（没随包上传，或被控制台规则覆盖） |
+| 命令里的 token 出现在别处 | 脚本只用环境变量传 token，不写进命令行；`.env` 已被 `.gitignore`，别手工 `git add` |
 
 **WASM 和原生不一致** → 一定是平台差异。已经踩过三个：
 MSVC 的 `%s` 是宽串而 glibc 是多字节；路径大小写与反斜杠；

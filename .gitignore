@@ -37,6 +37,14 @@ __pycache__/
 # Windows alternate-data-stream metadata that rides along with extracted files.
 *:Zone.Identifier
 
+# ---- deployment credentials -------------------------------------------------
+# tools/deploy_edgeone.sh reads the project name, the site URL and the API token
+# from .env; the token is an account credential and must never be committed.
+# (`edgeone` writes its own .edgeone/ state wherever it is run.)
+.env
+.env.local
+.edgeone/
+
 # ---- the browser test harness ---------------------------------------------
 node_modules/
 package.json

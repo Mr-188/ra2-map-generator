@@ -42,9 +42,14 @@ check_file() {
     checked=$((checked + 1))
     [ -n "$len" ] && total=$((total + len))
 
+    # A missing file must be reported as missing.  Reporting the Content-Type of
+    # the host's 404 page instead ("want text/javascript, got text/html") sends
+    # you looking for a MIME misconfiguration when the file simply is not there
+    # -- which is what a host that answers unknown paths with its 404 page does.
     status="ok"
-    [ "$code" != "200" ] && status="FAIL http=$code"
-    if [ -n "$want" ]; then
+    if [ "$code" != "200" ]; then
+        status="FAIL http=$code"
+    elif [ -n "$want" ]; then
         # application/javascript is the legacy spelling of text/javascript and
         # both are accepted by browsers; only a genuinely wrong type matters.
         alt=""

@@ -23,6 +23,14 @@ cp "$ROOT/webapp/index.html" "$OUT/"
 cp "$ROOT/webapp/app.js"     "$OUT/"
 cp "$ROOT/webapp/worker.js"  "$OUT/"
 
+# Host configuration, read by `edgeone makers deploy`: it pins
+# `Content-Type: application/wasm` for the engine and the renderer (a wasm
+# served as application/octet-stream is refused by streaming instantiation),
+# and keeps the small entry files revalidating while the 14 MB renderer caches.
+# Shipped inside the site so that it is found whether the CLI reads it from the
+# working directory or from the directory being deployed.
+cp "$ROOT/webapp/edgeone.json" "$OUT/"
+
 # The generator engine (engine/build_web.sh stages these).
 if [ ! -f "$ROOT/webapp/mg_engine.wasm" ]; then
     echo "[package] webapp/mg_engine.wasm is missing; run engine/build_web.sh" >&2

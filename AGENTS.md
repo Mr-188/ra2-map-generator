@@ -55,7 +55,7 @@ tools/wasm_entry    浏览器入口
 sh tools/verify_all.sh
 ```
 
-八套，全绿才算过：
+十一套，全绿才算过：
 
 | 套件 | 证明什么 |
 |---|---|
@@ -66,7 +66,10 @@ sh tools/verify_all.sh
 | `verify_render` | 散文件树渲染结果与用游戏 MIX 渲染**逐像素相同** |
 | `verify_webapi` | 浏览器入口契约，含 worker 的摊平 + 渲染流程 |
 | `verify_uicontract` | 页面与 worker 的消息词表一致 |
+| `verify_deploy` | 部署路径拒绝发布未构建/过期/空的字节，且 token 不进命令行（离线，桩 CLI） |
 | `verify_browser` | **真实浏览器**里页面能生成 + 渲染 |
+| `verify_size` | 尺寸上限由引擎单点决定，且它自己拒绝越界参数 |
+| `verify_symmetry` | 对称：映射是双射、各族朝向闭合、以及**生成出的图自身对称**（水/陆、海岸、矿、起点）且渲染不变暗 |
 
 **任何一条红了都不许往下走。** 加了新逻辑就加新套件，不要只靠肉眼。
 
@@ -88,6 +91,23 @@ Emscripten 不在机器上：`tools/fetch_emscripten.sh` 无 root 取，
 
 **改过参考实现就要重新生成 `engine/reference_patches/`**，否则改动只存在于这台机器上，
 别人克隆下来编译不过。`sh tools/apply_reference_patches.sh` 幂等应用。
+
+---
+
+## 部署
+
+```sh
+sh tools/deploy_edgeone.sh          # 检查产物新鲜度 → 打包 → 体检 → 上传 → 验证线上
+```
+
+EdgeOne Makers（Pages）。配置放在项目根的 `.env`（**已 gitignore**）：
+`EDGEONE_PROJECT` / `EDGEONE_URL` / `EDGEONE_API_TOKEN`；
+也可以先用 `npx edgeone@1.6.41 login` 登录，就不需要 token。
+
+**红线决定了部署方式**：`mg_engine.*` 和 `render/` 是构建输出（后者还是 GPL v3），
+一律不入库；而参考实现不在仓库里，云端 checkout 也造不出来。
+所以**没有"推 GitHub 自动构建"这条路**——只能在本机构建、只把成品字节发出去。
+细节和三个备选方案见 `docs/DEPLOY.md` 第八、八点五节。
 
 ---
 
