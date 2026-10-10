@@ -1213,7 +1213,17 @@
  }
  
  // ---------------------------------------------------------------------------
-@@ -612,6 +706,9 @@
+@@ -564,6 +658,9 @@
+         * (static_cast<double>(globalOptions_.vegetation) * 0.01)
+         * static_cast<double>(settings_.MaxTrees));
+ 
++    const bool symPatch = (config_.symmetry != mg::MapSymmetry::None);
++    long long mirroredPatches = 0;
++
+     int patches = 0;
+     while (remaining > 0)
+     {
+@@ -612,9 +709,35 @@
          }
          while (count < 10.0 || count > 35.0);
  
@@ -1222,8 +1232,34 @@
 +        // 指标反而变差（岛屿 21.2%->21.9%、内陆 39.8%->41.1%），所以撤回。
          remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
          ++patches;
++
++        // [移植侧] 对称：同一片也在镜像格撒一份（同尺寸、同数量）。落点是全局随机槽号，
++        // 两半本来互不成对，这是地面/植被纹理不对称的一处来源。
++        // 注意做法：**不减半**，而是把镜像那次撒下的树也计入预算 —— 密度因此不变，也就不必
++        // 依赖"只减半一次"（本函数在引擎里被调用两次，上次减半被执行两次、树少了一半）。
++        if (symPatch && chosenX != 0 && chosenY != 0)
++        {
++            int mx = 0, my = 0;
++            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                               chosenX, chosenY, &mx, &my))
++            {
++                MapCell* mc = CellAt(mx, my);
++                if (mc != nullptr && mc != CellAt(chosenX, chosenY) && IsPlaceholderTile(mc))
++                {
++                    remaining -= ScatterTrees(mc, F2I64(count), size);
++                    ++mirroredPatches;
++                }
++            }
++        }
      }
-@@ -672,13 +769,13 @@
++    if (symPatch)
++        std::fprintf(stderr,
++                     "[symmetry] green-patch: %lld tree patches also laid at the mirrored cell\n",
++                     mirroredPatches);
+ }
+ 
+ void RandomMapGenerator::ScatterRocks()
+@@ -672,13 +795,13 @@
              // inline reset has just set to 0.005 on every cell.
              const double density28 =
                  *reinterpret_cast<const double*>(w.data + 10);
@@ -1239,7 +1275,33 @@
              }
              while (size < 4.0 || size > 60.0);
  
-@@ -849,10 +946,14 @@
+@@ -689,6 +812,25 @@
+             PlaceBlob(cell, roughTileIndex_, F2I64(size),
+                       cell->MapCoords + (static_cast<int>(y) << 9), false,
+                       /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
++
++            // [移植侧] 对称：岩石斑块也在镜像中心盖一份（同尺寸，同样避开出生点）。
++            // ScatterRocks 是直接调 PlaceBlob 的，没走 ScatterLATBlobs 里那个已成对处理的
++            // lambda，所以这里单独补一次 —— 抽签与扩散都会经过 MirrorSharedValue 按格共享，
++            // 因此镜像那份长成精确镜像。
++            if (config_.symmetry != mg::MapSymmetry::None)
++            {
++                const int bx = cell->MapCoords & 0xFFFF;
++                const int by = static_cast<uint32_t>(cell->MapCoords) >> 16;
++                int mx = 0, my = 0;
++                if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, bx, by, &mx, &my))
++                {
++                    MapCell* mc = CellAt(mx, my);
++                    if (mc != nullptr && mc != cell)
++                        PlaceBlob(mc, roughTileIndex_, F2I64(size),
++                                  mc->MapCoords + (static_cast<int>(my) << 9), false,
++                                  /*avoidStartClear=*/true);
++                }
++            }
+         }
+     }
+ 
+@@ -849,10 +991,14 @@
              const double dx = static_cast<double>(seedX - nx);
              const double dy = static_cast<double>(seedY - ny);
              const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
