@@ -957,7 +957,7 @@
 +}
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,761 @@
+@@ -0,0 +1,765 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1507,6 +1507,10 @@
 +            }
 +            else if (isShore)
 +            {
++                // [移植侧] 已测并否决：试过把岸格的片内偏移也按镜像转置（想让两半从
++                // "平移"变成"镜像"）。实测更差且自检变红：镜像是 13.1 -> 18.1（中位
++                // 12.9 -> 18.8），并且 Height 参与水/陆判定，转置后 6952 对全部报
++                // "disagree about water"（原本 0）。所以岸格保持生成器给的原样。
 +                ++shoreKept;
 +            }
 +            b->IsoTileTypeIndex = tile;
