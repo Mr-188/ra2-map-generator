@@ -105,7 +105,7 @@
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -2002,6 +2079,38 @@
+@@ -2002,6 +2079,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -139,18 +139,25 @@
 +    // piece whose mask does not cover the cell.  Both matter: the offset alone is
 +    // not enough, because the original piece's occupied cells are its own mask, so
 +    // a transformed offset would index sub-images it does not have.
++    // [移植侧] 对称：把某个随机抽签的**取值**换成镜像伙伴在同一点上的取值。
++    // 调用方照常抽（随机流与 --symmetry 0 完全不受影响），只有值被替换 —— 于是两半的
++    // 纹理/植被决策是"同一随机输入下的对应输出"。site 是抽签点编号（不按次数配对，
++    // 避免两半抽签次数不同时错位）。
++    double MirrorSharedValue(double own, const MapCell* cell, int site);
++
 +    int MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
 +                   bool* approximate = nullptr, bool* styleFallback = nullptr) const;
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2289,9 @@
+@@ -2180,6 +2295,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
 +    // [移植侧] 对称：每个权威侧岸格记下自己的 roll，镜像格沿用同一签（见 SelectShoreTile）。
 +    // 放进成员而不是文件级 static：浏览器 worker 会连续生成多张图，必须逐张清空。
 +    std::map<uint32_t, int> shoreRoll_;
++    std::map<unsigned long long, double> sharedDraws_;
      MapCell** cellSlots_;   // 512-stride pointer array with nullptr sentinel
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
@@ -955,9 +962,145 @@
 +                 "evened out\n", mg::MapSymmetryName(kind), pairs);
 +    return true;
 +}
+--- a/MapGenerator/MapGenLAT.cpp
++++ b/MapGenerator/MapGenLAT.cpp
+@@ -235,6 +235,34 @@
+     return tile >= clearToSandLatIndex_ && tile < clearToSandLatIndex_ + 16;
+ }
+ 
++
++// ---------------------------------------------------------------------------
++// [移植侧] 对称：随机抽签取值的镜像共享。见 MapGen.h 的说明。
++// 调用方先照常抽签（own），再把值送进来；镜像侧返回伙伴在**同一个抽签点**上的值。
++// ---------------------------------------------------------------------------
++double RandomMapGenerator::MirrorSharedValue(double own, const MapCell* c, int site)
++{
++    if (config_.symmetry == mg::MapSymmetry::None || c == nullptr)
++        return own;
++    const int rx = c->MapCoords & 0xFFFF;
++    const int ry = static_cast<uint32_t>(c->MapCoords) >> 16;
++    int mx = 0, my = 0;
++    if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, rx, ry, &mx, &my))
++        return own;
++    const bool canonical = (rx < mx || (rx == mx && ry < my));
++    const unsigned long long key =
++        static_cast<unsigned long long>(canonical ? rx : mx)
++      | (static_cast<unsigned long long>(canonical ? ry : my) << 16)
++      | (static_cast<unsigned long long>(static_cast<unsigned>(site) + 1) << 32);
++    if (canonical)
++    {
++        sharedDraws_[key] = own;
++        return own;
++    }
++    const std::map<unsigned long long, double>::const_iterator it = sharedDraws_.find(key);
++    return (it != sharedDraws_.end()) ? it->second : own;
++}
++
+ void RandomMapGenerator::ScatterLATBlobs()
+ {
+     if (cellSlots_ == nullptr || workCells_ == nullptr)
+@@ -388,12 +416,25 @@
+     }
+     while (overlayCount > overlayRange);                  // 0x5a4119
+ 
++    // [移植侧] 对称：落点是"全局随机槽号"，两半本来互不成对（这正是地面纹理不对称的
++    // 主要来源）。改成"撒一处、同时在镜像格撒同类型"，并把目标数量减半以保持密度。
++    const bool symPlant = (config_.symmetry != mg::MapSymmetry::None);
++    const int overlayTarget = symPlant ? (overlayCount + 1) / 2 : overlayCount;
++
+     int successes = 0;                                    // v37
+     int attempts = 0;                                     // v35
++    long long mirroredPlantings = 0;
+     for (;;)
+     {
+-        if (successes >= overlayCount)                    // 0x5a4133
++        if (successes >= overlayTarget)                   // 0x5a4133
++        {
++            if (symPlant)
++                std::fprintf(stderr,
++                             "[symmetry] lat-plant: %lld mirrored plantings (same type at the "
++                             "mirrored cell), target %d of %d\n",
++                             mirroredPlantings, overlayTarget, overlayCount);
+             return;
++        }
+ 
+         // A random work slot whose packed coords are not (0,0) - no attempt cap
+         // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
+@@ -434,7 +475,7 @@
+                 int pick;
+                 do
+                 {
+-                    pick = F2I64(uniform() * 5.0);
++                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 1));
+                 }
+                 while (pick > 4);
+                 type = pick + 168;
+@@ -445,14 +486,34 @@
+                 int pick;
+                 do
+                 {
+-                    pick = F2I64(uniform() * 5.0);
++                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 2));
+                 }
+                 while (pick > 4);
+                 type = pick + 173;
+             }
+ 
+             if (type >= 0)
++            {
+                 cell->OverlayTypeIndex = type;            // 0x5a424c
++                if (symPlant)
++                {
++                    int mx = 0, my = 0;
++                    if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                                       ovX, ovY, &mx, &my))
++                    {
++                        MapCell* mcell = CellAt(mx, my);
++                        if (mcell != nullptr && mcell != cell
++                            && mcell->OverlayTypeIndex == -1
++                            && !IsStartClearArea(mx, my)
++                            && (mcell->AltFlags & AltCellFlags_ContainsBuilding) == 0)
++                        {
++                            mcell->OverlayTypeIndex = type;
++                            RecalcAttributes(mcell, -1);
++                            ++mirroredPlantings;
++                        }
++                    }
++                }
++            }
+ 
+             // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
+             // model and never writes - a no-op here.
+@@ -672,13 +733,13 @@
+             // inline reset has just set to 0.005 on every cell.
+             const double density28 =
+                 *reinterpret_cast<const double*>(w.data + 10);
+-            if (uniform() >= density28)
++            if (MirrorSharedValue(uniform(), cell, 3) >= density28)
+                 continue;
+ 
+             double size;
+             do                                              // 0x5a439a - 0x5a43ba
+             {
+-                size = rng_.Gaussian() * 15.0 + 20.0;
++                size = MirrorSharedValue(rng_.Gaussian() * 15.0 + 20.0, cell, 4);
+             }
+             while (size < 4.0 || size > 60.0);
+ 
+--- a/MapGenerator/MapGenCleanup.cpp
++++ b/MapGenerator/MapGenCleanup.cpp
+@@ -45,6 +45,8 @@
+ 
+ void RandomMapGenerator::Cleanup()
+ {
++    shoreRoll_.clear();   // 逐张图清空（浏览器 worker 会连跑多张）
++    sharedDraws_.clear();
+     // ---- 0x5993BB - 0x5993D0: the work array ------------------------------
+     delete[] workCells_;
+     workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,781 @@
+@@ -0,0 +1,812 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1236,6 +1379,37 @@
 +// ===========================================================================
 +bool RandomMapGenerator::MirrorMap(mg::MapSymmetry kind)
 +{
++    // -----------------------------------------------------------------------
++    // [移植侧] 已测并否决：纹理级"整半场镜像"（把 1x1 单格瓦片从权威半场镜像过来）。
++    //
++    // 动机仍然是那个差距：官方手绘对称图（画面竖中线为轴，左半 vs 右半翻转）12.1 / >20 19.3%
++    // / 暗像素 0.09%，我们当前 20.3 / 40.4% / 0.05%，差在 20~60 那段纹理。
++    //
++    // 结果：纹理确实镜像上了（>20 从 40.4% 降到 28.8%，接近官方），**但暗像素 0.05% -> 2.09%**，
++    // 又是黑缝。连同这一版共试了四种变体，全都这样：
++    //   ① 只搬 瓦片+子帧+坡面号；② 跳过岸族；③ 整格结构拷贝（保留自身坐标）；
++    //   ④ 只搬 1x1、多格族全跳过（本版）。
++    // 结论：**事后重写镜像半场的瓦片层，这个引擎就会撕出黑缝**；瓦片必须由生成器自己的 pass
++    // 写（这也与更早那次"只抄 1x1 岸/水瓦片 -> 3.97%"一致）。
++    //
++    // 所以纹理那一半差距只能从**源头**补：让各个生成 pass 自己的随机决策也镜像共享
++    // （岸片已经这样做了，效果最大：镜像海岸对中位 24.6 -> 12.9），而不是事后搬瓦片。
++    // -----------------------------------------------------------------------
++
++    // -----------------------------------------------------------------------
++    // [移植侧] 已测并否决：把权威半场的**逐格瓦片数据整份镜像**到对面（整半场镜像）。
++    //
++    // 动机：官方手绘对称图在同一把尺子（以画面竖中线为轴，左半 vs 右半翻转）上是
++    // 平均差 12.1、差异>20 占 19.3%、暗像素 0.09%；我们当前是 20.3 / 40.4% / 0.05%。
++    // 差的正是 20~60 那一段纹理（>60 的大差异两边都是 3%，说明几何本来就对）。
++    //
++    // 结果：纹理确实镜像上了 —— 差异>20 从 40.4% 降到 28.9%/31.5%（接近官方 19.3%）——
++    // **但冒出黑缝：暗像素 0.05% -> 2.13%**。试过三种变体都一样：
++    //   ① 只搬 瓦片+子帧+坡面号；② 跳过岸族；③ 整格结构拷贝（保留自身坐标）。
++    // 说明还有某个参与渲染、又不在 MapCell 里的层没有跟着镜像（还没定位到）。
++    // 按"渲染为准"，黑缝不可接受，故撤销，行为保持当前已推送的版本。
++    // -----------------------------------------------------------------------
++
 +    // -----------------------------------------------------------------------
 +    // [移植侧] 海岸的镜像化到这里为止（本 pass 不再动岸片）。三层都量过：
 +    //
