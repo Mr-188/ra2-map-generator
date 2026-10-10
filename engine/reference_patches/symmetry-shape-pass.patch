@@ -751,6 +751,56 @@
                  continue;
  
              west->Level -= 4;                             // 0x5a1b67
+@@ -4626,9 +4669,18 @@
+     }
+ 
+     // ---- 2. How many to fill (0x59b8xx) -----------------------------------
++    // [移植侧] 对称：填绿这一步用 rng_.Next() 随机挑 pending 里的格子，两半本来各挑各的
++    // —— 这正是"第一次真差异"（--diag-symmetry 实测：跳过本函数后 MakeRegions 的
++    // crossFam/markerBad 都是 0）。改成"挑一格、同时在镜像格填同一张绿地瓦片，并把镜像格
++    // 的邻居也并入扩散队列"，于是两半的填绿过程完全同步；目标数量减半以保持总量。
++    // 本函数只被调用一次，减半不会重复生效。
++    const bool symFill = (config_.symmetry != mg::MapSymmetry::None);
+     int target = static_cast<int>(pending.size()) / 3;    // 0x59b8xx
++    if (symFill)
++        target = (target + 1) / 2;
+     if (target > 1000)
+         target = 1000;                                    // 0x59b8xx
++    long long mirroredFills = 0;
+ 
+     // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
+     for (int n = 0; n < target; ++n)
+@@ -4654,5 +4706,30 @@
+             if (IsPlaceholderTile(nb))
+                 pending.push_back(nb);
+         }
++
++        if (symFill)
++        {
++            const int cx = cell->MapCoords & 0xFFFF;
++            const int cy = static_cast<uint32_t>(cell->MapCoords) >> 16;
++            int mx = 0, my = 0;
++            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, cx, cy, &mx, &my))
++            {
++                MapCell* mc = CellAt(mx, my);
++                if (mc != nullptr && mc != cell && IsPlaceholderTile(mc))
++                {
++                    mc->IsoTileTypeIndex = greenTileIndex_;
++                    for (int facing = 0; facing < 8; facing += 2)
++                    {
++                        MapCell* nb = GetNeighbourCell(mc, facing);
++                        if (IsPlaceholderTile(nb))
++                            pending.push_back(nb);
++                    }
++                    ++mirroredFills;
++                }
++            }
++        }
+     }
++    if (symFill)
++        std::fprintf(stderr, "[symmetry] fill-green: %lld mirrored placeholder fills\n",
++                     mirroredFills);
+ }
 --- a/MapGenerator/MapGenHills.cpp
 +++ b/MapGenerator/MapGenHills.cpp
 @@ -74,9 +74,12 @@
