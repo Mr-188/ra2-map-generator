@@ -146,6 +146,32 @@ EMSCRIPTEN_KEEPALIVE int mg_rect_max_sum()
     return RandomMapGenerator::MaxRectCellSum();
 }
 
+// The kinds of symmetry the page may offer - the ones the pass actually applies,
+// not the enum's limit.  The enum, its derivation and the measurements that decide
+// which kinds exist at all live in engine/src/mirror.h; the page asks rather than
+// carrying a copy.
+EMSCRIPTEN_KEEPALIVE int mg_symmetry_max()
+{
+    return mg::kMapSymmetryImplementedMax;
+}
+
+// How many cells an explicit rectangle actually puts in the map.  The iso grid is
+// (mapWidth * 2 - 1) columns wide by mapHeight tall, so the diamond holds
+// (2 * mapWidth - 1) * mapHeight cells -- the same number tools/decode.py reads
+// back out of the written file.  The page used to label width * height as "格",
+// but that is the *visible* rect, about half the cells the map really contains;
+// the arithmetic lives here so the readout cannot drift from the writer.
+EMSCRIPTEN_KEEPALIVE int mg_rect_cells(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return 0;
+    MapGenConfig cfg = {};
+    cfg.widthCells = width;
+    cfg.heightCells = height;
+    const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
+    return (2 * ms.mapWidth - 1) * ms.mapHeight;
+}
+
 // Materialises the generator's loose-file tree in MEMFS from the registered
 // archives.  Returns 0 on success.
 EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
@@ -179,12 +205,22 @@ EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
 EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, double size, int players,
                                      int ore, int water, unsigned seed,
                                      unsigned mapSeed, int single,
-                                     int width, int height,
+                                     int width, int height, int symmetry,
                                      const char* outPath)
 {
     g_error.clear();
     const std::string root = g_root;
     mg_win32::setModulePath(root + "/x64/Release/MapGenerator.exe");
+
+    // Refuse a kind the pass does not apply up front: it would be refused anyway,
+    // but only after a whole map had been generated.  The bound is the implemented
+    // maximum (engine/src/mirror.h), the same one mg_symmetry_max() reports and
+    // mgconsole checks, so phase 2 moves one constant.
+    if (symmetry < 0 || symmetry > mg::kMapSymmetryImplementedMax)
+    {
+        g_error = "symmetry not implemented yet";
+        return 2;
+    }
 
     // A FRESH generator per call, exactly as the reference GUI does it: WinMain
     // constructs one inside its generate handler (WinMain.cpp:463).  Holding it
@@ -204,6 +240,7 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     cfg.playerCount = players;
     cfg.oreDensity = ore;
     cfg.multiplayer = single ? false : true;
+    cfg.symmetry = static_cast<mg::MapSymmetry>(symmetry);
 
     // Refuse a size the writer would silently truncate, using the engine's own
     // tables rather than a second copy of them.
@@ -250,6 +287,11 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     if (cfg.landType == LandType::Inland || cfg.landType == LandType::Mountainous)
     {
         if (rmg.GetWaterAmount() != 0) rmg.GenerateSpecialTerrain();
+        if (!rmg.MirrorSpecialTerrain(cfg.symmetry))
+        {
+            g_error = "MirrorSpecialTerrain failed";
+            return 8;
+        }
     }
     else
     {
@@ -262,12 +304,25 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     rmg.CreateStartingPoints();
     rmg.AddTechBuildings();
     rmg.AddTiberium();
+    if (!rmg.MirrorOverlays(cfg.symmetry))
+    {
+        g_error = "MirrorOverlays failed";
+        return 9;
+    }
     rmg.RecalculateCellAttributes();
     rmg.RecalculateCellAttributes();
     rmg.CreateHills();
     rmg.CreateLATs();
     rmg.RecalculateCellAttributes();
     rmg.PruneTerrainTrees();
+    // [移植侧] The symmetry pass, at the same point the native driver uses it:
+    // after every RNG-consuming and disassembly-derived stage, before the radar
+    // and the writer (both of which rebuild what they need from the cells).
+    if (!rmg.MirrorMap(cfg.symmetry))
+    {
+        g_error = "MirrorMap failed";
+        return 6;
+    }
     rmg.Cleanup();
     rmg.ComputeRadarImage();
     rmg.Done();

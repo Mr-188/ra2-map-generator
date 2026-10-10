@@ -96,6 +96,26 @@ try {
   check('engine ready', true);
   check('worker is classic', workers.length > 0, workers.join(','));
 
+  // The 对称 select must be driven by the engine's own answer: the ready message
+  // carries mg_symmetry_max() (= 2: left-right and 180 degrees both apply now), so
+  // all three options have to end up usable.  This is the point of the plumbing:
+  // the page must not offer a kind the generator then refuses, and must not hide
+  // one it can do.
+  const sym = await page.evaluate(() => {
+    const s = document.getElementById('symmetry');
+    if (!s) return null;
+    return {
+      values: [...s.options].map((o) => o.value),
+      disabled: [...s.options].map((o) => o.disabled),
+      value: s.value,
+    };
+  });
+  check('the page offers exactly the symmetry the engine implements',
+        sym !== null && sym.values.join(',') === '0,1,2'
+          && sym.disabled.every((d) => d === false) && sym.value === '0',
+        sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
+              + `selected ${sym.value}` : 'no #symmetry select');
+
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
   // ignores it and the FileList stays empty.  Instead fetch the archives over
   // HTTP and build real File objects in the page, then hand them to the same
@@ -192,6 +212,12 @@ try {
     h.value = '100';
     w.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  // The readout is the engine's own cell count, which the page asks the worker
+  // for (mg_rect_cells), so it arrives a message later -- wait for the answer
+  // instead of sampling the "…" that is still in flight.
+  await page.waitForFunction(
+    () => !/…/.test(document.getElementById('size-out')?.textContent || ''),
+    { timeout: 15000 });
   const rectUi = await page.evaluate(() => ({
     w: document.getElementById('rect-w').value,
     h: document.getElementById('rect-h').value,
@@ -216,6 +242,58 @@ try {
         size ? `engine wrote Size=0,0,${size[0]},${size[1]}` : 'no map bytes captured');
   check('rect exceeds the square cap', Array.isArray(size) && size[0] > 247,
         size ? `width ${size[0]} vs the ~247 square cap` : 'no map bytes captured');
+
+  // The readout must be the cell count the writer really emitted, not the visible
+  // rect the page used to print (380 x 100 = 38,000).  The map is the diamond of
+  // its iso bounding box, so it holds (2 * Size.width - 1) * Size.height cells --
+  // the count tools/decode.py reads back out of a written map, and the number the
+  // page gets from the engine rather than deriving itself.
+  if (Array.isArray(size)) {
+    const want = `${((2 * size[0] - 1) * size[1]).toLocaleString('en-US')} 格`;
+    const outNow = await page.evaluate(() => document.getElementById('size-out').textContent);
+    check("size readout is the written map's cell count", outNow === want,
+          `page showed "${outNow}", the map holds ${want}`);
+  }
+
+  // The 对称 select has to reach the ENGINE through the worker, not merely exist.
+  // The same rectangle is generated again with only the symmetry changed, so the
+  // two maps are directly comparable, and the [Waypoints] section is the smallest
+  // part of the file that proves the mirror applied: the writer stores start
+  // points as X + 1000*Y (MapGenMapFile.cpp:1092), so a left-right mirror swaps
+  // the two fields of every waypoint and nothing else.
+  const readBlob = () => page.evaluate(async () => {
+    if (!window.__mapBlob) return null;
+    return Array.from(new Uint8Array(await window.__mapBlob.arrayBuffer()));
+  });
+  const plain = await readBlob();
+  await page.select('#symmetry', '1');
+  await page.evaluate(() => { window.__mapBlob = null; });
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const mirroredBytes = await readBlob();
+
+  const waypoints = (bytes) => {
+    if (!bytes) return [];
+    const text = new TextDecoder('latin1').decode(Buffer.from(bytes));
+    const section = (text.split('[Waypoints]')[1] || '').split('\n\n')[0];
+    return section.split('\n').filter((l) => l.includes('='))
+      .map((l) => l.split('=').map((n) => Number(n)));
+  };
+  const wa = waypoints(plain);
+  const wb = waypoints(mirroredBytes);
+  // X + 1000*Y -> Y + 1000*X, i.e. the cell's two coordinates swapped.
+  const swapped = (packed) => (packed % 1000) * 1000 + Math.floor(packed / 1000);
+  // What the symmetric map must show is NOT "each waypoint equals the mirror of the
+  // plain map's own".  A pairwise swap produces exactly that, and a swap is not a
+  // symmetric map: it preserves whether a pair agrees.  The property is that the
+  // symmetric map's own start points come in mirror pairs, with the count preserved
+  // (a 2-player map has to stay a 2-player map).
+  const cells = wb.map(([, v]) => v);
+  const paired = cells.length > 0 && cells.every((v) => cells.includes(swapped(v)));
+  check("the page's 对称 option reaches the engine",
+        wb.length > 0 && wb.length === wa.length && paired,
+        `waypoints ${JSON.stringify(wa)} -> ${JSON.stringify(wb)} ` +
+        `(mirror-paired within the symmetric map: ${paired}, count)`);
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);

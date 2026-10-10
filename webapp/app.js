@@ -96,7 +96,12 @@ let sizeMax = null;
 let sizeLimit = null;
 let sizeStep = 0.1;        // replaced by the engine's kSizeSliderStep at boot
 let rectMaxSum = 495;      // replaced by the engine's MaxRectCellSum() at boot
+let symmetryMax = 1;       // replaced by the engine's mg_symmetry_max() at boot
 let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × 宽)
+// The engine's own cell count for one explicit pair, as { w, h, cells }.  w/h are
+// carried so a reply that arrives after the inputs changed can be recognised as
+// stale instead of being shown as if it described the current map.
+let rectCells = null;
 
 const sizeInput = el('size');
 const sizeOut = el('size-out');
@@ -126,6 +131,22 @@ function clampedRect() {
   return { w, h };
 }
 
+// The readout for an explicit rectangle.  `cells` is the engine's count for the
+// pair sitting in the inputs right now; until that answer arrives -- or while a
+// reply for a pair the user has already edited away is in flight -- it says so,
+// rather than printing a number that is not what the map will contain.
+function showRectSize(w, h) {
+  const known = rectCells && rectCells.w === w && rectCells.h === h;
+  const cells = known ? rectCells.cells : null;
+  const cellsText = cells === null ? '…' : group(cells);
+  sizeOut.value = cells === null ? '…' : `${group(cells)} 格`;
+  sizeNote.textContent =
+    `地图大小：长 ${w} × 宽 ${h}，引擎实际写出 ${cellsText} 格`
+    + `（可见区 ${group(w * h)} 格）。`
+    + `引擎把长 + 宽限制在 ${rectMaxSum} 以内（overlay 网格按两者之和寻址）；`
+    + `方图的边长上限约 247，所以这种长宽比能做出方图做不到的尺寸。`;
+}
+
 function setSizeMode(mode) {
   sizeMode = mode;
   for (const b of sizeModeBox.querySelectorAll('button')) {
@@ -145,13 +166,14 @@ function syncSize() {
     const { w, h } = clampedRect();
     rectW.value = String(w);
     rectH.value = String(h);
-    // The area is the readout: it is what "how big is this map" actually means,
-    // and the diamond's cell count is 2*w*h, so w*h orders maps correctly.
-    sizeOut.value = `${group(w * h)} 格`;
-    sizeNote.textContent =
-      `地图大小：长 ${w} × 宽 ${h}，面积约 ${group(w * h)} 格。`
-      + `引擎把长 + 宽限制在 ${rectMaxSum} 以内（overlay 网格按两者之和寻址）；`
-      + `方图的边长上限约 247，所以这种长宽比能做出方图做不到的尺寸。`;
+    // The engine owns the grid arithmetic (mg_rect_cells).  This used to label
+    // w * h as 格, but that is the *visible* rect -- the diamond the writer emits
+    // holds about twice as many cells, and the readout disagreed with the file.
+    // Asking is one postMessage; the answer is a few instructions.
+    if (booted && (!rectCells || rectCells.w !== w || rectCells.h !== h)) {
+      worker.postMessage({ type: 'rect-cells', width: w, height: h });
+    }
+    showRectSize(w, h);
     return;
   }
 
@@ -179,6 +201,17 @@ function syncSize() {
   sizeNote.textContent = (legal - useful) > 1
     ? '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆与山地没有这个上限。'
     : '';
+}
+
+// The page offers 无 / 左右轴对称.  Anything above what the engine reports gets
+// disabled rather than offered and then refused: engine/src/mirror.h derives and
+// tests the 180-degree mapping, but the pass does not apply it yet.
+function syncSymmetry() {
+  const sel = el('symmetry');
+  for (const opt of sel.options) {
+    opt.disabled = Number(opt.value) > symmetryMax;
+  }
+  if ((Number(sel.value) || 0) > symmetryMax) sel.value = '0';
 }
 
 sizeModeBox.addEventListener('click', (e) => {
@@ -238,6 +271,7 @@ worker.addEventListener('message', async (event) => {
       if (Array.isArray(msg.sizeLimit)) sizeLimit = msg.sizeLimit;
       if (typeof msg.sizeStep === 'number' && msg.sizeStep > 0) sizeStep = msg.sizeStep;
       if (typeof msg.rectMaxSum === 'number' && msg.rectMaxSum > 0) rectMaxSum = msg.rectMaxSum;
+      if (typeof msg.symmetryMax === 'number') { symmetryMax = msg.symmetryMax; syncSymmetry(); }
       syncSize();
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
       if (archives) goBtn.disabled = false;
@@ -251,6 +285,13 @@ worker.addEventListener('message', async (event) => {
       break;
     case 'assets-ready':
       setStatus('素材已就绪。');
+      break;
+    case 'rect-cells':
+      // The engine's answer for one 长 × 宽 pair.  Recorded with its pair so a
+      // reply that overtook an edit is recognised as stale; syncSize() only
+      // re-asks when the inputs no longer match what it holds.
+      rectCells = { w: msg.width, h: msg.height, cells: msg.cells };
+      if (sizeMode === 'rect') syncSize();
       break;
     case 'map': {
       mapBytes = msg.bytes;
@@ -522,6 +563,10 @@ goBtn.addEventListener('click', () => {
     // 0/0 tells the engine to use `size`; anything else is an explicit rectangle.
     width: sizeMode === 'rect' ? clampedRect().w : 0,
     height: sizeMode === 'rect' ? clampedRect().h : 0,
+    // 0 = none, 1 = left-right.  180 degrees is derived and tested in
+    // engine/src/mirror.h but the pass does not apply it yet, so the page does
+    // not offer it; syncSymmetry() disables anything above what the engine says.
+    symmetry: Number(el('symmetry').value) || 0,
     outPath,
   };
 

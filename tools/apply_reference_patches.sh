@@ -30,10 +30,32 @@ for p in "$DIR"/*.patch; do
     found=1
     name=$(basename "$p")
 
-    # Already applied?  A clean reverse-dry-run means the patch is in place.
-    if patch -p1 -R --dry-run -d "$PARENT" < "$p" >/dev/null 2>&1; then
+    # Already applied?  Ask in BOTH directions, because a later patch in this
+    # directory may legitimately change the context an earlier one needs:
+    #   * a clean reverse dry-run means the patch is in place;
+    #   * otherwise, a forward dry-run that patch refuses as "reversed or
+    #     previously applied" means the same thing.
+    # Deciding with dry runs alone is deliberate.  A real forward run against an
+    # already-applied patch cannot ask, so it skips the hunks and writes .rej
+    # files into reference_impl/, leaving the tree littered and the script
+    # reporting success.  -r /dev/null means even a failing dry run cannot write
+    # anything.
+    if patch -p1 -R --dry-run -r /dev/null -d "$PARENT" < "$p" >/dev/null 2>&1; then
         echo "  [skip]  $name (already applied)"
         continue
+    fi
+    forward=$(patch -p1 --dry-run -r /dev/null -d "$PARENT" < "$p" 2>&1) || true
+    if printf '%s\n' "$forward" | grep -q "previously applied"; then
+        echo "  [skip]  $name (already applied)"
+        continue
+    fi
+    if printf '%s\n' "$forward" | grep -q "FAILED"; then
+        # Say so instead of applying half of it: this is what "the patches do not
+        # fit this copy of the reference sources" looks like.
+        echo "  [FAIL]  $name does not fit $PARENT" >&2
+        printf '%s\n' "$forward" | sed 's/^/          /' >&2
+        echo "          the sources are probably not the revision these patches were made against" >&2
+        exit 1
     fi
 
     echo "  [apply] $name"

@@ -10,11 +10,16 @@
 #   verify_extract  it materialises the same loose-file tree the generator reads
 #   verify_oracle   the reference pipeline produces a rich, deterministic map
 #   verify_wasm     the same pipeline in wasm is byte-identical to native
+#   verify_size     the size limits have one source of truth, and it rejects
+#                   out-of-range parameters itself
+#   verify_symmetry the mirror mapping is exact, and the reflections the product
+#                   offers are the ones the tile set can actually serve
 #   verify_webapi   the browser entry-point contract holds, byte-identically,
 #                   and (with --render) the worker's flatten+render flow produces
 #                   a preview pixel-identical to the reference render
 #   verify_render   the extracted loose tree renders identically to the .mix files
 #   verify_uicontract  the page and the worker agree on their message vocabulary
+#   verify_deploy   the deployment path refuses to publish unbuilt or stale bytes
 #   verify_browser  the REAL page, in a real browser: generate and render
 #
 # Set MG_SKIP_BUILD=1 to reuse whatever is already in build/.
@@ -116,6 +121,11 @@ else
     step verify_size python3 tools/verify_size.py
 fi
 
+# The symmetry geometry, and which reflections the CliffSet can actually serve.
+# Needs no game directory: it is arithmetic over the cell set plus the 40
+# footprints read out of the reference implementation.
+step verify_symmetry python3 tools/verify_symmetry.py
+
 if [ -f build/engine-web-node/mg_engine.js ]; then
     GD=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}
     RENDER_ARGS=""
@@ -142,6 +152,13 @@ fi
 # worker posted `preview` and the page's switch had no case for it, so rendering
 # worked and the page showed nothing.
 step verify_uicontract python3 tools/verify_uicontract.py
+
+# The deployment path.  Offline and credential-free: it packages the real site,
+# validates the host rules in webapp/edgeone.json, and drives deploy_edgeone.sh
+# with a stub `edgeone` to prove it refuses stale bytes, a truncated renderer
+# and the 11 KB empty-program wasm -- and that the token never becomes an
+# argument.
+step verify_deploy sh tools/verify_deploy.sh
 
 # The real thing: a browser driving the real page.  Three separate defects
 # reached the user because everything else here runs the engine in node, where

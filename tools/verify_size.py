@@ -334,6 +334,38 @@ def main() -> int:
                                     f"accepted; the overlay grid would truncate it")
             print(f"  rect     width + height capped at {rect_sum}")
 
+        # ---- 7. --width and --height are ONE input ---------------------------
+        # The generator reads them as a pair (CalcMapSize uses them only when both
+        # are positive).  A lone --width therefore used to be dropped in silence:
+        # exit 0, no stderr, and a map at the size slider's own size -- the same
+        # class of silent fallback as the truncation above.  It has to be refused,
+        # and refused WITHOUT writing a map.
+        for kind, argv in (("width", ["--width", "380"]), ("height", ["--height", "200"])):
+            checks += 1
+            p = work / f"lone_{kind}.map"
+            if p.exists():
+                p.unlink()
+            proc = run([args.mgconsole, "--root", str(assets), "--land", "3",
+                        "--theater", "0", "--time", "0", "--players", "2", "--ore", "1",
+                        "--water", "30", "--seed", "20260913"] + argv
+                       + ["--out", str(p)])
+            if proc.returncode == 0 or p.exists():
+                wrote = dimensions(p)
+                failures.append(f"a lone --{kind} was accepted (rc={proc.returncode}, "
+                                f"wrote {wrote}) instead of being refused; it silently "
+                                f"ignores the axis that was given")
+
+        # A negative side means the same thing to the generator as an absent one, so
+        # it has to be refused for the same reason.
+        checks += 1
+        p = work / "negative.map"
+        if p.exists():
+            p.unlink()
+        proc = generate_rect(args.mgconsole, assets, -5, 100, p)
+        if proc.returncode == 0 or p.exists():
+            failures.append(f"--width -5 --height 100 was accepted (rc={proc.returncode})")
+        print("  pair     a lone or negative --width/--height is refused, not ignored")
+
         print()
         if failures:
             print(f"FAILED {len(failures)} of {checks} checks")

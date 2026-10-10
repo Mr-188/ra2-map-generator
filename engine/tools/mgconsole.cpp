@@ -29,14 +29,18 @@ void usage()
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
-        "  --width N        explicit visible width  } together these replace --size and\n"
-        "  --height N       explicit visible height } are the only way to get a non-square map\n"
+        "  --width N        explicit visible width  } given TOGETHER they replace --size\n"
+        "  --height N       explicit visible height } and are the only way to get a\n"
+        "                   non-square map; one without the other is an error\n"
         "  --players 2..8\n"
         "  --ore N          ore density index\n"
         "  --water 0..100   -1 = roll it (default)\n"
         "  --seed N         global seed (0 = GetTickCount)\n"
         "  --map-seed N     terrain RNG seed (0 = the vanilla constant)\n"
         "  --single         write a single-player .map instead of a .yrm\n"
+        "  --symmetry N     0 none (default), 1 left-right axial, 2 rotational 180\n"
+        "                   (top-bottom is not offered: the tile set has no art for\n"
+        "                   the orientations it needs - see engine/src/mirror.h)\n"
         "  --size-range     print the legal/useful --size bounds for --land/--players, exit\n"
         "  --out PATH       output map path\n");
 }
@@ -54,16 +58,57 @@ std::wstring widen(const std::string& s)
 
 }  // namespace
 
+
+
+
+// --diag-symmetry: after each stage, count the mirrored pairs that disagree about
+// the elevation, the land/water marker, the tile or the Height.  A symmetric map needs
+// all four at zero; whichever stage raises one is the one that broke it.  Off by
+// default, so it never changes a normal run's output.
+static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const char* stage)
+{
+    if (cfg.symmetry == mg::MapSymmetry::None) return;
+    const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
+    MapCell* const* slots = rmg.GetCellSlots();
+    const int rows = rmg.GetSlotRows();
+    long long pairs = 0, lvlBad = 0, markerBad = 0;
+    for (int y = 0; y < rows; ++y)
+    {
+        for (int x = 0; x < 512; ++x)
+        {
+            MapCell* a = slots[512 * y + x];
+            if (a == nullptr) continue;
+            int mx = 0, my = 0;
+            if (!mg::MirrorCell(ms.mapWidth, ms.mapHeight, cfg.symmetry, x, y, &mx, &my)) continue;
+            if (!(x < mx || (x == mx && y < my))) continue;
+            MapCell* b = slots[512 * my + mx];
+            if (b == nullptr) continue;
+            ++pairs;
+            if (a->Level != b->Level) ++lvlBad;
+            if ((a->IsoTileTypeIndex == 0) != (b->IsoTileTypeIndex == 0)) ++markerBad;
+            // The TILE is deliberately not compared for equality: a mirrored map is
+            // supposed to give the image cell the MIRRORED piece, which is a different
+            // tile index, so "tile indices equal" is the wrong expectation and an
+            // earlier version of this probe was misled by it.  Level and the
+            // land/water marker are orientation-free and must match exactly.
+        }
+    }
+    std::fprintf(stderr, "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld\n",
+                 stage, pairs, lvlBad, markerBad);
+}
+
 int main(int argc, char** argv)
 {
     std::string root;
     std::string out = "oracle.map";
     int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
+    bool diagSym = false;
     double size = 1.0;
     int width = 0, height = 0;   // explicit rectangle, overrides --size when both > 0
     unsigned seed = 1, mapSeed = 0;
     bool single = false;
     bool sizeRange = false;
+    int symmetry = 0;            // 0 = none; see engine/src/mirror.h
 
     for (int i = 1; i < argc; ++i)
     {
@@ -83,9 +128,11 @@ int main(int argc, char** argv)
         else if (a == "--players") players = std::atoi(next());
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
+        else if (a == "--diag-symmetry") diagSym = true;
         else if (a == "--seed") seed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--map-seed") mapSeed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--single") single = true;
+        else if (a == "--symmetry") symmetry = std::atoi(next());
         else if (a == "--size-range") sizeRange = true;
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else { std::fprintf(stderr, "unknown argument: %s\n", a.c_str()); usage(); return 2; }
@@ -126,6 +173,20 @@ int main(int argc, char** argv)
     cfg.playerCount = players;
     cfg.oreDensity = ore;
     cfg.multiplayer = !single;
+    // --symmetry is range-checked here rather than passed through: an out-of-range
+    // value would otherwise reach MirrorMap as an unknown enum and be refused
+    // there, after the whole map had been generated.  The bound is the
+    // IMPLEMENTED maximum (engine/src/mirror.h), so a kind that is derived and
+    // tested but not yet applied is refused up front in both drivers, and phase 2
+    // only has to move that one constant.
+    if (symmetry < 0 || symmetry > mg::kMapSymmetryImplementedMax)
+    {
+        std::fprintf(stderr, "[mgconsole] --symmetry %d: only 0..%d is implemented "
+                     "(see engine/src/mirror.h)\n",
+                     symmetry, mg::kMapSymmetryImplementedMax);
+        return 2;
+    }
+    cfg.symmetry = static_cast<mg::MapSymmetry>(symmetry);
 
     cfg.global = rmg.RollGlobalOptions(seed ? seed : GetTickCount());
     cfg.randomSeed = static_cast<uint32_t>(cfg.global.seed04C);
@@ -134,6 +195,30 @@ int main(int argc, char** argv)
 
     std::fprintf(stderr, "[mgconsole] land=%d theater=%d time=%d size=%.3f players=%d ore=%d water=%d seed=%u\n",
                  land, theater, time, size, players, ore, cfg.waterAmount, seed);
+
+    // --width and --height are ONE input, not two independent ones: the engine
+    // reads them as a pair (MapGenConfig::widthCells/heightCells, and CalcMapSize
+    // uses them only when both are positive).  A lone --width therefore used to be
+    // dropped in silence -- the map came out at the slider's size, exit 0, no
+    // warning anywhere -- which is the same class of silent fallback the workSide
+    // refusal below exists to prevent.  Say so instead of guessing.
+    if (width < 0 || height < 0)
+    {
+        std::fprintf(stderr,
+            "[mgconsole] --width/--height must be positive (got %d and %d); a visible "
+            "side of 0 or less would be read as \"use the size slider\"\n",
+            width, height);
+        return 2;
+    }
+    if ((width > 0) != (height > 0))
+    {
+        std::fprintf(stderr,
+            "[mgconsole] --width and --height must be given together: %s%d alone leaves "
+            "the other axis to the size slider, which silently produces a square map "
+            "of a different size.  Pass both, or neither (with --size).\n",
+            width > 0 ? "--width " : "--height ", width > 0 ? width : height);
+        return 2;
+    }
 
     // Refuse a size the writer would silently truncate.  The limit comes from the
     // engine's own tables (SizeSliderRange), not from a second copy of them here.
@@ -184,6 +269,13 @@ int main(int argc, char** argv)
     if (cfg.landType == LandType::Inland || cfg.landType == LandType::Mountainous)  // 0x598aed
     {
         if (rmg.GetWaterAmount() != 0) rmg.GenerateSpecialTerrain();  // sub_59C580
+        // [移植侧] 内陆 / 山地：河湖挖完才把半场复制过去（见 MapGenSymmetry.cpp）。
+        if (!rmg.MirrorSpecialTerrain(cfg.symmetry))
+        {
+            std::fprintf(stderr, "[mgconsole] MirrorSpecialTerrain failed\n");
+            return 8;
+        }
+        if (diagSym) diagSymmetry(rmg, cfg, "after MirrorSpecialTerrain");
     }
     else
     {
@@ -191,18 +283,38 @@ int main(int argc, char** argv)
     }
 
     rmg.DecorateWaterTiles();                             // 0x598b14  sub_59C630
+    if (diagSym) diagSymmetry(rmg, cfg, "after DecorateWaterTiles");
     rmg.InitRegions();                                    // 0x598C24
     rmg.MakeRegions();                                    // 0x598D44
+    if (diagSym) diagSymmetry(rmg, cfg, "after MakeRegions");
     rmg.RecalculateCellAttributes();                      // 0x598E1F
     rmg.CreateStartingPoints();                           // 0x598E9E
     rmg.AddTechBuildings();                               // 0x598EBF
     rmg.AddTiberium();                                    // 0x598EE5
+    // [移植侧] 对称：矿与科技建筑是 RNG 放的，必须在 CreateHills 之前平掉 ——
+    // CanHostSlope 读的就是这两样，否则 FinalizeElevationSlopes 会在两半做出不同判断。
+    if (!rmg.MirrorOverlays(cfg.symmetry))
+    {
+        std::fprintf(stderr, "[mgconsole] MirrorOverlays failed\n");
+        return 9;
+    }
     rmg.RecalculateCellAttributes();                      // 0x598FB8
     rmg.RecalculateCellAttributes();                      // 0x59912A
     rmg.CreateHills();                                    // 0x599171
+    if (diagSym) diagSymmetry(rmg, cfg, "after CreateHills");
     rmg.CreateLATs();                                     // 0x599215
+    if (diagSym) diagSymmetry(rmg, cfg, "after CreateLATs");
     rmg.RecalculateCellAttributes();                      // 0x599354
     rmg.PruneTerrainTrees();                              // port-side, after pass 4
+    if (diagSym) diagSymmetry(rmg, cfg, "after PruneTrees");
+    // [移植侧] 对称镜像。放在 PruneTerrainTrees 之后、Cleanup 之前：所有吃 RNG
+    // 与所有出处出自反汇编的阶段都已结束，而 ComputeRadarImage 与写盘都在其后，
+    // 雷达与 [Header] 因此自动重算。
+    if (!rmg.MirrorMap(cfg.symmetry))
+    {
+        std::fprintf(stderr, "[mgconsole] MirrorMap failed\n");
+        return 6;
+    }
     rmg.Cleanup();                                        // 0x5993A5
     rmg.ComputeRadarImage();                              // 0x599451
     rmg.Done();                                           // 0x59947E

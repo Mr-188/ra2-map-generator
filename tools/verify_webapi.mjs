@@ -96,11 +96,27 @@ const api = {
   setRoot: Module.cwrap('mg_set_root', null, ['string']),
   extract: Module.cwrap('mg_extract', 'number', ['number']),
   generate: Module.cwrap('mg_generate', 'number',
+    // 13 scalars + the output path: adding a parameter to mg_generate means
+    // updating this list too, or every argument after it shifts (which is how a
+    // stale list here turned the output path into a number and made the writer
+    // report "SaveMapFile failed").
     ['number', 'number', 'number', 'number', 'number', 'number',
-     'number', 'number', 'number', 'number', 'number', 'number', 'string']),
+     'number', 'number', 'number', 'number', 'number', 'number', 'number',
+     'string']),
   readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
   error: Module.cwrap('mg_error', 'string', []),
   outputPath: Module.cwrap('mg_output_path', 'string', []),
+};
+
+const readOut = (p) => {
+  const n = api.readOutput(p, 0, -1);
+  if (n <= 0) return null;
+  const ptr = Module._malloc(n);
+  try {
+    return api.readOutput(p, ptr, n) === n ? Buffer.from(Module.HEAPU8.slice(ptr, ptr + n)) : null;
+  } finally {
+    Module._free(ptr);
+  }
 };
 
 const failures = [];
@@ -156,7 +172,7 @@ check('MEMFS tile tree', tiles > 100, `${tiles} .tem files`);
 // ---- 4. generate ---------------------------------------------------------
 const outPath = args.single ? '/mg/out.map' : '/mg/out.yrm';
 const rcGen = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
-                           args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, outPath);
+                           args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, 0, outPath);
 check('mg_generate', rcGen === 0, rcGen === 0 ? '' : api.error());
 
 // ---- 5. two-call read-out ------------------------------------------------
@@ -201,7 +217,7 @@ if (produced) {
 // parameters + same seed -> byte-identical" hold for the product and not just
 // for the command line.
 const rcAgain = api.generate(args.land, args.theater, args.time, args.size, args.players, 1, -1,
-                             args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, outPath);
+                             args.seed >>> 0, 0, args.single ? 1 : 0, 0, 0, 0, outPath);
 check('mg_generate again, same instance', rcAgain === 0,
       rcAgain === 0 ? '' : api.error());
 
@@ -222,6 +238,104 @@ let regen = null;
 check('regeneration is idempotent',
       produced !== null && regen !== null && md5(produced) === md5(regen),
       regen ? `md5=${md5(regen).slice(0, 16)}` : 'no output');
+
+// ---- 7b. the rectangle readout the page shows ----------------------------
+//
+// app.js prints "N 格" for an explicit 长 x 宽 from mg_rect_cells(), not from
+// width * height.  width * height is the *visible* rect the generator reasons in
+// (IsWithinUsableArea); the map the writer emits is the iso bounding box of that
+// rect, whose diamond holds (2 * mapWidth - 1) * mapHeight cells -- about twice
+// as many.  tools/decode.py reads that count back out of a written map, so this
+// pins the export against a map produced here rather than against a restatement
+// of the same arithmetic.
+const rectCells = Module.cwrap('mg_rect_cells', 'number', ['number', 'number']);
+{
+  const rectPath = '/mg/rect_readout.yrm';
+  const rcRect = api.generate(args.land, args.theater, args.time, 1, args.players, 1, -1,
+                              args.seed >>> 0, 0, 1, 380, 100, 0, rectPath);
+  let bytes = null;
+  const n = api.readOutput(rectPath, 0, -1);
+  if (n > 0) {
+    const ptr = Module._malloc(n);
+    try {
+      if (api.readOutput(rectPath, ptr, n) === n) {
+        bytes = Buffer.from(Module.HEAPU8.slice(ptr, ptr + n));
+      }
+    } finally {
+      Module._free(ptr);
+    }
+  }
+  check('explicit 380x100 rectangle generated', rcRect === 0 && bytes !== null,
+        rcRect === 0 ? '' : api.error());
+  if (bytes) {
+    const m = new TextDecoder('latin1').decode(bytes)
+                .match(/Size=\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)/);
+    const w = m ? Number(m[1]) : 0;
+    const h = m ? Number(m[2]) : 0;
+    check('rectangle Size is the visible rect plus its border',
+          w === 384 && h === 112, `Size=0,0,${w},${h}`);
+    const want = w > 0 ? (2 * w - 1) * h : 0;
+    check('mg_rect_cells agrees with the written map',
+          want > 0 && rectCells(380, 100) === want,
+          `${rectCells(380, 100)} vs (2*${w}-1)*${h}=${want}`);
+    // A pair the page would refuse to ask about: the export must not invent a
+    // number for it, or the readout would show cells for a map that cannot exist.
+    check('mg_rect_cells rejects a non-positive side',
+          rectCells(0, 100) === 0 && rectCells(100, 0) === 0 && rectCells(-1, -1) === 0,
+          `${rectCells(0, 100)}/${rectCells(100, 0)}/${rectCells(-1, -1)}`);
+  }
+}
+
+// ---- 7c. the symmetry parameter -------------------------------------------
+//
+// The page's 对称 select reaches the engine through here, so this is where the
+// plumbing is pinned: the export the page sizes its options from, the two values
+// it offers, and the refusal of anything past them.
+const symmetryMax = Module.cwrap('mg_symmetry_max', 'number', [])();
+check('mg_symmetry_max reports the implemented kinds', symmetryMax === 2,
+      `max=${symmetryMax}`);
+{
+  const symPath = '/mg/sym.yrm';
+  const rcSym = api.generate(args.land, args.theater, args.time, args.size, args.players,
+                             1, -1, args.seed >>> 0, 0, args.single ? 1 : 0,
+                             0, 0, 1, symPath);
+  let symBytes = null;
+  const n = api.readOutput(symPath, 0, -1);
+  if (n > 0) {
+    const ptr = Module._malloc(n);
+    try {
+      if (api.readOutput(symPath, ptr, n) === n) {
+        symBytes = Buffer.from(Module.HEAPU8.slice(ptr, ptr + n));
+      }
+    } finally {
+      Module._free(ptr);
+    }
+  }
+  check('left-right symmetry generated', rcSym === 0 && symBytes !== null,
+        rcSym === 0 ? '' : api.error());
+  check('symmetry=1 differs from symmetry=0',
+        produced !== null && symBytes !== null && md5(produced) !== md5(symBytes),
+        symBytes ? `md5=${md5(symBytes).slice(0, 16)}` : 'no output');
+
+  // The 180 rotation, through the same entry point the worker uses.
+  const rotPath = '/mg/rot.yrm';
+  const rcRot = api.generate(args.land, args.theater, args.time, args.size, args.players,
+                             1, -1, args.seed >>> 0, 0, args.single ? 1 : 0,
+                             0, 0, 2, rotPath);
+  check('180-degree symmetry generated', rcRot === 0, rcRot === 0 ? '' : api.error());
+  check('symmetry=2 differs from the other two',
+        rcRot === 0 && symBytes !== null && produced !== null
+          && md5(readOut(rotPath)) !== md5(symBytes)
+          && md5(readOut(rotPath)) !== md5(produced),
+        rcRot === 0 ? `md5=${md5(readOut(rotPath)).slice(0, 16)}` : 'no output');
+
+  // A kind past the implemented range must be REFUSED, not silently ignored - the
+  // page disables it, but the engine is the one that has to be sure.
+  const rcBad = api.generate(args.land, args.theater, args.time, args.size, args.players,
+                             1, -1, args.seed >>> 0, 0, 1, 0, 0, 3, '/mg/bad.yrm');
+  check('a symmetry past the implemented range is refused', rcBad !== 0,
+        `rc=${rcBad} ${api.error()}`);
+}
 
 // ---- 8. the render half, through the same flattening the worker does -----
 // webapp/worker.js copies the extracted tree out of the engine's MEMFS into the

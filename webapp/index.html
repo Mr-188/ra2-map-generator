@@ -498,6 +498,15 @@ a.dl svg { width: 12px; height: 12px; }
                  title="0 = 原版固定种子 0；换一个数字可在其他参数不变时只换一份地形">
         </div>
 
+        <div class="cell"><label for="symmetry">对称</label>
+          <select id="symmetry"
+                  title="左右轴对称：把地图沿两轴对调镜像。上下轴对称不提供 —— tileset 里没有它需要的朝向美术（见 engine/src/mirror.h）。">
+            <option value="0" selected>无</option>
+            <option value="1">左右轴对称</option>
+            <option value="2" disabled>180° 中心对称</option>
+          </select>
+        </div>
+
         <div class="cell"><label for="kind">地图类型</label>
           <select id="kind">
             <option value="0" selected>多人 .yrm</option>

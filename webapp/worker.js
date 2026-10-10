@@ -143,7 +143,7 @@ async function boot() {
     extract: Module.cwrap('mg_extract', 'number', ['number']),
     generate: Module.cwrap('mg_generate', 'number',
       ['number', 'number', 'number', 'number', 'number', 'number',
-       'number', 'number', 'number', 'number', 'number', 'number', 'string']),
+       'number', 'number', 'number', 'number', 'number', 'number', 'number', 'string']),
     readOutput: Module.cwrap('mg_read_output', 'number', ['string', 'number', 'number']),
     error: Module.cwrap('mg_error', 'string', []),
     outputPath: Module.cwrap('mg_output_path', 'string', []),
@@ -151,6 +151,8 @@ async function boot() {
     sizeLegalMax: Module.cwrap('mg_size_legal_max', 'number', ['number', 'number']),
     sizeStep: Module.cwrap('mg_size_step', 'number', []),
     rectMaxSum: Module.cwrap('mg_rect_max_sum', 'number', []),
+    rectCells: Module.cwrap('mg_rect_cells', 'number', ['number', 'number']),
+    symmetryMax: Module.cwrap('mg_symmetry_max', 'number', []),
   };
 
   // The sizeSlider bounds come from the engine, so the page never carries its own
@@ -171,7 +173,8 @@ async function boot() {
     sizeLimit.push(legal);
   }
   self.postMessage({ type: 'ready', sizeMax, sizeLimit, sizeStep: engine.sizeStep(),
-                     rectMaxSum: engine.rectMaxSum() });
+                     rectMaxSum: engine.rectMaxSum(),
+                     symmetryMax: engine.symmetryMax() });
 }
 
 self.onmessage = async (event) => {
@@ -188,6 +191,17 @@ self.onmessage = async (event) => {
     }
     if (!engine) {
       fail('engine not booted');
+      return;
+    }
+    // The page's "面积" readout for an explicit rectangle.  It is a question, not
+    // work, so it is answered straight from the engine's own grid arithmetic
+    // (mg_rect_cells) rather than from a copy of it in app.js.  Asked on every
+    // keystroke in the two number inputs; the call is a few instructions.
+    if (msg.type === 'rect-cells') {
+      const width = Number(msg.width) || 0;
+      const height = Number(msg.height) || 0;
+      self.postMessage({ type: 'rect-cells', width, height,
+                         cells: engine.rectCells(width, height) });
       return;
     }
     if (msg.type === 'assets') {
@@ -216,7 +230,8 @@ self.onmessage = async (event) => {
       const rc = engine.generate(
         p.land | 0, p.theater | 0, p.time | 0, Number(p.size) || 0, p.players | 0,
         p.ore | 0, p.water | 0, p.seed >>> 0, p.mapSeed >>> 0,
-        p.single ? 1 : 0, p.width | 0, p.height | 0, p.outPath || '/mg/out.map');
+        p.single ? 1 : 0, p.width | 0, p.height | 0, p.symmetry | 0,
+        p.outPath || '/mg/out.map');
       if (rc !== 0) {
         fail(`generation failed: ${engine.error()}`);
         return;
