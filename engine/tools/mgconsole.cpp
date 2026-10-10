@@ -113,7 +113,14 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
                 ++tileDiff;
                 const int fa = diagTileFamily(rmg, a->IsoTileTypeIndex);
                 const int fb = diagTileFamily(rmg, b->IsoTileTypeIndex);
-                if (fa != fb) ++crossFam;         // 跨族 = 真的没对上；同族互换 = 正确镜像
+                if (fa != fb)
+                {
+                    ++crossFam;                   // 跨族 = 真的没对上；同族互换 = 正确镜像
+                    if (crossFam <= 5)
+                        std::fprintf(stderr, "[diag-ex] %s (%d,%d) tile %d (L%d H%d) <-> (%d,%d) tile %d (L%d H%d)\n",
+                                     stage, x, y, a->IsoTileTypeIndex, a->Level, a->Height,
+                                     mx, my, b->IsoTileTypeIndex, b->Level, b->Height);
+                }
             }
             if (a->Height != b->Height) ++subDiff;
             // The TILE is deliberately not compared for equality: a mirrored map is
