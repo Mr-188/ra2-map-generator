@@ -71,9 +71,11 @@ static int diagTileFamily(const RandomMapGenerator& rmg, int tile)
     if (s.shorePieces >= 0 && tile >= s.shorePieces && tile < s.shorePieces + 42) return 2;
     if (s.shoreTile   >= 0 && tile >= s.shoreTile   && tile < s.shoreTile + 40)   return 3;
     if (s.waterCliffs >= 0 && tile >= s.waterCliffs && tile < s.waterCliffs + 28) return 4;
-    if (s.greenTile   >= 0 && tile >= s.greenTile   && tile < s.greenTile + 8)    return 5;
-    if (s.roughTile   >= 0 && tile >= s.roughTile   && tile < s.roughTile + 8)    return 6;
-    if (s.sandTile    >= 0 && tile >= s.sandTile    && tile < s.sandTile + 8)     return 7;
+    // 这些段（Sand/Grass/Rough 的 Individual 变体）都有十几个偏移，窗口给宽一点，
+    // 否则同段内的正常互换会被误判成"跨族"（实测过：495 与 502 同属 Sand Individual）。
+    if (s.greenTile   >= 0 && tile >= s.greenTile   && tile < s.greenTile + 32)   return 5;
+    if (s.roughTile   >= 0 && tile >= s.roughTile   && tile < s.roughTile + 32)   return 6;
+    if (s.sandTile    >= 0 && tile >= s.sandTile    && tile < s.sandTile + 32)    return 7;
     if (s.rampBase    >= 0 && tile >= s.rampBase    && tile < s.rampBase + 20)    return 8;
     if (s.rampSmooth  >= 0 && tile >= s.rampSmooth  && tile < s.rampSmooth + 12)  return 9;
     return 0;
