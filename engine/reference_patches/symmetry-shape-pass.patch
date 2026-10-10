@@ -1239,6 +1239,24 @@
              }
              while (size < 4.0 || size > 60.0);
  
+@@ -849,10 +946,14 @@
+             const double dx = static_cast<double>(seedX - nx);
+             const double dy = static_cast<double>(seedY - ny);
+             const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
++            // [移植侧] 对称：斑块按"到种子的距离 + 随机抖动"的优先堆生长 —— 距离镜像不变，
++            // 但抖动是随机的，于是镜像那份长成**不同形状**（实测：一格进入 LAT 判定时已是
++            // 沙地、镜像格还是 0，判定分叉）。把抖动按**格**共享：镜像格拿到同一抖动，距离
++            // 又相同，优先级完全一致，斑块于是长成精确镜像。抽签照抽（随机流不变），只换取值。
++            const double jitter =
++                static_cast<double>(static_cast<uint32_t>(rng_.Next())) * 5.0 * kUnitScale;
+             const float key = static_cast<float>(
+-                distance
+-                + static_cast<double>(static_cast<uint32_t>(rng_.Next()))
+-                      * 5.0 * kUnitScale);              // 0x5a4ea2
++                distance + MirrorSharedValue(jitter, nb, 500));   // 0x5a4ea2
+ 
+             pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
+             pool[nextNode].priority = key;
 --- a/MapGenerator/MapGenCleanup.cpp
 +++ b/MapGenerator/MapGenCleanup.cpp
 @@ -45,6 +45,8 @@
