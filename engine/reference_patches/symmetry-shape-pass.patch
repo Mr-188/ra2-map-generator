@@ -1081,7 +1081,57 @@
  void RandomMapGenerator::ScatterLATBlobs()
  {
      if (cellSlots_ == nullptr || workCells_ == nullptr)
-@@ -388,12 +416,25 @@
+@@ -282,9 +310,21 @@
+         while (n > 40);
+         return n;
+     };
+-    const int countRough = drawBlobCount();               // 0x5a3b62 var_4C
+-    const int countSand = drawBlobCount();                // 0x5a3b92 var_54
+-    const int countGreen = drawBlobCount();               // 0x5a3bc2 var_3C
++    // [移植侧] 对称：斑块盖章是按栅格顺序在中心周围铺的，所以即使"中心点"镜像对称，
++    // 盖出来的区域也不是镜像的（实测：一格进入 LAT 判定时已是沙地 493、它的镜像格还是 0，
++    // 判定于是分叉）。改成"盖一处、同时在镜像中心盖同一处"，三个数量减半保持密度。
++    // 本函数只被调用一次，减半不会重复生效。
++    const bool symBlob = (config_.symmetry != mg::MapSymmetry::None);
++    int countRough = drawBlobCount();                     // 0x5a3b62 var_4C
++    int countSand = drawBlobCount();                      // 0x5a3b92 var_54
++    int countGreen = drawBlobCount();                     // 0x5a3bc2 var_3C
++    if (symBlob)
++    {
++        countRough = (countRough + 1) / 2;
++        countSand = (countSand + 1) / 2;
++        countGreen = (countGreen + 1) / 2;
++    }
++    long long mirroredBlobs = 0;
+ 
+     // The clipped Gaussian + PlaceBlob every branch ends with (0x5a3c92 -
+     // 0x5a3d3a, 0x5a3d6d - 0x5a3e16, 0x5a3e49 - 0x5a3ef7): span 20 / centre n,
+@@ -305,6 +345,24 @@
+         }
+         while (size < 4.0 || size > 80.0);
+         PlaceBlob(cell, tileIndex, F2I64(size), slot, false);
++
++        // [移植侧] 对称：同一处斑块也在镜像中心盖一份（同类型、同尺寸），两半的地面纹理
++        // 因此同步；不搬瓦片，只多盖一次。
++        if (symBlob)
++        {
++            const int bx = cell->MapCoords & 0xFFFF;
++            const int by = static_cast<uint32_t>(cell->MapCoords) >> 16;
++            int mx = 0, my = 0;
++            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, bx, by, &mx, &my))
++            {
++                MapCell* mc = CellAt(mx, my);
++                if (mc != nullptr && mc != cell)
++                {
++                    PlaceBlob(mc, tileIndex, F2I64(size), mx + (my << 9), false);
++                    ++mirroredBlobs;
++                }
++            }
++        }
+     };
+ 
+     // ---- 3. the LAT pass (0x5a3bea - 0x5a3f0a) ----------------------------
+@@ -388,12 +446,25 @@
      }
      while (overlayCount > overlayRange);                  // 0x5a4119
  
@@ -1108,7 +1158,7 @@
  
          // A random work slot whose packed coords are not (0,0) - no attempt cap
          // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
-@@ -434,7 +475,7 @@
+@@ -434,7 +505,7 @@
                  int pick;
                  do
                  {
@@ -1117,7 +1167,7 @@
                  }
                  while (pick > 4);
                  type = pick + 168;
-@@ -445,14 +486,34 @@
+@@ -445,14 +516,34 @@
                  int pick;
                  do
                  {
@@ -1153,7 +1203,17 @@
  
              // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
              // model and never writes - a no-op here.
-@@ -612,6 +673,9 @@
+@@ -464,6 +555,9 @@
+         if (attempts >= 5 * overlayCount)                 // 0x5a4271
+             return;
+     }
++    if (symBlob)
++        std::fprintf(stderr, "[symmetry] lat-blob: %lld blobs also stamped at the mirrored centre\n",
++                     mirroredBlobs);
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -612,6 +706,9 @@
          }
          while (count < 10.0 || count > 35.0);
  
@@ -1163,7 +1223,7 @@
          remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
          ++patches;
      }
-@@ -672,13 +736,13 @@
+@@ -672,13 +769,13 @@
              // inline reset has just set to 0.005 on every cell.
              const double density28 =
                  *reinterpret_cast<const double*>(w.data + 10);
