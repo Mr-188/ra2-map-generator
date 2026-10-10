@@ -872,7 +872,7 @@
 +}
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,743 @@
+@@ -0,0 +1,751 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1616,3 +1616,11 @@
 +                 "flags evened out\n", mg::MapSymmetryName(kind), overlays);
 +    return true;
 +}
++
++// ---------------------------------------------------------------------------
++// [已测并否决] 曾试过"收尾把 1x1 单格瓦片（地面/水面纹理）也做成镜像一致"。
++// 结果：镜像格对相同率 30.7% -> 94.7%，但**渲染暗像素 0.39% -> 3.97%**（10 倍，
++// 超出 max(1%, 2x 未镜像) 的界）。原因：这类 1x1 纹理是**逐格拼接的镶嵌**，每格的画
++// 要和邻居的选择对上（DecorateWaterTiles 的规则本身就按邻居分支），跨半场照抄会撕开
++// 接缝、露出黑边。所以"纹理级左右一致"与"渲染正确"不可兼得，不做。
++// ---------------------------------------------------------------------------
