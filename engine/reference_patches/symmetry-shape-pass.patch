@@ -222,9 +222,11 @@
  // MapGenRiver.cpp - river / water-body subsystem of the random map generator
  //
  // Everything in this file was moved verbatim out of MapGen.cpp; the addresses
-@@ -2172,7 +2172,37 @@
+@@ -2171,8 +2171,39 @@
+ 
  bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
  {
++
      // 0. One RNG draw per visited cell.
 -    const int roll = rng_.RandomFloatRange(0, 5);
 +    // -----------------------------------------------------------------------
@@ -261,7 +263,7 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3199,250 @@
+@@ -3169,6 +3200,250 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -512,7 +514,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4016,55 @@
+@@ -3742,6 +4017,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -568,7 +570,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4085,45 @@
+@@ -3762,36 +4086,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1071,7 +1073,17 @@
  
              // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
              // model and never writes - a no-op here.
-@@ -672,13 +733,13 @@
+@@ -612,6 +673,9 @@
+         }
+         while (count < 10.0 || count > 35.0);
+ 
++        // [移植侧] 已测并否决：试过"树斑成对撒 + 预算减半"。PlaceGreenPatches 在引擎里
++        // 被**调用两次**（vanilla 内联两遍），减半因此执行了两次 -> 树少了一半，图整体变了，
++        // 指标反而变差（岛屿 21.2%->21.9%、内陆 39.8%->41.1%），所以撤回。
+         remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
+         ++patches;
+     }
+@@ -672,13 +736,13 @@
              // inline reset has just set to 0.005 on every cell.
              const double density28 =
                  *reinterpret_cast<const double*>(w.data + 10);
