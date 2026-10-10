@@ -105,7 +105,22 @@
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -2002,6 +2079,44 @@
+@@ -1720,6 +1797,14 @@
+ 
+     // Cell slot array (512-stride). Diamond cells point into the pool,
+     // everything else is nullptr (InvalidCell sentinel).
++    // [诊断用] 各族瓦片基址的只读快照（--diag-symmetry 用来区分"跨族差异"与"族内互换"）。
++    struct TileSets
++    {
++        int water, shorePieces, shoreTile, waterCliffs;
++        int greenTile, roughTile, sandTile, rampBase, rampSmooth;
++    };
++    TileSets GetTileSets() const;
++
+     MapCell* const* GetCellSlots() const { return cellSlots_; }
+     int GetSlotRows() const { return slotRows_; }
+     int GetCellCount() const { return cellCount_; }
+@@ -2002,6 +2087,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -150,7 +165,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2295,10 @@
+@@ -2180,6 +2303,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -263,7 +278,7 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,250 @@
+@@ -3169,6 +3200,265 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -370,6 +385,21 @@
 +static unsigned long long g_shoreStyleFallback = 0;
 +unsigned long long MgShoreProfilePicked() { return g_shoreProfilePicked; }
 +unsigned long long MgShoreStyleFallback() { return g_shoreStyleFallback; }
++
++RandomMapGenerator::TileSets RandomMapGenerator::GetTileSets() const
++{
++    TileSets s;
++    s.water        = waterTileIndex_;
++    s.shorePieces  = shorePieces_;
++    s.shoreTile    = shoreTileIndex_;
++    s.waterCliffs  = waterCliffsIndex_;
++    s.greenTile    = greenTileIndex_;
++    s.roughTile    = roughTileIndex_;
++    s.sandTile     = sandTileIndex_;
++    s.rampBase     = rampBaseIndex_;
++    s.rampSmooth   = rampSmoothIndex_;
++    return s;
++}
 +
 +int RandomMapGenerator::MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
 +                                   bool* approximate, bool* styleFallback) const
@@ -514,7 +544,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4017,55 @@
+@@ -3742,6 +4032,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -570,7 +600,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4086,45 @@
+@@ -3762,36 +4101,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {

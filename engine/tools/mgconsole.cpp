@@ -61,6 +61,24 @@ std::wstring widen(const std::string& s)
 
 
 
+
+// [诊断用] 把瓦片归到一个粗粒度族，用来区分"跨族差异"（真问题）与"族内互换"
+// （镜像地图本来就该换到反方向的那一片，属于正确镜像）。
+static int diagTileFamily(const RandomMapGenerator& rmg, int tile)
+{
+    const RandomMapGenerator::TileSets s = rmg.GetTileSets();
+    if (tile >= s.water          && tile < s.water + 14)          return 1;
+    if (s.shorePieces >= 0 && tile >= s.shorePieces && tile < s.shorePieces + 42) return 2;
+    if (s.shoreTile   >= 0 && tile >= s.shoreTile   && tile < s.shoreTile + 40)   return 3;
+    if (s.waterCliffs >= 0 && tile >= s.waterCliffs && tile < s.waterCliffs + 28) return 4;
+    if (s.greenTile   >= 0 && tile >= s.greenTile   && tile < s.greenTile + 8)    return 5;
+    if (s.roughTile   >= 0 && tile >= s.roughTile   && tile < s.roughTile + 8)    return 6;
+    if (s.sandTile    >= 0 && tile >= s.sandTile    && tile < s.sandTile + 8)     return 7;
+    if (s.rampBase    >= 0 && tile >= s.rampBase    && tile < s.rampBase + 20)    return 8;
+    if (s.rampSmooth  >= 0 && tile >= s.rampSmooth  && tile < s.rampSmooth + 12)  return 9;
+    return 0;
+}
+
 // --diag-symmetry: after each stage, count the mirrored pairs that disagree about
 // the elevation, the land/water marker, the tile or the Height.  A symmetric map needs
 // all four at zero; whichever stage raises one is the one that broke it.  Off by
@@ -71,7 +89,8 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
     const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
     MapCell* const* slots = rmg.GetCellSlots();
     const int rows = rmg.GetSlotRows();
-    long long pairs = 0, lvlBad = 0, markerBad = 0;
+    long long pairs = 0, lvlBad = 0, markerBad = 0, tileDiff = 0, subDiff = 0;
+    long long crossFam = 0;
     for (int y = 0; y < rows; ++y)
     {
         for (int x = 0; x < 512; ++x)
@@ -86,6 +105,17 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
             ++pairs;
             if (a->Level != b->Level) ++lvlBad;
             if ((a->IsoTileTypeIndex == 0) != (b->IsoTileTypeIndex == 0)) ++markerBad;
+            // [诊断用] 镜像格的瓦片号 / 片内偏移是否一致。注意这**不是**对称的正确判据
+            // （镜像半场本来就该拿"镜像件"，瓦片号可以不同），这里只是用来定位"差异第一次
+            // 出现在哪个阶段" —— 数字跳变的那一步就是源头。
+            if (a->IsoTileTypeIndex != b->IsoTileTypeIndex)
+            {
+                ++tileDiff;
+                const int fa = diagTileFamily(rmg, a->IsoTileTypeIndex);
+                const int fb = diagTileFamily(rmg, b->IsoTileTypeIndex);
+                if (fa != fb) ++crossFam;         // 跨族 = 真的没对上；同族互换 = 正确镜像
+            }
+            if (a->Height != b->Height) ++subDiff;
             // The TILE is deliberately not compared for equality: a mirrored map is
             // supposed to give the image cell the MIRRORED piece, which is a different
             // tile index, so "tile indices equal" is the wrong expectation and an
@@ -93,8 +123,9 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
             // land/water marker are orientation-free and must match exactly.
         }
     }
-    std::fprintf(stderr, "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld\n",
-                 stage, pairs, lvlBad, markerBad);
+    std::fprintf(stderr,
+                 "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld tileDiff=%lld crossFam=%lld subDiff=%lld\n",
+                 stage, pairs, lvlBad, markerBad, tileDiff, crossFam, subDiff);
 }
 
 int main(int argc, char** argv)
