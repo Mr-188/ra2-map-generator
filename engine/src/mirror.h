@@ -131,6 +131,48 @@
 // pairs), the overlay layer and the ledgers are symmetric; the relief and the art
 // that dresses it cannot be, for the reason derived above.
 //
+// WHAT WAS TRIED AFTER THAT, AND WHY EACH ONE FAILED - so nobody repeats them.
+//
+// Twelve variants were built and measured on a size-2 Inland map (same seed), each rendered
+// and compared with its own mirror:
+//   copied art (ships)                       water-mask IoU 0.782
+//   paired re-selection of the coast         0.714
+//   end-of-pipeline rebuild                  0.713
+//   image-half-only re-selection             0.698
+//   island recipe (shore art -> ground)      0.648
+//   island recipe + flattened water edges    0.589
+//   island recipe + uniform water phase      0.589
+//   all water forced to one 1x1 piece        0.589
+//   instance-level stamping of the coast     0.797  (no change: the holes are not empty frames)
+//   shared "which class" decision per pair   0.788  (and dark pixels 0.36% -> 0.44%)
+//   profile-correct 180 partner (SHIPS)      0.797
+//   reference: islands 180 0.959, Inland LR 0.967
+// Only the last one is shipped, and it is a real bug fix: MirrorTile was choosing the 180
+// partner with the TRANSPOSE profile permutation, so 314 of 340 shore pieces took the wrong
+// piece (see Rot180WaterProfile in MapGenRiver.cpp).
+//
+// THREE METRIC TRAPS, each of which cost a round:
+//   * pixel difference rewards a translated copy of the art: a "staircase" coast scores
+//     BETTER than a correctly mirrored one, which is how an earlier round was reported as a
+//     fix when it was the opposite.
+//   * "compare only the pixels that are water on both sides" silently discards exactly the
+//     pixels where one side is water and the other is land - i.e. the shape error.
+//   * the water-mask IoU (binarise the render, intersect over union of the two flipped
+//     crops) is the best of the three, but it is still biased on a THIN lake: the water
+//     texture's own quarters differ in brightness, and on a lake two cells wide most of the
+//     crop is boundary.  It separates islands (0.96) from Inland (0.80) reliably, and it
+//     would have caught the 0.589 regression, so it is what the suite now gates on - but it
+//     is not a proxy for "the player sees the same coastline".
+//
+// AND THE FILE-LEVEL FACTS THAT MAKE THE REST UNREACHABLE.  In the finished 180 map the
+// coastal band's mirrored pairs agree on elevation to within 1 pair in 563, and the water
+// cells' CLASSES are symmetric by construction (verify_symmetry checks 13005 pairs).  What
+// differs is the ART: 84% of those pairs carry a different tile - which is what a correct
+// mirror looks like (a partner piece is a different index), and it is exactly why the two
+// halves cannot LOOK identical: the tileset's partner pieces are not the 180 rotation of
+// each other.  Transpose pairs are, which is why left-right reads as the same coastline and
+// 180 does not.
+//
 // THE 180 COAST - THE ACTUAL ROOT CAUSE, PROVED AT THE END OF A LONG HUNT.
 //
 // The parity-180 map is a bijection of the diamond but NOT a lattice automorphism:
