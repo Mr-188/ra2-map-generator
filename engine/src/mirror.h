@@ -473,6 +473,34 @@ constexpr int kMapSymmetryImplementedMax =
 // family at all: the cliff art has to be RE-DERIVED from the (symmetric) shape, which is what
 // the goal's item 4 asks for.
 //
+// CORRECTION (round 8, measured with the engine's own mapper - do not trust the older text).
+// The "23 missing pieces" figure that used to stand here (13 CliffSet + 10 CliffWater, tb-only)
+// IS WRONG.  Printing MirrorTile's answer for every piece of the three multi-cell families under
+// each symmetry (MG_DIAG_TILEMAP=1, one line per family and kind) gives:
+//
+//   family        left-right      rotational-180  top-bottom
+//   Shore         40 ok / 2 miss  40 ok / 2 miss  40 ok / 2 miss     (#41,#42 -> tiles 129,130)
+//   CliffSet      27 ok /13 miss  27 ok /13 miss  27 ok /13 miss     (#12..#14,#26,#28..#30,
+//                                                                     #32..#34,#38..#40
+//                                                                     -> 60,61,62,74,76,77,78,
+//                                                                        80,81,82,86,87,88)
+//   CliffWater    25 ok / 3 miss  21 ok / 7 miss  21 ok / 7 miss     (LR: #12..#14 -> 159..161;
+//                                                                     180/TB: #9,#11,#12..#14,
+//                                                                     #23,#28 -> 156,158,159,
+//                                                                     160,161,170,175)
+//
+// So the CliffSet's 13 gaps are IDENTICAL for all three symmetries - including the left-right mode
+// that ships and looks right - and the only top-bottom-specific gap is 4 extra CliffWater pieces
+// (7 against 3).  Missing pieces therefore do NOT distinguish top-bottom from left-right, and the
+// earlier claim that the cliff layer is blocked by art does not hold.
+//
+// The disagreement had a second source worth recording: verify_symmetry's own family-closure
+// check uses a footprint-mirror convention that only compares mask SHAPE, while MirrorTile
+// compares the footprint at absolute cell positions (anchor included).  The two disagree, which
+// is why the suite reports the CliffSet as "not closed under top-bottom" while the engine reports
+// the same 13 gaps for every kind.  The engine's mapper is the one that decides what a map looks
+// like; the suite's check needs to be re-derived against it.
+//
 // Twenty-three cliff pieces with no top-bottom counterpart means the mirrored half's cliffs
 // would be drawn as the wrong piece - a worse defect than the coastline this file spends so
 // long on.  verify_symmetry states the same thing as a gate ("top-bottom is closed now;
