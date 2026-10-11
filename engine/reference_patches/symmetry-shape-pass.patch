@@ -1434,7 +1434,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1256 @@
+@@ -0,0 +1,1074 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1936,224 +1936,6 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
-+    // ---- [移植侧] 末端重铺海岸 + 实例级修复 ---------------------------------
-+    //
-+    // 海岸碎片的两处来源，这一版都堵上：
-+    //   * 官方盖章（PlaceIsoTile）是按足印逐格写的，一次成功的盖章产出的实例**本来就是自洽的**
-+    //     （覆盖格相邻、片内偏移与掩码一一对应）；但盖章中途被拒会留下"半件"；
-+    //   * 末端按**单格**还原旧美术，会把一个完整旧实例撕成碎片 —— 这就是之前那版的问题。
-+    // 所以顺序是：快照 -> 卸妆 + 把工作状态重建成"挖地形期"（水格与岸边陆格打世代标记，
-+    // 否则 PlaceIsoTile 的准入判定一律拒绝，探针实测 61/74 次是这一类）-> 跑官方那两趟选片
-+    // （整图自然顺序）-> 仍是占位格的先还原 -> **实例级修复**：把当前岸格按"同片四连通"聚成
-+    // 实例，凡偏移集合与该片掩码不符的，整组还原成快照值，反复若干轮直到没有不自洽实例。
-+    // 位置选在 MirrorMap 末尾：后面没有任何阶段再动瓦片。
-+    if (kind != mg::MapSymmetry::None && shorePieces_ >= 0)
-+    {
-+        const int side = size_.workSide;
-+        const int total = 512 * slotRows_;
-+        std::vector<int> stile(static_cast<size_t>(total), -1);
-+        std::vector<int> sh(static_cast<size_t>(total), 0);
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                const int id = 512 * y + x;
-+                MapCell* c = cellSlots_[id];
-+                if (c == nullptr)
-+                    continue;
-+                const int t = c->IsoTileTypeIndex;
-+                if (t >= shorePieces_ && t < shorePieces_ + 42)
-+                {
-+                    stile[static_cast<size_t>(id)] = t;
-+                    sh[static_cast<size_t>(id)] = c->Height;
-+                }
-+            }
-+        }
-+
-+        long long shoreCells = 0;
-+        for (size_t i = 0; i < stile.size(); ++i)
-+            if (stile[i] >= 0)
-+                ++shoreCells;
-+        // 这张图本来不用岸片族（岛屿类：水族 + 地面），就不要动它 —— 官方选片 pass 的
-+        // "占位格"门在成品图上是**所有 Clear 格**，跑一遍会把岸族美术铺遍全图（实测把
-+        // rotational-180 的岛屿图铺出 124 对不对称的岸环，验收因此变红）。
-+        long long undressed = 0, visited = 0, failed = 0, restored = 0, repaired = 0;
-+        int rounds = 0;
-+        std::vector<std::pair<int, int> > waterCells;
-+        if (shoreCells > 0)
-+        {
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                const int id = 512 * y + x;
-+                MapCell* c = cellSlots_[id];
-+                if (c == nullptr)
-+                    continue;
-+                WorkCell& w = workCells_[x + side * y];      // 注意：workCells_ 按 x+side*y 索引
-+                w.data[16] = -1;
-+                const int t = c->IsoTileTypeIndex;
-+                if (t >= shorePieces_ && t < shorePieces_ + 42)
-+                {
-+                    c->IsoTileTypeIndex = 0;
-+                    c->Height = 0;
-+                    w.data[14] = 0;
-+                    ++undressed;
-+                    continue;
-+                }
-+                if (IsWaterTile(c))
-+                {
-+                    // 注意：**不改瓦片**。DecorateWaterTiles 早在流水线中段跑过并铺好了水沿，
-+                    // 在末端把水格退回基础片等于把水沿美术抹掉（渲染上就是光秃菱形）。
-+                    w.data[14] = genCode_;
-+                    waterCells.push_back(std::make_pair(x, y));
-+                    continue;
-+                }
-+                w.data[14] = 0;
-+            }
-+        }
-+        for (size_t i = 0; i < waterCells.size(); ++i)
-+        {
-+            const int wx = waterCells[i].first, wy = waterCells[i].second;
-+            for (int dy = -2; dy <= 2; ++dy)
-+            {
-+                for (int dx = -2; dx <= 2; ++dx)
-+                {
-+                    const int nx = wx + dx, ny = wy + dy;
-+                    if (nx < 0 || ny < 0 || nx >= 512 || ny >= slotRows_)
-+                        continue;
-+                    if (cellSlots_[512 * ny + nx] == nullptr)
-+                        continue;
-+                    workCells_[nx + side * ny].data[14] = genCode_;
-+                }
-+            }
-+        }
-+        for (int mode = 1; mode <= 2; ++mode)
-+        {
-+            CellIterator it;
-+            it.Reset(cellSlots_, size_.mapWidth);
-+            while (MapCell* cell = it.Next())
-+            {
-+                ++visited;
-+                if (!SelectShoreTile(cell, mode, genCode_, 0))
-+                    ++failed;
-+            }
-+        }
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                const int id = 512 * y + x;
-+                MapCell* c = cellSlots_[id];
-+                if (c == nullptr || c->IsoTileTypeIndex != 0)
-+                    continue;
-+                if (stile[static_cast<size_t>(id)] < 0)
-+                    continue;
-+                c->IsoTileTypeIndex = stile[static_cast<size_t>(id)];
-+                c->Height = sh[static_cast<size_t>(id)];
-+                ++restored;
-+            }
-+        }
-+
-+        long long coherentCells = 0, totalCells = 0;
-+        // 实例自洽性：把当前岸格按"同片四连通"聚成实例，偏移集合必须等于该片掩码。
-+        // repair=true 时，凡不自洽的实例整组还原成快照值（不是单格还原 —— 单格还原正是碎片来源）。
-+        const auto collectInstances = [&](int* outCoherent, int* outTotal, bool repair)
-+        {
-+            std::vector<char> seen(static_cast<size_t>(total), 0);
-+            for (int y = 0; y < slotRows_; ++y)
-+            {
-+                for (int x = 0; x < 512; ++x)
-+                {
-+                    const int id = 512 * y + x;
-+                    MapCell* c = cellSlots_[id];
-+                    if (c == nullptr)
-+                        continue;
-+                    const int t = c->IsoTileTypeIndex;
-+                    if (t < shorePieces_ || t >= shorePieces_ + 42 ||
-+                        seen[static_cast<size_t>(id)])
-+                        continue;
-+                    std::vector<int> group;
-+                    std::vector<int> stack(1, id);
-+                    seen[static_cast<size_t>(id)] = 1;
-+                    while (!stack.empty())
-+                    {
-+                        const int cur = stack.back();
-+                        stack.pop_back();
-+                        group.push_back(cur);
-+                        const int cx = cur % 512, cy = cur / 512;
-+                        const int nb[4][2] = {{cx + 1, cy}, {cx - 1, cy},
-+                                              {cx, cy + 1}, {cx, cy - 1}};
-+                        for (int k = 0; k < 4; ++k)
-+                        {
-+                            const int nx = nb[k][0], ny = nb[k][1];
-+                            if (nx < 0 || ny < 0 || nx >= 512 || ny >= slotRows_)
-+                                continue;
-+                            const int nid = 512 * ny + nx;
-+                            MapCell* n = cellSlots_[nid];
-+                            if (n == nullptr || seen[static_cast<size_t>(nid)])
-+                                continue;
-+                            if (n->IsoTileTypeIndex != t)
-+                                continue;
-+                            seen[static_cast<size_t>(nid)] = 1;
-+                            stack.push_back(nid);
-+                        }
-+                    }
-+                    int fw = 0, fh = 0;
-+                    unsigned long long fmask = 0;
-+                    if (!ShoreFootprint(t - shorePieces_, &fw, &fh, &fmask))
-+                        continue;
-+                    unsigned long long got = 0;
-+                    for (size_t g = 0; g < group.size(); ++g)
-+                    {
-+                        const int off = cellSlots_[group[g]]->Height;
-+                        if (off >= 0 && off < 64)
-+                            got |= 1ULL << off;
-+                    }
-+                    if (outTotal != nullptr)
-+                        ++(*outTotal);
-+                    if (got == fmask)
-+                    {
-+                        if (outCoherent != nullptr)
-+                            ++(*outCoherent);
-+                        coherentCells += static_cast<long long>(group.size());
-+                        continue;
-+                    }
-+                    totalCells += static_cast<long long>(group.size());
-+                    if (!repair)
-+                        continue;
-+                    for (size_t g = 0; g < group.size(); ++g)
-+                    {
-+                        const int gid = group[g];
-+                        MapCell* gc = cellSlots_[gid];
-+                        const bool had = (stile[static_cast<size_t>(gid)] >= 0);
-+                        gc->IsoTileTypeIndex = had ? stile[static_cast<size_t>(gid)] : 0;
-+                        gc->Height = had ? sh[static_cast<size_t>(gid)] : 0;
-+                        ++repaired;
-+                    }
-+                }
-+            }
-+        };
-+        for (int round = 0; round < 12; ++round)
-+        {
-+            const long long before = repaired;
-+            int coh = 0, tot = 0;
-+            collectInstances(&coh, &tot, true);
-+            ++rounds;
-+            if (repaired == before)
-+                break;
-+        }
-+        int finalCoherent = 0, finalTotal = 0;
-+        collectInstances(&finalCoherent, &finalTotal, false);
-+        std::fprintf(stderr, "[symmetry] coast-tail: %s, undressed %lld, visits %lld, "
-+                     "failure %lld, restored %lld, repaired %lld over %d rounds; "
-+                     "instances %d/%d coherent, cells %lld/%lld coherent\n",
-+                     mg::MapSymmetryName(kind), undressed, visited, failed, restored,
-+                     repaired, rounds, finalCoherent, finalTotal,
-+                     coherentCells, coherentCells + totalCells);
-+        }
-+    }
-+
 +    std::fprintf(stderr,
 +                 "[symmetry] placed: %s, %zu start points, %zu waypoints, %zu terrain "
 +                 "objects, %zu structures (the overlay layer is reported by "
@@ -2398,6 +2180,42 @@
 +                     "in mirrored pairs over the whole map (%lld pair visits, %lld reported "
 +                     "failure), restored %lld that the pass could not dress\n",
 +                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
++    }
++
++    // ---- [移植侧] 非左右对称：海岸改用"岛屿做法" ---------------------------
++    // 实测依据（本机跑出来的，不是推断）：
++    //   · 岛屿类（Continent 等）沿岸的陆格是 tile 0（平地）与普通地形，**完全不用岸片族**
++    //     （水格 8035，沿岸陆格 top: 0/520/135/144/428 …），观感你一直认可；
++    //   · 内陆 / 山地 180 的沿岸陆格全是岸片族（111/109/120/94/96/91 = ShorePieces+22/20/31/5/…）。
++    // 岸片是**有朝向的多格片**，而 180 / 上下这两个映射不是格的同构（相邻格不映到相邻格），
++    // 它们必然被打散 —— 任何摆放策略都救不回来（前后试过九种，含末端重铺、实例级修复、
++    // 按镜像格成对重选、重建挖地形期状态等）。岛屿做法用的全是**逐格均匀**的美术（平地 + 水族），
++    // 在打散下不变，所以两侧一致。
++    // 于是：两半一起把岸片换成平地（**水格一瓦不碰** —— 水沿由 DecorateWaterTiles 照常铺，
++    // 末端重置水格会把水沿抹掉，那是之前"光秃菱形"的真正成因）。左右对称不动这一支：
++    // 它的岸片是足印镜像件，观感已经对了。
++    if (kind != mg::MapSymmetry::AxialLeftRight && shorePieces_ >= 0)
++    {
++        long long converted = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t = c->IsoTileTypeIndex;
++                if (t >= shorePieces_ && t < shorePieces_ + 42)
++                {
++                    c->IsoTileTypeIndex = 0;            // 平地：与岛屿类的沿岸陆格同款
++                    c->Height = 0;
++                    ++converted;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld shore cells -> plain "
++                     "ground (the island recipe; water cells untouched)\n",
++                     mg::MapSymmetryName(kind), converted);
 +    }
 +
 +    // Report, and check the result against itself - the rendered map cannot tell
