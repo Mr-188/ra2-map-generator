@@ -334,6 +334,11 @@ def interior_stats(cells: dict, Wp: int, Hp: int, kind: int):
     return pairs, art, exact
 
 
+def water_key_of(t) -> bool:
+    """水格判定：与引擎一致 —— 水族 314..327（含 1x1 边片）。"""
+    return 314 <= t.tile_index < 328
+
+
 def run_generator(out: Path, land: int, symmetry: int,
                   extra: list[str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -1575,6 +1580,77 @@ def check_180_corner_lattice(failures: list[str]) -> int:
     return checks
 
 
+def check_top_bottom(failures: list[str]) -> int:
+    """上下轴对称的门禁 —— 用**真正的不对称判据**，不是生成器自己的说法。
+
+    判据（都是本机实跑得出、写在 mirror.h 里的）：
+      * 水/陆分类在**反对角翻转** (x,y)->(W'+H'-y, W'+H'-x) 下必须完全一致
+        （只比较镜像后仍在菱形内的格；隐藏边距里那一带两侧都不计）；
+      * 水格上的"片号+子帧+层"必须**逐格相同** —— 上下用的是"岛屿做法"（岸片换成普通地面、
+        水面统一成同一张 1x1 片），这一层没有理由不同；
+      * 生成两次必须逐字节相同。
+    """
+    import tempfile
+    checks = 0
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        return 0
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        extra = ["--size", "2", "--players", "4", "--water", "80", "--seed", "20260913"]
+        mp = tmp / "tb.yrm"
+        proc = run_generator(mp, 3, 3, extra)
+        checks += 1
+        if proc.returncode != 0:
+            failures.append(f"top-bottom: generation failed: {proc.stderr[-300:]}")
+            return checks
+        sections = sections_of(mp)
+        cells = cells_of(sections)
+        # 内部尺寸直接从格集合反推（与 mirror.h 的口径一致：|x-y| < W'，W' < x+y <= W'+2H'）。
+        Wp = max(abs(x - y) for (x, y) in cells) + 1
+        Hp = (max(x + y for (x, y) in cells) - Wp) // 2
+
+        def anti(x, y):
+            return Wp + Hp - y, Wp + Hp - x
+
+        class_bad = 0
+        pairs = 0
+        water_cells = 0
+        water_same = 0
+        for (x, y), t in cells.items():
+            mx, my = anti(x, y)
+            o = cells.get((mx, my))
+            if o is None:
+                continue
+            pairs += 1
+            w1 = water_key_of(t)
+            w2 = water_key_of(o)
+            if w1 != w2:
+                class_bad += 1
+                continue
+            if w1:
+                water_cells += 1
+                if (t.tile_index, t.sub_tile, t.z) == (o.tile_index, o.sub_tile, o.z):
+                    water_same += 1
+        checks += 1
+        if class_bad:
+            failures.append(f"top-bottom: {class_bad} of {pairs} mirrored cell pairs "
+                            f"disagree about water/land")
+        checks += 1
+        if water_cells and water_same != water_cells:
+            failures.append(f"top-bottom: only {water_same} of {water_cells} mirrored water "
+                            f"pairs carry the same piece+sub-frame+level (the island coast "
+                            f"should make this 100%)")
+        print(f"  top-bottom  outline symmetric on {pairs - class_bad}/{pairs} pairs; "
+              f"water cells identical on {water_same}/{water_cells}")
+        # 复现性：同参数两次逐字节相同
+        mp2 = tmp / "tb2.yrm"
+        proc2 = run_generator(mp2, 3, 3, extra)
+        checks += 1
+        if proc2.returncode == 0 and mp.read_bytes() != mp2.read_bytes():
+            failures.append("top-bottom: two runs with the same parameters differ")
+    return checks
+
+
 def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
     """Print the whole-map interior yardstick, per land type and per kind.
 
@@ -1668,6 +1744,7 @@ def main() -> int:
 
     print("  map     mirror a map and compare it cell by cell")
     generation_checks = check_generation(failures)
+    tb_checks = check_top_bottom(failures)
 
     print()
     if failures:
@@ -1679,7 +1756,7 @@ def main() -> int:
           f"the product offers are closed ({closure_checks} closure checks), the 180 "
           f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
           f"and a symmetric map decodes back symmetric ({generation_checks} generation "
-          f"checks)")
+          f"checks, {tb_checks} of them top-bottom)")
     return 0
 
 

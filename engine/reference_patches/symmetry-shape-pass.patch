@@ -307,7 +307,7 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,285 @@
+@@ -3169,6 +3200,294 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -479,12 +479,15 @@
 +    const int w = fp->w, h = fp->h;
 +    if (w * h <= 1)
 +        return -1;                                  // a single 1x1 piece
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +        return -1;
 +
++    // [移植侧] 每种对称有自己的足印变换：左右=转置；180=旋转 180；上下=反对角翻转。
 +    const bool transpose = (kind == mg::MapSymmetry::AxialLeftRight);
-+    const int tw = transpose ? h : w;               // the mirrored footprint
-+    const int th = transpose ? w : h;
++    const bool topbottom = (kind == mg::MapSymmetry::AxialTopBottom);
++    const int tw = (transpose || topbottom) ? h : w;    // the mirrored footprint
++    const int th = (transpose || topbottom) ? w : h;
 +
 +    unsigned long long tmask = 0;
 +    for (int row = 0; row < h; ++row)
@@ -493,8 +496,10 @@
 +        {
 +            if (((fp->mask >> (row * w + col)) & 1ULL) == 0)
 +                continue;
-+            const int nr = transpose ? col : (h - 1 - row);
-+            const int nc = transpose ? row : (w - 1 - col);
++            int nr, nc;
++            if (transpose)      { nr = col;         nc = row; }
++            else if (topbottom) { nr = w - 1 - col; nc = h - 1 - row; }
++            else                { nr = h - 1 - row; nc = w - 1 - col; }
 +            tmask |= 1ULL << (nr * tw + nc);
 +        }
 +    }
@@ -546,8 +551,10 @@
 +                    if (off < 0 || off >= w * h)
 +                        return -1;
 +                    const int row = off / w, col = off % w;
-+                    const int moved = transpose ? (col * h + row)
-+                                                : ((h - 1 - row) * w + (w - 1 - col));
++                    int moved;
++                    if (transpose)      moved = col * h + row;
++                    else if (topbottom) moved = (w - 1 - col) * h + (h - 1 - row);
++                    else                moved = (h - 1 - row) * w + (w - 1 - col);
 +                    if (((tmask >> moved) & 1ULL) == 0)
 +                        return -1;
 +                    *inoutHeight = moved;
@@ -577,8 +584,10 @@
 +                return -1;                      // not an in-footprint offset
 +            const int row = idx / w;
 +            const int col = idx % w;
-+            const int moved = transpose ? (col * h + row)
-+                                        : ((h - 1 - row) * w + (w - 1 - col));
++            int moved;
++            if (transpose)      moved = col * h + row;
++            else if (topbottom) moved = (w - 1 - col) * h + (h - 1 - row);
++            else                moved = (h - 1 - row) * w + (w - 1 - col);
 +            // The remapped offset must land on a cell the partner really
 +            // occupies, or the piece would end up with a hole in it.
 +            if (((tmask >> moved) & 1ULL) == 0)
@@ -593,7 +602,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4052,55 @@
+@@ -3742,6 +4061,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -649,7 +658,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4121,45 @@
+@@ -3762,36 +4130,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1003,7 +1012,7 @@
  }
  
  // ---------------------------------------------------------------------------
-@@ -1290,3 +1374,90 @@
+@@ -1290,3 +1374,91 @@
          }
      }
  }
@@ -1065,7 +1074,8 @@
 +        return true;
 +    if (cellSlots_ == nullptr || workCells_ == nullptr)
 +        return true;
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +        return false;
 +
 +    const int W = size_.mapWidth;
@@ -1438,7 +1448,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1139 @@
+@@ -0,0 +1,1172 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1561,7 +1571,8 @@
 +        std::fprintf(stderr, "[symmetry] MirrorShape: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorShape: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));
@@ -1774,7 +1785,8 @@
 +        std::fprintf(stderr, "[symmetry] MirrorMap: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorMap: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));
@@ -2075,7 +2087,8 @@
 +        std::fprintf(stderr, "[symmetry] MirrorSpecialTerrain: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorSpecialTerrain: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));
@@ -2287,6 +2300,34 @@
 +                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
 +    }
 +
++    // ---- [移植侧] 上下：岛屿做法（岸片 -> 普通地面） ------------------------------
++    // 第 4 轮结论：这套 tileset 没有按"反对角翻转"画的岸片美术（足印闭合、美术不闭合），
++    // 所以靠映射做不出与权威侧一致的上下海岸。用户为 180 认可过的"岛屿做法"正好绕开它：
++    // 岸片族换成普通地面（逐格均匀美术，不需要任何"上下关系"），水格与水面一瓦不碰 ——
++    // 效果见 build/render_test/diag-tb-shore-wiped.png（两个湖完全镜像、台阶消失）。
++    if (kind == mg::MapSymmetry::AxialTopBottom && shorePieces_ >= 0)
++    {
++        long long replaced = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t2 = c->IsoTileTypeIndex;
++                if (t2 >= shorePieces_ && t2 < shorePieces_ + 42)
++                {
++                    c->IsoTileTypeIndex = (greenTileIndex_ >= 0) ? greenTileIndex_ : 0;
++                    c->Height = 0;
++                    ++replaced;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld shore cells -> plain ground\n",
++                     mg::MapSymmetryName(kind), replaced);
++    }
++
 +    // Report, and check the result against itself - the rendered map cannot tell
 +    // whether a shape mirror worked (an unmirrored map scores 0.961 here by itself).
 +    long long pairs = 0, disagree = 0, water = 0, land = 0, other = 0;
@@ -2361,7 +2402,8 @@
 +        std::fprintf(stderr, "[symmetry] MirrorLevels: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorLevels: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));
@@ -2420,7 +2462,8 @@
 +        std::fprintf(stderr, "[symmetry] MirrorOverlays: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180)
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorOverlays: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));

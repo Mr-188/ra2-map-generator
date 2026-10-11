@@ -309,9 +309,10 @@ enum class MapSymmetry
     None = 0,
     AxialLeftRight = 1,   // 轴对称：左右
     Rotational180 = 2,    // 普通对称：旋转 180°
+    AxialTopBottom = 3,   // 轴对称：上下（纯反对角翻转）
 };
 
-constexpr int kMapSymmetryMax = 2;
+constexpr int kMapSymmetryMax = 3;
 
 // The kinds the PASS actually applies, and therefore what the page may offer and
 // mg_symmetry_max() reports: offering a kind the generator then refuses is the
@@ -322,7 +323,7 @@ constexpr int kMapSymmetryMax = 2;
 // four WaterCliffs pieces that have no 180-degree counterpart - the pass reports
 // the latter instead of writing art it does not have.
 constexpr int kMapSymmetryImplementedMax =
-    static_cast<int>(MapSymmetry::Rotational180);
+    static_cast<int>(MapSymmetry::AxialTopBottom);
 
 // WHY TOP-BOTTOM IS NOT OFFERED, RE-MEASURED (a prototype was built and withdrawn).
 //
@@ -464,6 +465,7 @@ inline const char* MapSymmetryName(MapSymmetry s)
     case MapSymmetry::None:           return "none";
     case MapSymmetry::AxialLeftRight: return "left-right";
     case MapSymmetry::Rotational180:  return "rotational-180";
+    case MapSymmetry::AxialTopBottom: return "top-bottom";
     }
     return "?";
 }
@@ -518,6 +520,12 @@ inline bool MirrorCell(int mapWidth, int mapHeight, MapSymmetry kind,
         mx = k - x;
         my = k - y;
     }
+    else if (kind == MapSymmetry::AxialTopBottom)
+    {
+        const long long k = static_cast<long long>(mapWidth) + mapHeight;
+        mx = k - y;
+        my = k - x;
+    }
     else
     {
         return false;
@@ -546,7 +554,8 @@ inline long long DiamondCellCount(int mapWidth, int mapHeight)
 // copied whole and the ramp tiles are then re-derived from the copied value.
 inline int ReflectSlope(MapSymmetry kind, int slope)
 {
-    if (kind != MapSymmetry::AxialLeftRight && kind != MapSymmetry::Rotational180)
+    if (kind != MapSymmetry::AxialLeftRight && kind != MapSymmetry::Rotational180
+        && kind != MapSymmetry::AxialTopBottom)
         return slope;
     switch (slope)
     {

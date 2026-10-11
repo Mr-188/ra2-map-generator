@@ -500,10 +500,11 @@ a.dl svg { width: 12px; height: 12px; }
 
         <div class="cell"><label for="symmetry">对称</label>
           <select id="symmetry"
-                  title="左右轴对称：把地图沿两轴对调镜像。上下轴对称不提供 —— tileset 里没有它需要的朝向美术（见 engine/src/mirror.h）。">
+                  title="左右轴对称：沿两轴对调镜像。180°：绕中心旋转 180°。上下轴对称：沿上下翻转（海岸用"岛屿做法"，见 engine/src/mirror.h）。">
             <option value="0" selected>无</option>
             <option value="1">左右轴对称</option>
-            <option value="2" disabled>180° 中心对称</option>
+            <option value="2">180° 中心对称</option>
+            <option value="3">上下轴对称</option>
           </select>
         </div>
 
