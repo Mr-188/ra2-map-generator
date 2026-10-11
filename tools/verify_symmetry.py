@@ -782,6 +782,41 @@ def check_generation(failures: list[str]) -> int:
                   f"({100.0 * rp_art / rp_pairs:.1f}%, bound "
                   f"{100 * INTERIOR_LIMIT_180:.0f}% - the structural floor, see mirror.h)")
 
+        # 7c. The shore pieces put back together: instance coherence, measured at a size
+        #     where Inland really has shore art.  At GEN_PARAMS' size 1 the 180 Inland map
+        #     carries no shore pieces at all, so the coast metric above has nothing to say
+        #     about the mirrored half; this is the check that does.  Floors: left-right
+        #     90% (measured 99-100%), 180 25% (measured 50%; the old copy-verbatim
+        #     behaviour measured 8%).
+        for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.25)):
+            # Explicit parameters, not GEN_PARAMS: the shore family only exists when the
+            # carve actually makes a river or a lake, which needs water > 20.
+            mp = tmp_path / f"cohesion-{sym}.yrm"
+            proc = subprocess.run(
+                [str(MGCONSOLE), "--root", str(ASSETS), "--land", "3", "--theater", "0",
+                 "--size", "2", "--players", "4", "--water", "80", "--seed", "20260913",
+                 "--symmetry", str(sym), "--out", str(mp)],
+                capture_output=True, text=True, timeout=900)
+            checks += 1
+            if proc.returncode != 0:
+                failures.append(f"cohesion {label}: generation failed: {proc.stderr[-300:]}")
+                continue
+            got = shore_instance_coherence(mp, shore_family_base(ini))
+            if not got or got[1] == 0:
+                print(f"  cohesion {label:<18} no shore instances to judge")
+                continue
+            ratio = got[2] / got[1]
+            cell_ratio = (got[3] / got[4]) if got[4] else 0.0
+            if ratio < floor:
+                failures.append(
+                    f"cohesion {label}: only {got[2]}/{got[1]} shore instances "
+                    f"({ratio:.0%}, floor {floor:.0%}) are coherent - the coast pieces on "
+                    f"one half were scattered instead of placed as instances (see "
+                    f"MapGenSymmetry.cpp, the end-of-pipeline coast rebuild)")
+            else:
+                print(f"  cohesion {label:<18} shore instances {got[2]}/{got[1]} "
+                      f"({ratio:.0%}), cells {got[3]}/{got[4]} ({cell_ratio:.0%})")
+
         coast_pngs: dict[str, Path] = {}
         coast_maps: dict[str, Path] = {}
         checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr",
@@ -1059,6 +1094,64 @@ def coast_layer_diff(map_path: Path, png: Path, kind: int):
     if not vals:
         return 0, None, None
     return len(vals), _st.mean(vals), _st.median(vals)
+
+
+def shore_instance_coherence(map_path: Path, base: int | None = None):
+    """(shore cells, instances, coherent instances, cells in coherent instances).
+
+    A "shore instance" is a 4-connected group of cells carrying the SAME ShorePieces
+    tile; it is coherent when its sub-cell offsets are exactly that piece's footprint
+    mask.  This is the number the Inland / Mountainous coast work is judged on where a
+    rendered pair cannot be formed (at the suite's own map size the 180 Inland map has
+    no shore art at all, so the coast metric has nothing to say about it).  Measured at
+    size 2 on the same seed: left-right 136/137 and 100% of cells; 180 as copied (the
+    old behaviour) 14/169 with 99 single-cell and 49 three-cell groups - impossible
+    shapes for even-masked pieces - and 135/269 after the end-of-pipeline rebuild.  A
+    copy cannot produce a coherent mirrored group because the 180 mapping scatters a
+    footprint's cells (adjacent cells do not map to adjacent cells), so the ratio is a
+    direct read-out of "did anything put those pieces together again".
+    """
+    try:
+        from maptools.map_ini import load_map, extract_iso_pack_b64, parse_map_size
+        from maptools.iso_pack import decode_iso_map_pack
+    except Exception:                                          # pragma: no cover
+        return None
+    if not map_path.is_file() or not FOOTPRINTS_CPP.is_file():
+        return None
+    sections = load_map(map_path)
+    cells = {(t.rx, t.ry): t
+             for t in decode_iso_map_pack(extract_iso_pack_b64(sections),
+                                          *parse_map_size(sections))}
+    if base is None:
+        base = 89
+    table = parse_table(FOOTPRINTS_CPP.read_text(encoding="utf-8", errors="replace"),
+                        "kShoreFootprints")
+    shore = {c: t for c, t in cells.items()
+             if base <= t.tile_index < base + len(table)}
+    seen = set()
+    inst = good = cc = tc = 0
+    for c in sorted(shore):
+        if c in seen:
+            continue
+        t0 = shore[c].tile_index
+        stack = [c]
+        seen.add(c)
+        grp = []
+        while stack:
+            q = stack.pop()
+            grp.append(q)
+            for n in ((q[0] + 1, q[1]), (q[0] - 1, q[1]), (q[0], q[1] + 1), (q[0], q[1] - 1)):
+                if n in shore and n not in seen and shore[n].tile_index == t0:
+                    seen.add(n)
+                    stack.append(n)
+        fp = table[t0 - base]
+        mask = {i for i in range(fp[0] * fp[1]) if (fp[2] >> i) & 1}
+        inst += 1
+        tc += len(grp)
+        if {cells[q].sub_tile for q in grp} == mask:
+            good += 1
+            cc += len(grp)
+    return len(shore), inst, good, cc, tc
 
 
 def uncovered_steps(map_path: Path, png: Path) -> tuple[int, int] | None:
