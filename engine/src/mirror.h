@@ -393,6 +393,19 @@ constexpr int kMapSymmetryImplementedMax =
 // an instance occupies against the footprint mask (that is 85/85 at top-bottom), not WHICH
 // sub-tile sits on WHICH cell.  The next measurement has to be an orientation check.
 //
+// THE WIPE WAS THEN NARROWED, AND IT NAMES THE SHORE FAMILY (top-bottom, Inland, size 2).  Wiping
+// ONLY the shore family (712 cells, cliffs and water-cliffs left alone) and rendering gives two
+// clean mirror-image lakes with the staircase completely gone - see
+// build/render_test/diag-tb-shore-wiped.png.  So:
+//   * the stepped water edge is shore art laid out wrongly on the mirrored half, not the cliffs;
+//   * the cliff layer is a SEPARATE, much smaller defect (111 cells, one edge band, measured in
+//     the census above) and it is not what a player sees at the water.
+// The fix that follows is the one the shore family already got for left-right: place the mirrored
+// SHORE INSTANCE as a whole at the mirrored anchor with the partner piece and the partner's own
+// sub-tile layout, instead of mapping the cells one at a time.  Cell-wise mapping keeps the
+// instance's cells coherent (hence 85/85) but can pair the wrong sub-tile with the wrong cell,
+// which is exactly a staircase along an edge.
+//
 // TWO FIXES TRIED FOR THE CLIFF LAYER, BOTH REJECTED BY THE DARK-PIXEL GATE.  The cliff art is
 // placed AFTER the mirror (PlaceCliffs / CorrectCliffTiles / RepairCliffPieces read tile
 // indices, and a mirrored tile index is the footprint PARTNER, not an equal value - the same
