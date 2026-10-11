@@ -318,7 +318,15 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     // [移植侧] The symmetry pass, at the same point the native driver uses it:
     // after every RNG-consuming and disassembly-derived stage, before the radar
     // and the writer (both of which rebuild what they need from the cells).
-    if (!rmg.MirrorMap(cfg.symmetry))
+    
+    // [移植侧] 对称地图：最后用官方算法铺一次海岸。
+    if (cfg.symmetry != mg::MapSymmetry::None
+        && (cfg.landType == LandType::Inland || cfg.landType == LandType::Mountainous))
+    {
+        if (!rmg.RunShorePassesAtEnd())
+            std::fprintf(stderr, "[wasm] RunShorePassesAtEnd failed\n");
+    }
+if (!rmg.MirrorMap(cfg.symmetry))
     {
         g_error = "MirrorMap failed";
         return 6;

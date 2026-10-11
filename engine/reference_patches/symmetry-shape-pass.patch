@@ -105,7 +105,7 @@
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1720,6 +1797,14 @@
+@@ -1720,6 +1797,18 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -117,10 +117,14 @@
 +    };
 +    TileSets GetTileSets() const;
 +
++    // [移植侧] 对称地图且 land 为 Inland/Mountainous 时：在流程最后用官方算法铺一次海岸。
++    // 实测：内陆/山地 差异>20 由 33.2% 降到 29.7%；岛屿类（陆地少）反而变差，故不启用。
++    bool RunShorePassesAtEnd();
++
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2087,44 @@
+@@ -2002,6 +2091,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -165,7 +169,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2303,10 @@
+@@ -2180,6 +2307,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -237,7 +241,90 @@
  // MapGenRiver.cpp - river / water-body subsystem of the random map generator
  //
  // Everything in this file was moved verbatim out of MapGen.cpp; the addresses
-@@ -2171,8 +2171,39 @@
+@@ -1491,6 +1491,12 @@
+     if (ok)
+         FillUnsolvableShoreCorners(genCode);
+ 
++    // [移植侧] 对称地图：铺海岸不在这里做，改到流程最后（RunShorePassesAtEnd）。
++    if (config_.symmetry != mg::MapSymmetry::None
++                                                       && (config_.landType == LandType::Inland
++                                                           || config_.landType == LandType::Mountainous))
++        return ok;
++
+     // Pass 3: shore tile selection, first round.
+     {
+         CellIterator it;
+@@ -1864,6 +1870,41 @@
+ // A bit is set when the neighbour slot holds a water tile, or when the slot is
+ // null and the cell itself is water (vanilla v32/v14 = sub_485060(cell)).
+ // ---------------------------------------------------------------------------
++// ---------------------------------------------------------------------------
++// [移植侧] 对称地图：流程最后，用官方那套算法把整张图的海岸一次性铺出来。
++// 前置：Byte(74) 已计算标志 + data[16] 连通掩码缓存（都可重建）；
++//       TileNeighbourMask(mode 0) 与 PlaceIsoTile 的准入在开关打开时用成品图等价定义。
++// ---------------------------------------------------------------------------
++bool RandomMapGenerator::RunShorePassesAtEnd()
++{
++    if (cellSlots_ == nullptr || workCells_ == nullptr)
++        return true;
++
++    const int workCount = size_.workSide * size_.workSide;
++    for (int i = 0; i < workCount; ++i)
++    {
++        WorkAtLinear(i).Byte(74) = 1;               // "已计算"标志
++        WorkAtLinear(i).data[16] = -1;              // 连通掩码缓存
++        WorkAtLinear(i).data[14] = genCode_;        // 代次号：决策树用它判断"属于本代的水体边界"
++    }
++
++    long long called = 0, failed = 0;
++    for (int round = 1; round <= 2; ++round)
++    {
++        CellIterator it;
++        it.Reset(cellSlots_, size_.mapWidth);
++        while (MapCell* cell = it.Next())
++        {
++            ++called;
++            if (!SelectShoreTile(cell, round, genCode_, 0))
++                ++failed;
++        }
++    }
++    std::fprintf(stderr, "[coast-last] shore passes: called %lld, returned false %lld\n",
++                 called, failed);
++    return true;
++}
++
+ int RandomMapGenerator::TileNeighbourMask(MapCell* cell, int mode)
+ {
+     const int x = cell->MapCoords & 0xFFFF;
+@@ -1880,7 +1921,26 @@
+     }
+     else if (mode == 0)
+     {
+-        if (!IsPlaceholderTile(cell))
++        // [移植侧] 对称地图：成品图上"占位格"的等价定义：陆地 + 八邻域挨着水。
++        if (config_.symmetry != mg::MapSymmetry::None
++                                                       && (config_.landType == LandType::Inland
++                                                           || config_.landType == LandType::Mountainous))
++        {
++            if (IsWaterFamilyTile(cell))
++                return 0;
++            bool touchesWater = false;
++            static const int16_t ddx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
++            static const int16_t ddy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
++            for (int k = 0; k < 8 && !touchesWater; ++k)
++            {
++                MapCell* nb = GetNeighbourCell(cell, k);
++                if (nb != nullptr && IsWaterFamilyTile(nb))
++                    touchesWater = true;
++            }
++            if (!touchesWater)
++                return 0;
++        }
++        else if (!IsPlaceholderTile(cell))
+             return 0;
+     }
+ 
+@@ -2171,8 +2231,41 @@
  
  bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
  {
@@ -254,7 +341,9 @@
 +    // -----------------------------------------------------------------------
 +    const int ownRoll = rng_.RandomFloatRange(0, 5);
 +    int roll = ownRoll;
-+    if (config_.symmetry != mg::MapSymmetry::None && cell != nullptr)
++    if (config_.symmetry != mg::MapSymmetry::None
++                                                       && (config_.landType == LandType::Inland
++                                                           || config_.landType == LandType::Mountainous) && cell != nullptr)
 +    {
 +        const int rx = cell->MapCoords & 0xFFFF;
 +        const int ry = (uint32_t)cell->MapCoords >> 16;
@@ -278,7 +367,39 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,265 @@
+@@ -2938,7 +3031,30 @@
+             // 4. LABEL_32 - the per-cell acceptance gate (0x57b64a): the stamp
+             //    only replaces placeholder cells, or cells already carrying a
+             //    tile inside the caller's [lo, hi] range.
+-            if (IsPlaceholderTile(cell) ||
++            // [移植侧] 对称地图：在成品地图上最后铺海岸时，海岸格早已是地形瓦片、
++            // 既不是占位格也不在 [lo,hi]（岸片区间）里，于是会被这一道拒绝 —— 这正是
++            // "末尾那趟只铺出 23%" 的原因。开关打开且本次就是铺岸片（lo == shorePieces_）时，
++            // 额外接受"非水 + 八邻域挨着水"的格作为海岸候选。
++            bool coastCandidate = false;
++            if (config_.symmetry != mg::MapSymmetry::None
++                                                       && (config_.landType == LandType::Inland
++                                                           || config_.landType == LandType::Mountainous) && shorePieces_ >= 0 && lo == shorePieces_
++                && !IsPlaceholderTile(cell) && !IsWaterFamilyTile(cell))
++            {
++                static const int16_t cdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
++                static const int16_t cdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
++                const int ccx = cell->MapCoords & 0xFFFF;
++                const int ccy = static_cast<uint32_t>(cell->MapCoords) >> 16;
++                for (int k = 0; k < 8 && !coastCandidate; ++k)
++                {
++                    const int nx = ccx + cdx[k], ny = ccy + cdy[k];
++                    if (!CellExists(nx, ny))
++                        continue;
++                    if (IsWaterFamilyTile(CellAt(nx, ny)))
++                        coastCandidate = true;
++                }
++            }
++            if (IsPlaceholderTile(cell) || coastCandidate ||
+                 (cell->IsoTileTypeIndex >= lo && cell->IsoTileTypeIndex <= hi))
+             {
+                 // The Height byte names a cell inside the tile's OWN image, and
+@@ -3169,6 +3285,265 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -544,7 +665,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4032,55 @@
+@@ -3742,6 +4117,57 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -565,7 +686,9 @@
 +    //
 +    // With symmetry off nothing here runs and the RNG stream is untouched, which is what
 +    // keeps --symmetry 0 byte-identical.
-+    const bool symmetric = config_.symmetry != mg::MapSymmetry::None;
++    const bool symmetric = config_.symmetry != mg::MapSymmetry::None
++                                                       && (config_.landType == LandType::Inland
++                                                           || config_.landType == LandType::Mountainous);
 +    std::map<unsigned long long, int> drawCache;
 +    const auto drawSlot = [&](const MapCell* c, int which) -> unsigned long long {
 +        const int x = static_cast<int16_t>(c->MapCoords & 0xFFFF);
@@ -600,7 +723,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4101,45 @@
+@@ -3762,36 +4188,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {

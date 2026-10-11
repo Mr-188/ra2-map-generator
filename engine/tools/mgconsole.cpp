@@ -350,7 +350,15 @@ int main(int argc, char** argv)
     // [移植侧] 对称镜像。放在 PruneTerrainTrees 之后、Cleanup 之前：所有吃 RNG
     // 与所有出处出自反汇编的阶段都已结束，而 ComputeRadarImage 与写盘都在其后，
     // 雷达与 [Header] 因此自动重算。
-    if (!rmg.MirrorMap(cfg.symmetry))
+    
+    // [移植侧] 对称地图：最后用官方算法铺一次海岸。
+    if (cfg.symmetry != mg::MapSymmetry::None
+        && (cfg.landType == LandType::Inland || cfg.landType == LandType::Mountainous))
+    {
+        if (!rmg.RunShorePassesAtEnd())
+            std::fprintf(stderr, "[mgconsole] RunShorePassesAtEnd failed\n");
+    }
+if (!rmg.MirrorMap(cfg.symmetry))
     {
         std::fprintf(stderr, "[mgconsole] MirrorMap failed\n");
         return 6;
