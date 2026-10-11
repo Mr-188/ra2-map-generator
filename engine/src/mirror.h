@@ -71,20 +71,65 @@
 // degrees are closed: 40/40.  The measurement behind that is in
 // tools/verify_symmetry.py.
 //
-// WHY TOP-BOTTOM IS ABSENT: a top-bottom reflection (r -> H'-1-r) is an exact
-// bijection of S as well, but the tile set has no art for the orientations it
-// needs.  Of the 40 CliffSet pieces, only 27 have a v-flipped counterpart
-// (MapGenRiver.cpp:2590 kCliffFootprints, mask transposed per the
-// "bit (row * w + col)" convention documented at MapGenRiver.cpp:3830); the
-// other 13 - cliff01/03/04, 09/10/11, 19/20/21, 27/28, 31/32 - would have to
-// keep the wrong-facing art.  Left-right and 180 degrees are closed: 40/40.
-// The measurement behind that is in tools/verify_symmetry.py.
+// WHAT 180 DEGREES COSTS, MEASURED, AND WHY IT CANNOT BE PAID OFF.  The broken
+// adjacency above is not a detail of one pass; it bounds the whole 180 mode.  On
+// an Inland map (size 2, 4 players, water 80, seed 20260913, --diag-symmetry) the
+// water/land outline does come out symmetric - 0 of 13992 mirrored pairs - because
+// MirrorSpecialTerrain copies the half, but the first neighbour-derived stage that
+// runs afterwards breaks: PlaceCliffs takes the probe from levelBad 1 / markerBad 0
+// to levelBad 72 / markerBad 203, then CreateHills takes it to 500 / 1053 of 6996
+// pairs, and the finished map shows a different piece on 17.2% of pairs where the
+// same map under left-right shows 2.3% (the island land types: 5.7%..9.4% under
+// 180 against 0.1%..0.7% under left-right, measured by
+// tools/verify_symmetry.py --score).  Under left-right those same two stages leave
+// levelBad and markerBad at 0.
 //
-// The mapping is an involution of S for both kinds, and it preserves the
-// 8-neighbour adjacency graph (the (c, r) grid is the (x, y) grid rotated 45
-// degrees, so a reflection there maps orthogonal steps to orthogonal steps and
-// diagonal to diagonal).  That is why per-cell data derived from neighbours -
-// LAT masks, ramp variants - stays valid and can simply be re-derived.
+// The elevation grid is where it is most visible, and it is not a missing pass.
+// FinalizeElevationSlopes (MapGenHills.cpp:982) reads the 2x2 corner block
+// e(x,y), e(x+1,y), e(x+1,y+1), e(x,y+1), and MirrorElevationGrid (MapGenHills.cpp
+// :1397) mirrors that grid for left-right only, where the corner map is exactly
+// (X,Y) -> (Y,X) for every cell.  Under 180 it would have to be the point
+// reflection about (k/2, k/2) with k = W'+H'+p, and that maps this cell's block to
+// the block of the cell at (k-x-1, k-y-1) - one cell away from the image cell
+// (k-x, k-y), because a block spans x..x+1 while the reflection centre falls on a
+// grid point.  A constant k would map blocks onto blocks, but k must carry p: with
+// p fixed the form is affine and (as measured above) is not a bijection of S - it
+// drops a row.  So: a picture rotation and a preserved adjacency are mutually
+// exclusive on this diamond, the product offers the bijection, and the interior
+// art under 180 has a floor that pairing draws cannot remove.  verify_symmetry
+// prints that floor for every land type and bounds it so it cannot regress
+// silently; it is not a pass waiting to be written.
+//
+// AND IT IS NOT ONLY "ART DIFFERS": the 180 maps also RENDER with holes.  Same
+// configuration, dark pixels (luminance < 10) as tools/verify_symmetry.py measures
+// them: Inland and Mountainous 2.12% against 0.44% for the same map with symmetry
+// off, where the left-right map measures 0.56% against the same 0.44%.  Sampling
+// each mirrored pair's cell centre (indicative numbers - the cell -> pixel
+// projection is approximate) puts the dark cells mostly on ONE side: 92 canonical
+// only and 117 image only against 4 dark on both, where the left-right map is 44
+// on both against 4 / 27.  So the two halves of a 180 map are not drawn alike.
+// What that is NOT is proof the decoded map is bad: the verify_symmetry docstring
+// records that a map whose cells mirror exactly can still render 2.30% black,
+// because the renderer's outcome depends on position and draw order.  The cause is
+// therefore still to be separated, and until it is, this file records the number
+// instead of a conclusion: verify_symmetry prints it for every land type and holds
+// 180 to a 5% bound (left-right keeps max(1%, 2x plain)).
+//
+// THE SHAPE OF A REAL FIX, if the holes turn out to be map data: the hill stage's
+// per-cell results would have to be produced once and mirrored - Level and Height
+// are orientation-free scalars, the slope piece has to be rotated by the 180
+// pattern rotation of kSlopeCorners (MapGenHills.cpp:477), and multi-cell pieces
+// go through MirrorTile.  Copying only Level, as was tried once, is what made the
+// render DARKER (0.39% -> 3.31% on left-right) because the art had already been
+// chosen for the old heights.  Left-right does not need any of this: there
+// MirrorElevationGrid mirrors the corner grid exactly, and the engine derives
+// symmetric art from it for free.
+//
+// (An earlier revision of this comment claimed the mapping "preserves the
+// 8-neighbour adjacency graph" for both kinds.  That is false for 180 - see the
+// measurement two paragraphs up, and check_geometry in tools/verify_symmetry.py -
+// and it was the reason a pass once assumed re-deriving neighbour data after a 180
+// rotation was optional.  It is not.)
 // ---------------------------------------------------------------------------
 
 #pragma once

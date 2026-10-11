@@ -227,6 +227,21 @@ GEN_PARAMS = ["--land", "1", "--theater", "0", "--size", "1", "--players", "2",
 # types measured before the blob-stamp mirroring landed.
 INTERIOR_LIMIT = 0.03
 
+# The same bound for the 180-degree kind, and it is a different number because 180
+# has a different floor - not because less is asked of it.  Under 180 the cell map
+# is a bijection of the diamond but NOT an automorphism of the 8-neighbourhood
+# (measured, see check_geometry and mirror.h), so every neighbour-derived choice
+# made after the shape mirror can differ: measured on GEN_PARAMS, Inland and
+# Mountainous sit at 17.2% and Continent at 9.4%, against 0.1%..0.7% for the same
+# land types under left-right.  25% is a regression guard around that floor, not a
+# target; the floor itself is discussed in engine/src/mirror.h.
+INTERIOR_LIMIT_180 = 0.25
+
+# The dark-pixel bound the 180-degree renders are held to.  See render_cleanliness
+# for the measurement and for why this is a floor to watch rather than a criterion
+# the mode meets: Inland and Mountainous measure 2.12% against 0.44% plain.
+DARK_LIMIT_180 = 0.05
+
 
 def md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -275,7 +290,7 @@ def packed_to_xy(v: int) -> tuple[int, int]:
 ART_DIFF = 20
 
 
-def mirror_of(kind: int, Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
+def mirror_cell(kind: int, Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
     if kind == 1:
         return y, x
     return rot180_cell(Wp, Hp, x, y)
@@ -292,7 +307,7 @@ def interior_stats(cells: dict, Wp: int, Hp: int, kind: int):
     """
     pairs = art = exact = 0
     for (x, y), t in cells.items():
-        o = cells.get(mirror_of(kind, Wp, Hp, x, y))
+        o = cells.get(mirror_cell(kind, Wp, Hp, x, y))
         if o is None:
             continue
         pairs += 1
@@ -504,66 +519,83 @@ def check_generation(failures: list[str]) -> int:
         #     same as the same map generated with symmetry off).  The pass copies the
         #     half whole instead, so what has to hold is: the pass says so, its
         #     self-check disagrees nowhere, and the outline is symmetric.
-        #     BOTH of the two land types are generated here.  They take the same code
-        #     path, but they are two separate entries in the UI and in the CLI, and
-        #     before this loop only Inland was generated at all - Mountainous could
-        #     have been broken without the suite saying a word.
-        special: dict[str, tuple[Path, Path]] = {}
+        #     BOTH of the two land types are generated, and BOTH kinds: they take the
+        #     same code path, but Inland and Mountainous are two separate entries in the
+        #     UI and in the CLI (before this loop only Inland was generated at all -
+        #     Mountainous could have been broken without the suite saying a word), and
+        #     the outline has to be symmetric for 180 as well (MirrorSpecialTerrain
+        #     copies the half and does not care which kind it is copying), while the
+        #     interior has a structurally different floor per kind - see mirror.h and
+        #     INTERIOR_LIMIT_180.
+        special_renders: list[tuple[str, Path, Path]] = []
         for land, label in ((3, "Inland"), (4, "Mountainous")):
-            proc_sp, map_sp = generate(1, f"{label.lower()}.yrm", ["--land", str(land)])
             proc_sp0, map_sp0 = generate(0, f"{label.lower()}_plain.yrm",
                                          ["--land", str(land)])
-            special[label] = (map_sp, map_sp0)
-            checks += 1
-            if not (map_sp.is_file() and map_sp0.is_file()):
-                failures.append(f"the generator produced no {label} map: "
-                                f"{proc_sp.stderr.strip()[-200:]}")
-                continue
-            m = re.search(r"special: .*self-check (\d+) pairs, (\d+) disagree",
-                          proc_sp.stderr)
-            checks += 1
-            if not m:
-                failures.append("the pass did not report its special-terrain self-check; "
-                                "Inland / Mountainous would be silently asymmetric")
-            elif int(m.group(2)) != 0:
-                failures.append(f"the special-terrain pass reports {m.group(2)} of "
-                                f"{m.group(1)} mirrored pairs disagreeing about water")
-            else:
-                print(f"  special {label}: the pass reports 0 of {m.group(1)} pairs "
-                      f"disagreeing")
-            if ini is None:
-                continue
-            S = cells_of(sections_of(map_sp))
-            bad, pairs, _ = selfsym(S, lambda x, y: (y, x), water_key)
-            checks += 1
-            if bad:
-                failures.append(f"{label}: the water/land outline is not symmetric on "
-                                f"{bad} of {pairs} mirrored pairs")
-            else:
-                print(f"  special {label}: water/land outline symmetric on "
-                      f"{pairs}/{pairs} pairs")
+            for kind, kind_short in ((1, "lr"), (2, "180")):
+                kind_name = "left-right" if kind == 1 else "rotational-180"
+                tag = f"{label} {kind_name}"
+                proc_sp, map_sp = generate(kind, f"{label.lower()}_{kind_short}.yrm",
+                                           ["--land", str(land)])
+                if kind == 1:
+                    special_renders.append((label.lower(), map_sp0, map_sp))
+                else:
+                    special_renders.append((f"{label.lower()}-180", map_sp0, map_sp))
+                checks += 1
+                if not (map_sp.is_file() and map_sp0.is_file()):
+                    failures.append(f"the generator produced no {tag} map: "
+                                    f"{proc_sp.stderr.strip()[-200:]}")
+                    continue
+                m = re.search(r"special: .*self-check (\d+) pairs, (\d+) disagree",
+                              proc_sp.stderr)
+                checks += 1
+                if not m:
+                    failures.append("the pass did not report its special-terrain "
+                                    "self-check; Inland / Mountainous would be silently "
+                                    "asymmetric")
+                elif int(m.group(2)) != 0:
+                    failures.append(f"the special-terrain pass reports {m.group(2)} of "
+                                    f"{m.group(1)} mirrored pairs disagreeing about water")
+                else:
+                    print(f"  special {tag:<24} the pass reports 0 of {m.group(1)} "
+                          f"pairs disagreeing")
+                if ini is None:
+                    continue
+                sp_sections = sections_of(map_sp)
+                S = cells_of(sp_sections)
+                Sw, Sh = parse_map_size(sp_sections)
+                bad, pairs, _ = selfsym(S, lambda x, y: mirror_cell(kind, Sw, Sh, x, y),
+                                        water_key)
+                checks += 1
+                if bad:
+                    failures.append(f"{tag}: the water/land outline is not symmetric on "
+                                    f"{bad} of {pairs} mirrored pairs")
+                else:
+                    print(f"  special {tag:<24} water/land outline symmetric on "
+                          f"{pairs}/{pairs} pairs")
 
-            # The INTERIOR, which is the number the Inland / Mountainous work is
-            # driven by: the outline can be (and is) symmetric while the art on the
-            # two halves still differs, and that is exactly the defect this file
-            # exists to catch.  The bound is not a taste judgement but a regression
-            # guard taken from the measurement (INTERIOR_LIMIT above): these two
-            # land types measure 2.3% here and the island types 0.1%..0.7%, while
-            # the same map family measured 10.7% before the blob-stamp mirroring in
-            # MapGenSymmetry.cpp.  A regression of that kind cannot slip through.
-            Sw, Sh = parse_map_size(sections_of(map_sp))
-            sp_pairs, sp_art, sp_exact = interior_stats(S, Sw, Sh, 1)
-            checks += 1
-            if sp_art > INTERIOR_LIMIT * sp_pairs:
-                failures.append(
-                    f"{label}: {sp_art} of {sp_pairs} mirrored pairs "
-                    f"({100.0 * sp_art / sp_pairs:.1f}%) show a different piece on the "
-                    f"two halves, over the {100 * INTERIOR_LIMIT:.0f}% bound")
-            else:
-                print(f"  special {label}: interior art differs on {sp_art}/{sp_pairs} "
-                      f"pairs ({100.0 * sp_art / sp_pairs:.1f}%, bound "
-                      f"{100 * INTERIOR_LIMIT:.0f}%; {100.0 * sp_exact / sp_pairs:.1f}% "
-                      f"differ at all, which a mirror is supposed to do)")
+                # The INTERIOR, which is the number the Inland / Mountainous work is
+                # driven by: the outline can be (and is) symmetric while the art on the
+                # two halves still differs, and that is exactly the defect this file
+                # exists to catch.  The bounds are not taste judgements but regression
+                # guards taken from the measurement (INTERIOR_LIMIT /
+                # INTERIOR_LIMIT_180 above): under left-right these two land types
+                # measure 2.3% here and the island types 0.1%..0.7%, while the same map
+                # family measured 10.7% before the blob-stamp mirroring in
+                # MapGenSymmetry.cpp.  A regression of that kind cannot slip through.
+                limit = INTERIOR_LIMIT if kind == 1 else INTERIOR_LIMIT_180
+                sp_pairs, sp_art, sp_exact = interior_stats(S, Sw, Sh, kind)
+                checks += 1
+                if sp_art > limit * sp_pairs:
+                    failures.append(
+                        f"{tag}: {sp_art} of {sp_pairs} mirrored pairs "
+                        f"({100.0 * sp_art / sp_pairs:.1f}%) show a different piece on "
+                        f"the two halves, over the {100 * limit:.0f}% bound")
+                else:
+                    print(f"  special {tag:<24} interior art differs on "
+                          f"{sp_art}/{sp_pairs} pairs ({100.0 * sp_art / sp_pairs:.1f}%, "
+                          f"bound {100 * limit:.0f}%; "
+                          f"{100.0 * sp_exact / sp_pairs:.1f}% differ at all, which a "
+                          f"mirror is supposed to do)")
 
         # 4. The ledgers: a symmetric SET, with the counts preserved.  The unsymmetric
         #    map says how many there were, so a pass that duplicated or dropped
@@ -674,6 +706,19 @@ def check_generation(failures: list[str]) -> int:
         #     two special land types use above.  Continent is included so that a
         #     change that makes Inland better and Continent worse is visible here
         #     rather than only in a render.
+        #
+        #     What the leftover is made of, so nobody hunts for a pass that does not
+        #     exist: on the Inland probe configuration the residual after the blob
+        #     mirroring was 105 of 6952 mirrored pairs, and every one of them was a
+        #     ramp piece - rampBase on one side, rampSmooth on the other.  That is
+        #     vanilla's ramp smoothing (SetupLAT's ramp branch), which probes two
+        #     neighbours picked per slope value; for the slope pair the engine's own
+        #     FinalizeElevationSlopes creates across a mirror (1<->2, 3<->4, 6<->8,
+        #     10<->12 - read off --diag-symmetry's slope histogram) those two
+        #     directions are not images of each other, so one side smooths and the
+        #     other does not.  Forcing the image cell to the mirrored piece would
+        #     mean inventing a 1x1 art mapping and overriding the vanilla choice on
+        #     one half; the number is bounded here instead.
         lp_pairs, lp_art, lp_exact = interior_stats(B, Wp, Hp, 1)
         checks += 1
         if lp_art > INTERIOR_LIMIT * lp_pairs:
@@ -684,30 +729,57 @@ def check_generation(failures: list[str]) -> int:
             print(f"  interior Continent: art differs on {lp_art}/{lp_pairs} pairs "
                   f"({100.0 * lp_art / lp_pairs:.1f}%, bound "
                   f"{100 * INTERIOR_LIMIT:.0f}%)")
-        # 180 degrees is measured and printed but NOT required: it is the second
-        # kind and its interior is a known, separate piece of work (MirrorElevationGrid
-        # only mirrors the left-right grid, and the usable band needs its one-row
-        # shift).  Printing it keeps the number from going quiet.
+        # 180 degrees gets its own, looser bound for the structural reason mirror.h
+        # derives (the cell map is a bijection of the diamond but not of the
+        # 8-neighbourhood, and the corner grid cannot follow it - see
+        # check_180_corner_lattice).  Bounded rather than merely printed, so that a
+        # change which doubles it fails here.
         rp_pairs, rp_art, _ = interior_stats(R, Wp, Hp, 2)
-        print(f"  interior 180:       art differs on {rp_art}/{rp_pairs} pairs "
-              f"({100.0 * rp_art / rp_pairs:.1f}%) - reported, not required")
+        checks += 1
+        if rp_art > INTERIOR_LIMIT_180 * rp_pairs:
+            failures.append(f"rotational-180: {rp_art} of {rp_pairs} mirrored pairs "
+                            f"show a different piece, over the "
+                            f"{100 * INTERIOR_LIMIT_180:.0f}% bound")
+        else:
+            print(f"  interior 180:       art differs on {rp_art}/{rp_pairs} pairs "
+                  f"({100.0 * rp_art / rp_pairs:.1f}%, bound "
+                  f"{100 * INTERIOR_LIMIT_180:.0f}% - the structural floor, see mirror.h)")
 
         checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr")
-        for label, (map_plain, map_sym) in special.items():
-            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path,
-                                         label.lower())
+        for tag, map_plain, map_sym in special_renders:
+            # The 180-degree maps get the explicit bound render_cleanliness
+            # documents: their measured 2.12% is a known open defect, not the
+            # left-right criterion.
+            lim = DARK_LIMIT_180 if tag.endswith("-180") else None
+            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag,
+                                         bound=lim)
 
     return checks
 
 
-def render_cleanliness(failures: list[str], map_none: Path, map_lr: Path,
-                       tmp_path: Path, tag: str = "") -> int:
+def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
+                       tmp_path: Path, tag: str = "",
+                       bound: float | None = None) -> int:
     """Render both maps and require the symmetric one not to be darker than the plain
     one.  Measured: plain 0.26% dark, symmetric 0.27%, the official reference (a
     hand-made mirror map) 0.46%, and the swap-based build that looked speckled 1.38%
     - with Level copied but not the art it was worse still, 1.69%.  The bound is
     deliberately loose (twice the plain map, floor one percent) so it catches that
-    class of regression without pinning a particular tileset's shading."""
+    class of regression without pinning a particular tileset's shading.
+
+    `bound` overrides it, and exactly one caller does: the 180-degree maps, which
+    measure 2.12% dark against 0.44% plain for Inland and Mountainous at this
+    configuration (left-right: 0.56% against 0.44%).  That is 4.6x the plain map and
+    it is NOT passed off as fine - it is an open defect.  What it is NOT is a proof
+    that the decoded map is wrong: this file's docstring records that a map whose
+    cells mirror exactly can still render 2.30% black, because the drawing outcome
+    depends on position and draw order.  Sampling each mirrored pair's cell centre
+    (with the map's own cell -> pixel projection, so the absolute numbers are only
+    indicative) points the same way: under 180 the dark cells are mostly unpaired
+    between the halves, while under left-right they are mostly paired - so the two
+    halves of a 180 map really are drawn differently and the cause has to be
+    separated.  Until then the 180 floor stays visible and bounded at 5%;
+    left-right keeps the tight rule."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from verify_render import dotnet_env, RENDERER
@@ -748,11 +820,12 @@ def render_cleanliness(failures: list[str], map_none: Path, map_lr: Path,
         return dark / total if total else None
 
     f_none = dark_fraction(render(map_none, tmp_path / f"render_none{tag}"))
-    f_lr = dark_fraction(render(map_lr, tmp_path / f"render_lr{tag}"))
+    f_lr = dark_fraction(render(map_sym, tmp_path / f"render_lr{tag}"))
     if f_none is None or f_lr is None:
         print("  render  (a render produced no png; the dark-pixel check is skipped)")
         return 0
-    bound = max(0.010, 2.0 * f_none)
+    if bound is None:
+        bound = max(0.010, 2.0 * f_none)
     if f_lr > bound:
         failures.append(
             f"the symmetric map renders with {100 * f_lr:.2f}% dark pixels against "
@@ -808,6 +881,63 @@ def check_usable_band(failures: list[str]) -> int:
                             f"exactly one row, and does not for {visW}x{visH}")
     print("  band    left-right keeps the usable rect; 180 needs top 5 -> 6 "
           f"({checks // 2} shapes)")
+    return checks
+
+
+def check_180_corner_lattice(failures: list[str]) -> int:
+    """Why the elevation grid cannot be mirrored under 180 - measured, not asserted.
+
+    FinalizeElevationSlopes (MapGenHills.cpp:982) decides a cell's slope from its
+    2x2 corner block e(x,y), e(x+1,y), e(x+1,y+1), e(x,y+1), and MirrorElevationGrid
+    (MapGenHills.cpp:1397) mirrors the corner grid for left-right, where the corner
+    map is exactly (X, Y) -> (Y, X) for every cell.  Under 180 the natural mirror of
+    a corner would be the point reflection about (k/2, k/2), k = W' + H' + p - and
+    it does NOT send this cell's block to the image cell's block: a block spans
+    x..x+1 while the reflection centre falls on a grid point, so the image lands one
+    cell lower.  Measured below over three map sizes: it is off for EVERY cell.
+
+    The alternative - a constant k, which WOULD map blocks onto blocks - is checked
+    too, and it fails the other way: it is not a bijection of the diamond (the
+    affine trap mirror.h records), so some cells would simply have no image.
+
+    Those two facts are why the 180-degree interior has a floor: no grid mirror can
+    be consistent with a cell map that is a bijection of the diamond, and
+    verify_symmetry can only report the floor (INTERIOR_LIMIT_180) rather than
+    drive it to zero.  The check exists so that "let us just also mirror the grid
+    for 180" is answered by a measurement instead of by another attempt.
+    """
+    checks = 0
+    for (visW, visH) in ((73, 73), (60, 20), (100, 40)):
+        Wp, Hp = visW + 4, visH + 12
+        cells = [(x, y) for x in range(1, Wp + Hp + 2) for y in range(1, Wp + Hp + 2)
+                 if Wp < x + y <= Wp + 2 * Hp and abs(x - y) < Wp]
+        diamond = set(cells)
+
+        def block(x: int, y: int) -> set[tuple[int, int]]:
+            return {(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)}
+
+        off_by_one = 0
+        for (x, y) in cells:
+            mx, my = rot180_cell(Wp, Hp, x, y)
+            k = Wp + Hp + ((x - y + Wp - 1) & 1)
+            reflected = {(k - X, k - Y) for (X, Y) in block(x, y)}
+            if reflected != block(mx, my):
+                off_by_one += 1
+        checks += 1
+        if off_by_one != len(cells):
+            failures.append(f"the point reflection of a cell's corner block was "
+                            f"expected to miss the image cell's block for every cell "
+                            f"({off_by_one} of {len(cells)} miss at {visW}x{visH})")
+
+        checks += 1
+        affine = {(Wp + Hp - x, Wp + Hp - y) for (x, y) in cells}
+        # The constant-k form is an involution of the integer grid, so it is a
+        # bijection of the diamond exactly when it maps the diamond onto itself.
+        if affine == diamond:
+            failures.append(f"the constant-k 180 form was expected NOT to be a "
+                            f"bijection of the diamond, and it is one at {visW}x{visH}")
+    print(f"  lattice the corner block cannot follow the 180 cell map "
+          f"({checks // 2} shapes); the constant-k form is not a bijection")
     return checks
 
 
@@ -878,6 +1008,9 @@ def main() -> int:
     print("  band    the visible rect each kind needs")
     band_checks = check_usable_band(failures)
 
+    print("  lattice what the 180 cell map does to the corner grid")
+    lattice_checks = check_180_corner_lattice(failures)
+
     print("  map     mirror a map and compare it cell by cell")
     generation_checks = check_generation(failures)
 
@@ -888,8 +1021,10 @@ def main() -> int:
             print(f"  - {f}")
         return 1
     print(f"OK -- the mirror mapping holds on {cells_checked} cells, the reflections "
-          f"the product offers are closed ({closure_checks} closure checks), and a "
-          f"symmetric map decodes back symmetric ({generation_checks} generation checks)")
+          f"the product offers are closed ({closure_checks} closure checks), the 180 "
+          f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
+          f"and a symmetric map decodes back symmetric ({generation_checks} generation "
+          f"checks)")
     return 0
 
 
