@@ -419,6 +419,16 @@ constexpr int kMapSymmetryImplementedMax =
 // value - so the two halves make different decisions), or re-derive the cliff art from the
 // symmetric shape instead of mapping it.
 //
+// WHY EVEN THAT CANNOT CLOSE IT, ARGUED FROM MirrorTile'S OWN CONTRACT (round 7).  MirrorTile
+// returns -1 exactly when no piece IN THE SAME FAMILY has the mirrored footprint - that is what
+// the family-closure tables count.  75 of 75 top-bottom cliff cells and 110 of 111 at 180 land
+// in that case.  So for those cells there is no piece whose footprint fits the mirrored
+// position: any substitute leaves cells of its footprint unfilled (a hole, i.e. dark pixels) or
+// writes outside the wall.  Making PlaceCliffs mirror-aware changes WHICH decisions are taken,
+// not whether the art for them exists, so the invariant the goal asks for - mirrored art that a
+// player cannot tell apart - cannot be produced from this tileset.  It needs art, or a product
+// decision to accept the residual (which is invisible: see tb-cliff-band-crop.png).
+//
 // THE WIPE WAS THEN NARROWED, AND IT NAMES THE SHORE FAMILY (top-bottom, Inland, size 2).  Wiping
 // ONLY the shore family (712 cells, cliffs and water-cliffs left alone) and rendering gives two
 // clean mirror-image lakes with the staircase completely gone - see
