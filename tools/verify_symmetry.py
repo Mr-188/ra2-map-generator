@@ -858,6 +858,32 @@ def check_generation(failures: list[str]) -> int:
                     print(f"  coast   {tag:<20} mirror difference {got[1]:5.2f} mean / "
                           f"{got[2]:5.2f} median ({got[0]} pairs){note}")
 
+        # 7b-bis. The coast metric, made calibration-free.  The pixel projection carries a
+        # constant offset, and after the image half's flip/rotation that offset shows up as
+        # a content shift - so an unaligned measurement mixes "the art differs" with "the
+        # window is off".  Scanning the offset and reporting the minimum removes that
+        # ambiguity: measured (size 2, left-right reference vs 180) the left-right map
+        # bottoms out at 3.62 and the 180 one at 15.64, i.e. the 180 coast is 4x further
+        # from its own mirror even after the best alignment.
+        scans = {}
+        for tag in ("lr", "inland", "mountainous", "inland-180", "mountainous-180"):
+            if tag in coast_maps:
+                kind = 2 if tag.endswith("-180") else 1
+                got = coast_alignment_scan(coast_maps[tag], coast_pngs[tag], kind)
+                if got is not None:
+                    scans[tag] = got
+                    print(f"  coast   {tag + ' aligned':<18} best offset ({got[0]:+3d}, "
+                          f"{got[1]:+3d}), residual {got[2]:5.2f}")
+        if "lr" in scans:
+            checks += 1
+            for tag in ("inland", "mountainous"):
+                if tag in scans and scans[tag][2] > 2.0 * scans["lr"][2]:
+                    failures.append(
+                        f"coast (aligned) {tag}: residual {scans[tag][2]:.2f} against "
+                        f"{scans['lr'][2]:.2f} for the reference land type - the mirrored "
+                        f"half's coast is more than twice as far from its own mirror as the "
+                        f"island land types are (see MapGenSymmetry.cpp)")
+
     return checks
 
 
@@ -1094,6 +1120,81 @@ def coast_layer_diff(map_path: Path, png: Path, kind: int):
     if not vals:
         return 0, None, None
     return len(vals), _st.mean(vals), _st.median(vals)
+
+
+def coast_alignment_scan(mapfile: Path, pngfile: Path, kind: int, radius: int = 60,
+                         step: int = 12) -> tuple | None:
+    """(best offset dx, dy, residual) of the rendered coast metric under a pixel shift.
+
+    This exists because the coast metric needs its own calibration: the projection that
+    turns a cell into a pixel centre has a constant offset, and after the flip/rotation of
+    the image half that offset shows up as a *content shift* - which would make even a
+    perfect coast look wrong.  Measured (left-right, the kind that is known good): the
+    minimum sits sharply at (0, 0) with residual 3.62 against 4.3-6.0 for every other
+    offset in a +/-60 px grid, and rotational-180 sits at (0, 0) too with 15.64 against
+    18-23 elsewhere.  Both minima being at (0, 0) is what says the projection is right and
+    the 180 residual is real content, not a tooling artefact.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+        from maptools.map_ini import load_map, extract_iso_pack_b64, parse_map_size
+        from maptools.iso_pack import decode_iso_map_pack
+    except Exception:                                          # pragma: no cover
+        return None
+    import re as _re
+    import statistics as _st
+    if not mapfile.is_file() or not pngfile.is_file():
+        return None
+    sections = load_map(mapfile)
+    width, height = parse_map_size(sections)
+    text = "\n".join(line for _, lines in sections for line in lines)
+    lx, ly = (int(g) for g in _re.search(
+        r"LocalSize\s*=\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)",
+        text).groups()[:2])
+    left, top = lx * 60, (ly - 3) * 30 + 15
+    cells = {(t.rx, t.ry): t
+             for t in decode_iso_map_pack(extract_iso_pack_b64(sections), width, height)}
+    im = np.asarray(Image.open(pngfile).convert("RGB")).astype(np.int16)
+    img_h, img_w, _ = im.shape
+
+    ps = []
+    for c, t in cells.items():
+        if not (314 <= t.tile_index < 328):
+            continue
+        m = mirror_cell(kind, width, height, *c)
+        o = cells.get(m)
+        if o is None or not (314 <= o.tile_index < 328) or not (c < m):
+            continue
+        ps.append((t, o))
+    ps = ps[::max(1, len(ps) // 200)]
+    if not ps:
+        return None
+
+    def centre(t, dx, dy):
+        return (int(((t.rx - t.ry + width - 1) + 1) * 30 - left) + dx,
+                int(((t.rx + t.ry - width - 1) - t.z) * 15 - top) + dy)
+
+    best = (1e9, 0, 0)
+    for dx in range(-radius, radius + 1, step):
+        for dy in range(-radius, radius + 1, step):
+            acc = []
+            for t, o in ps:
+                x, y = centre(t, dx, dy)
+                x2, y2 = centre(o, -dx, -dy)
+                vals = []
+                for ox in (-15, 0, 15):
+                    for oy in (-8, 0, 8):
+                        sx, sy, tx, ty = x + ox, y + oy, x2 - ox, y2 + oy
+                        if 0 <= sx < img_w and 0 <= sy < img_h and 0 <= tx < img_w and 0 <= ty < img_h:
+                            vals.append(np.abs(im[sy, sx] - im[ty, tx]).mean())
+                if vals:
+                    acc.append(sum(vals) / len(vals))
+            if acc:
+                mean = _st.mean(acc)
+                if mean < best[0]:
+                    best = (mean, dx, dy)
+    return best[1], best[2], best[0]
 
 
 def shore_instance_coherence(map_path: Path, base: int | None = None):

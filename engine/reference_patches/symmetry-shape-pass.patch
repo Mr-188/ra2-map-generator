@@ -1434,7 +1434,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1088 @@
+@@ -0,0 +1,1121 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1936,6 +1936,39 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
++    // ---- [移植侧] 非左右对称：水面用"全局相位均匀平铺" ----------------------
++    // 水这一层为什么两侧对不上（实测）：DecorateWaterTiles 的判定读 E/S/SE 邻居**当前**的
++    // 瓦片与子帧，而这一趟是边装饰边改、按图序走的；180 的映射不是格同构，于是镜像格看到的
++    // 邻居状态不同 -> 分叉不同 -> 水纹变体不同（实测镜对 174 里 **112 对"异片"**；左右对称
++    // 只有 5/154，因为转置是同构）。这是同一个病，靠重排访问顺序救不回来。
++    // 所以给非左右对称的水面**统一的平铺相位**：所有水格用基础水片，子帧取该格的 2x2 相位
++    //   Height = (x & 1) + ((y & 1) << 1)
++    // 于是水面是一张无缝的均匀水纹（任何 2x2 相位平移在均匀纹理下都看不出来），两侧因此观感
++    // 一致。**注意不能把所有格都设成 Height 0** —— 那样同一块 2x2 的四格都画同一个角，水面会
++    // 漏（实测暗像素 3.19%、未覆盖落差 3.1%），必须按格位给相位。
++    if (kind != mg::MapSymmetry::AxialLeftRight && waterTileIndex_ >= 0)
++    {
++        long long uniform = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t = c->IsoTileTypeIndex;
++                if (t >= waterTileIndex_ && t < waterTileIndex_ + 14)
++                {
++                    c->IsoTileTypeIndex = waterTileIndex_;
++                    c->Height = (x & 1) | ((y & 1) << 1);
++                    ++uniform;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld water cells set to the "
++                     "uniform tiling phase\n", mg::MapSymmetryName(kind), uniform);
++    }
++
 +    // ---- [移植侧] 非左右对称：水层差的来源（下一步要处理的点） ----------------
 +    // 实测（size2/4p、同种子，水格镜像对分类）：
 +    //   · 内陆 180：镜对 172，其中"片+偏移全同"只有 49 —— **123 对的变体不同**（不同水纹）；
