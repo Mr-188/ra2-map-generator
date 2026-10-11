@@ -131,6 +131,31 @@
 // pairs), the overlay layer and the ledgers are symmetric; the relief and the art
 // that dresses it cannot be, for the reason derived above.
 //
+// AND WHY THE ISLAND ORDER CANNOT SIMPLY BE REPLAYED EITHER.  The island land types
+// get their coast right because GenerateSpecialTerrain does not exist for them:
+// MirrorShape copies the SHAPE first and GenerateTerrain then carves and dresses it in
+// one go.  Replaying that order after an Inland carve - copy the shape, un-dress, then
+// run the generator's own SmoothWaterBody over the mirrored shape - was measured in two
+// forms and both break more than they fix:
+//   * the FULL SmoothWaterBody (all four passes): its FloodFill/CleanupTile are
+//     order-dependent shape repairs, and run post-hoc they do not keep a symmetric shape
+//     symmetric - left-right 274 mirrored pairs end up disagreeing about the land/water
+//     marker, and 180 gets 83 water disagreements, at which point the pass' own
+//     self-check refuses the map (mgconsole prints "MirrorSpecialTerrain failed" and
+//     writes nothing).  For left-right it also clears the placeholders the shore passes
+//     would have dressed (278 undressed, 278 restored - nothing placed).
+//   * the SHORE PASSES ONLY, on a rebuilt carve-time work state (water cells marked with
+//     the generation code, everything else free land, mask cache invalidated), in map
+//     order: left-right comes out equivalent to what ships, 180 measures 30.99 mean /
+//     27.88 median on the coast metric - worse than the baseline's 24.89 / 21.68.
+// Six post-hoc routes have now been measured (footprint-transposed pieces, image-half
+// re-selection, paired re-selection, restore-on-failure, rebuilt-state re-selection,
+// full-SmoothWaterBody replay).  Left-right is fixed and gated; 180 is not fixed, and
+// the measurement says the only remaining route is to make the CARVE itself produce a
+// mirrored shape before it stamps its own coast art (i.e. share its draws per mirrored
+// pair and mirror its geometry decisions).  That is a change to the core generation
+// path, not to a symmetry pass, and it is not started.
+//
 // WHY THE SAME COAST PASS CANNOT BE RE-RUN ON THE 180 IMAGE HALF, MEASURED.  The
 // left-right kind is fixed by copying the SHAPE and then re-running the generator's
 // own shore selection (SelectShoreTile, mode 1 + 2) in mirrored pairs - see
