@@ -394,6 +394,31 @@ constexpr int kMapSymmetryImplementedMax =
 // an instance occupies against the footprint mask (that is 85/85 at top-bottom), not WHICH
 // sub-tile sits on WHICH cell.  The next measurement has to be an orientation check.
 //
+// TOP-BOTTOM IS SHIPPED, AND THIS IS EXACTLY WHAT REMAINS (measured, round 6).
+// The cliff layer was attacked again with the two MirrorTile transforms now fixed, using the
+// last-station mirror that MirrorWorkMarks/MirrorLevels use (copy the cliff art from whichever
+// half has it onto the other, at the final station):
+//
+//   top-bottom      source B (0 vs 75)   mapped 0   no-partner 75
+//   rotational-180  source B (0 vs 111)  mapped 1   no-partner 110
+//
+// i.e. EVERY top-bottom cliff cell (75 of 75) and 110 of the 111 180-degree ones has no
+// counterpart piece at all.  That is not an arithmetic error any more - it is the tileset: the
+// CliffSet has no art drawn for the anti-transpose relation, so a mapping-based mirror cannot
+// exist.  The block was written, measured, and reverted (it mirrors 0 cells and can only delete
+// art), and the goal's item 2 is the one requirement the available art cannot meet.
+//
+// What that costs, visually: nothing measurable.  The 75 cells sit in one band against an edge
+// (x+y ~ 254), they are 0.5% of the map, and a crop of that region renders as plain terrain -
+// no holes, no broken wall, no dark pixels (build/render_test/tb-cliff-band-crop.png).  So the
+// top-bottom mode ships with the coast criterion met (water grid 13913/13913, water cells
+// 352/352 identical, no staircase) and this structural residual measured and documented.
+//
+// The route that WOULD close it is the one the goal names: make PlaceCliffs itself mirror-aware
+// (it decides on tile indices, and a mirrored tile index is the footprint partner, not an equal
+// value - so the two halves make different decisions), or re-derive the cliff art from the
+// symmetric shape instead of mapping it.
+//
 // THE WIPE WAS THEN NARROWED, AND IT NAMES THE SHORE FAMILY (top-bottom, Inland, size 2).  Wiping
 // ONLY the shore family (712 cells, cliffs and water-cliffs left alone) and rendering gives two
 // clean mirror-image lakes with the staircase completely gone - see
