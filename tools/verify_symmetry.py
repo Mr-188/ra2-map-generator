@@ -250,6 +250,12 @@ INTERIOR_LIMIT_180 = 0.25
 # before the guard (which is what its 2.14% dark pixels were made of).
 STEP_LIMIT = 0.02
 
+# How much worse than the island reference land type the Inland / Mountainous coast may
+# render under left-right symmetry.  Measured at GEN_PARAMS: the reference 4.49, Inland
+# 8.86 after the coast pass and 25.35 before it, so 2.5x separates the fix from the
+# defect it removed while leaving room for the shore family's own art limit.
+COAST_LIMIT_FACTOR = 2.5
+
 
 
 def md5(data: bytes) -> str:
@@ -776,16 +782,54 @@ def check_generation(failures: list[str]) -> int:
                   f"({100.0 * rp_art / rp_pairs:.1f}%, bound "
                   f"{100 * INTERIOR_LIMIT_180:.0f}% - the structural floor, see mirror.h)")
 
-        checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr")
+        coast_pngs: dict[str, Path] = {}
+        coast_maps: dict[str, Path] = {}
+        checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr",
+                                     png_out=coast_pngs)
+        coast_maps["lr"] = map_lr
         for tag, map_plain, map_sym in special_renders:
-            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag)
+            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag,
+                                         png_out=coast_pngs)
+            coast_maps[tag] = map_sym
+
+        # 7b. The coast itself, which is the number the Inland / Mountainous work is
+        #     accepted on: the mirrored-pair difference restricted to water and shore
+        #     cells.  The island land type is the reference, generated at the same
+        #     parameters in the same run.
+        ref = coast_layer_diff(coast_maps["lr"], coast_pngs["lr"], 1)
+        if ref and ref[1] is not None:
+            print(f"  coast   {'reference (land 1)':<20} mirror difference "
+                  f"{ref[1]:5.2f} mean / {ref[2]:5.2f} median ({ref[0]} pairs)")
+            for tag in ("inland", "mountainous", "inland-180", "mountainous-180"):
+                if tag not in coast_maps:
+                    continue
+                kind = 2 if tag.endswith("-180") else 1
+                got = coast_layer_diff(coast_maps[tag], coast_pngs[tag], kind)
+                if not got or got[1] is None:
+                    print(f"  coast   {tag:<20} no mirrored coast pairs at this size "
+                          f"(reported, not required)")
+                    continue
+                checks += 1
+                limit = COAST_LIMIT_FACTOR * ref[1]
+                if kind == 1 and got[1] > limit:
+                    failures.append(
+                        f"{tag}: the coast renders {got[1]:.2f} different from its own "
+                        f"mirror ({got[0]} water/shore pairs, median {got[2]:.2f}) against "
+                        f"{ref[1]:.2f} for the island reference land type - the mirrored "
+                        f"half is not dressed for its own shape (see MapGenSymmetry.cpp, "
+                        f"MirrorSpecialTerrain)")
+                else:
+                    note = "" if kind == 1 else " - reported, not required (see mirror.h)"
+                    print(f"  coast   {tag:<20} mirror difference {got[1]:5.2f} mean / "
+                          f"{got[2]:5.2f} median ({got[0]} pairs){note}")
 
     return checks
 
 
 def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
                        tmp_path: Path, tag: str = "",
-                       bound: float | None = None) -> int:
+                       bound: float | None = None,
+                       png_out: dict | None = None) -> int:
     """Render both maps and require the symmetric one not to be darker than the plain
     one.  Measured: plain 0.26% dark, symmetric 0.27%, the official reference (a
     hand-made mirror map) 0.46%, and the swap-based build that looked speckled 1.38%
@@ -850,6 +894,8 @@ def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
 
     png_none = render(map_none, tmp_path / f"render_none{tag}")
     png_sym = render(map_sym, tmp_path / f"render_lr{tag}")
+    if png_out is not None:
+        png_out[tag] = png_sym
     f_none = dark_fraction(png_none)
     f_lr = dark_fraction(png_sym)
     if f_none is None or f_lr is None:
@@ -933,6 +979,86 @@ def translated_shore_pairs(cells: dict, Wp: int, Hp: int, kind: int,
         else:
             translated += 1                            # same-piece translation, or wrong piece
     return translated, mirror_ok, gap
+
+
+def coast_layer_diff(map_path: Path, png: Path, kind: int):
+    """(pairs, mean, median) of the mirrored-pair pixel difference ON the coast itself.
+
+    Only pairs whose TWO cells carry water or shore-family tiles count.  The ground
+    texture mosaic beside the water is excluded on purpose: forcing those 1x1 textures
+    to match was measured to take the dark-pixel share from 0.39% to 3.97%, so they are
+    left unmirrored, and inside the coastal band they otherwise dominate the number.
+
+    This is the yardstick the Inland / Mountainous coast work is accepted on.  Measured
+    at GEN_PARAMS (size 1, two players, seed 20260913):
+
+        island reference (land 1, left-right)   4.49 mean / 3.53 median
+        Inland, before the coast pass          25.35 / 25.93
+        Inland, after                          8.86 /  7.27
+        ... of which the water layer alone      3.60 -> 11.30 -> 4.54 mean
+
+    The water layer now sits at the island reference; the residual is the shore family,
+    whose own art is not transpose-symmetric (measured: pairs whose piece is its own
+    mirror partner still render 9.6 apart), so it cannot be driven lower with this
+    tileset.
+    """
+    try:
+        from PIL import Image
+        from maptools.map_ini import load_map, extract_iso_pack_b64, parse_map_size
+        from maptools.iso_pack import decode_iso_map_pack
+    except Exception:                                          # pragma: no cover
+        return None
+    import re as _re
+    import statistics as _st
+    if not map_path.is_file() or not png.is_file():
+        return None
+    sections = load_map(map_path)
+    width, _height = parse_map_size(sections)
+    text = "\n".join(line for _, lines in sections for line in lines)
+    lx, ly = (int(g) for g in _re.search(
+        r"LocalSize\s*=\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)",
+        text).groups()[:2])
+    left, top = lx * 60, (ly - 3) * 30 + 15
+    cells = {(t.rx, t.ry): t
+             for t in decode_iso_map_pack(extract_iso_pack_b64(sections),
+                                          *parse_map_size(sections))}
+    im = Image.open(png).convert("RGB")
+    px = im.load()
+    img_w, img_h = im.size
+
+    def centre(t):
+        dx = t.rx - t.ry + width - 1
+        dy = t.rx + t.ry - width - 1
+        return (dx + 1) * 30 - left, (dy - t.z) * 15 - top
+
+    def coast(t):
+        ti = t.tile_index
+        return (314 <= ti < 328) or (89 <= ti < 131)
+
+    vals = []
+    for c, t in cells.items():
+        if not coast(t):
+            continue
+        m = mirror_cell(kind, width, _height, *c)
+        o = cells.get(m)
+        if o is None or not coast(o) or not (c < m):
+            continue
+        x, y = centre(t)
+        x2, y2 = centre(o)
+        acc = []
+        for ox in (-20, -10, 0, 10, 20):
+            for oy in (-8, 0, 8):
+                sx, sy = x + ox, y + oy
+                tx, ty = x2 - ox, y2 + oy
+                if 0 <= sx < img_w and 0 <= sy < img_h and 0 <= tx < img_w and 0 <= ty < img_h:
+                    p1 = px[sx, sy]
+                    p2 = px[tx, ty]
+                    acc.append(sum(abs(a - b) for a, b in zip(p1, p2)) / 3.0)
+        if acc:
+            vals.append(sum(acc) / len(acc))
+    if not vals:
+        return 0, None, None
+    return len(vals), _st.mean(vals), _st.median(vals)
 
 
 def uncovered_steps(map_path: Path, png: Path) -> tuple[int, int] | None:

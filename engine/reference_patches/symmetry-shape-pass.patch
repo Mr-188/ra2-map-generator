@@ -1418,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1036 @@
+@@ -0,0 +1,1038 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2030,7 +2030,9 @@
 +            }
 +            else if (srcIsShore)
 +            {
-+                b->IsoTileTypeIndex = tile;              // 180：基线行为（岸片原样）
++                // 180：岸片原样（基线）。这里试过三种镜像映射（足印转置、片内偏移转置、
++                // 镜像半场不铺岸件），渲染质量都没变好或更差；机制见 mirror.h 的 180 段。
++                b->IsoTileTypeIndex = tile;
 +                b->Height = height;
 +                ++shoreKept;
 +            }

@@ -131,6 +131,27 @@
 // pairs), the overlay layer and the ledgers are symmetric; the relief and the art
 // that dresses it cannot be, for the reason derived above.
 //
+// WHY THE SAME COAST PASS CANNOT BE RE-RUN ON THE 180 IMAGE HALF, MEASURED.  The
+// left-right kind is fixed by copying the SHAPE and then re-running the generator's
+// own shore selection (SelectShoreTile, mode 1 + 2) in mirrored pairs - see
+// MapGenSymmetry.cpp.  Doing the same for 180 fails, and the failure is not a
+// bookkeeping slip: PlaceIsoTile refuses the stamp 139 times (0 for left-right).
+// Its refusal conditions (MapGenRiver.cpp:2905-2950) are all about the cells the
+// piece's FOOTPRINT covers: a covered cell that is not a placeholder and was marked
+// by another generation (work.data[14] != genCode) is rejected unless the existing
+// piece sits on the same "variant side".  For 180 the piece the official decision
+// tree picks from a mirrored mask does not fit that footprint, so the stamp is
+// rejected; for left-right it does.  In other words the tree - the vanilla
+// direction-to-piece table - is transpose-symmetric but not 180-symmetric, and
+// there is no second table to consult.  Measured on the Inland map (size 2,
+// 4 players, water 80, seed 20260913): mirroring the coast this way pushed
+// markerBad 585 -> 1158 and crossFam 1072 -> 1616, and the render looked unchanged
+// (the staircase stayed).  Three other mappings were tried and rejected too
+// (footprint-transposed pieces, sub-cell-offset transposition only, and leaving the
+// image half without shore art at all - the last makes the water read as isolated
+// diamonds).  The 180 coast therefore keeps the copied art, and verify_symmetry
+// reports it rather than pretending.
+//
 // (An earlier revision of this comment claimed the mapping "preserves the
 // 8-neighbour adjacency graph" for both kinds.  That is false for 180 - see the
 // measurement two paragraphs up, and check_geometry in tools/verify_symmetry.py -
