@@ -149,7 +149,7 @@
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2007,6 +2104,48 @@
+@@ -2007,6 +2104,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -164,10 +164,6 @@
 +    // has to be recomputed rather than carried across. CliffCellsInX alone is not
 +    // enough for that. Lives in MapGenRiver.cpp, next to the tables it reads.
 +    bool TileFootprint(int tile, int* outCols, int* outRows) const;
-+    // [移植侧] 对称收尾用：岸片族（ShorePieces，42 片）的足印宽/高/掩码。表在 MapGenRiver.cpp
-+    // 里是 file-static，这里只开一个只读访问口，收尾的"实例自洽性"检查要用。
-+    bool ShoreFootprint(int slot, int* outCols, int* outRows,
-+                        unsigned long long* outMask) const;
 +
 +    // [移植侧] The [Map] LocalSize top the visible rect is written with.  It is 5
 +    // for an unmirrored or left-right map and 6 for a 180-degree one, because the
@@ -198,7 +194,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2185,6 +2324,10 @@
+@@ -2185,6 +2320,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -311,7 +307,7 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,277 @@
+@@ -3169,6 +3200,265 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -321,18 +317,6 @@
 +int RandomMapGenerator::VisibleTop() const
 +{
 +    return config_.symmetry == mg::MapSymmetry::Rotational180 ? 6 : 5;
-+}
-+
-+// [移植侧] 岸片族足印的只读出口（见 MapGen.h 的声明）。
-+bool RandomMapGenerator::ShoreFootprint(int slot, int* outCols, int* outRows,
-+                                        unsigned long long* outMask) const
-+{
-+    if (slot < 0 || slot >= 42)
-+        return false;
-+    if (outCols) *outCols = kShoreFootprints[slot].w;
-+    if (outRows) *outRows = kShoreFootprints[slot].h;
-+    if (outMask) *outMask = kShoreFootprints[slot].mask;
-+    return true;
 +}
 +
 +// [移植侧] The footprint of whichever multi-cell family the tile belongs to.
@@ -589,7 +573,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4044,55 @@
+@@ -3742,6 +4032,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -645,7 +629,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4113,45 @@
+@@ -3762,36 +4101,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1434,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1121 @@
+@@ -0,0 +1,1038 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1936,51 +1920,6 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
-+    // ---- [移植侧] 非左右对称：水面用"全局相位均匀平铺" ----------------------
-+    // 水这一层为什么两侧对不上（实测）：DecorateWaterTiles 的判定读 E/S/SE 邻居**当前**的
-+    // 瓦片与子帧，而这一趟是边装饰边改、按图序走的；180 的映射不是格同构，于是镜像格看到的
-+    // 邻居状态不同 -> 分叉不同 -> 水纹变体不同（实测镜对 174 里 **112 对"异片"**；左右对称
-+    // 只有 5/154，因为转置是同构）。这是同一个病，靠重排访问顺序救不回来。
-+    // 所以给非左右对称的水面**统一的平铺相位**：所有水格用基础水片，子帧取该格的 2x2 相位
-+    //   Height = (x & 1) + ((y & 1) << 1)
-+    // 于是水面是一张无缝的均匀水纹（任何 2x2 相位平移在均匀纹理下都看不出来），两侧因此观感
-+    // 一致。**注意不能把所有格都设成 Height 0** —— 那样同一块 2x2 的四格都画同一个角，水面会
-+    // 漏（实测暗像素 3.19%、未覆盖落差 3.1%），必须按格位给相位。
-+    if (kind != mg::MapSymmetry::AxialLeftRight && waterTileIndex_ >= 0)
-+    {
-+        long long uniform = 0;
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                MapCell* c = cellSlots_[512 * y + x];
-+                if (c == nullptr)
-+                    continue;
-+                const int t = c->IsoTileTypeIndex;
-+                if (t >= waterTileIndex_ && t < waterTileIndex_ + 14)
-+                {
-+                    c->IsoTileTypeIndex = waterTileIndex_;
-+                    c->Height = (x & 1) | ((y & 1) << 1);
-+                    ++uniform;
-+                }
-+            }
-+        }
-+        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld water cells set to the "
-+                     "uniform tiling phase\n", mg::MapSymmetryName(kind), uniform);
-+    }
-+
-+    // ---- [移植侧] 非左右对称：水层差的来源（下一步要处理的点） ----------------
-+    // 实测（size2/4p、同种子，水格镜像对分类）：
-+    //   · 内陆 180：镜对 172，其中"片+偏移全同"只有 49 —— **123 对的变体不同**（不同水纹）；
-+    //     涉及水沿片（waterTileIndex_+8..13）的镜对 95/172，单对差 21~25；
-+    //   · 岛屿 land1 180：镜对 2951，平面水镜对 2457 只差 4.10 —— 所以它好看。
-+    // 试过两条"直接改美术"的路都被实测否决：
-+    //   ① 把所有水格换成基础片（子帧 0）：暗像素 0.36% -> 3.19%、未覆盖落差 3.1%（超出验收界）
-+    //      —— 2x2 水面片必须按格位取子帧，硬压平会把水面画漏；
-+    //   ② 只压平水沿片：岸层 17.19 -> 19.42（中位 15.43 -> 13.67），收益不确定。
-+    // 真正的根子是 **DecorateWaterTiles 的放置顺序不对称**：镜像格拿到的水纹变体不同（同一个病
-+    // 在岸片上已经修过 —— 按镜像格成对访问）。下一步就照那个办法处理水这一层。
-+
 +    std::fprintf(stderr,
 +                 "[symmetry] placed: %s, %zu start points, %zu waypoints, %zu terrain "
 +                 "objects, %zu structures (the overlay layer is reported by "
@@ -2225,44 +2164,6 @@
 +                     "in mirrored pairs over the whole map (%lld pair visits, %lld reported "
 +                     "failure), restored %lld that the pass could not dress\n",
 +                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
-+    }
-+
-+    // ---- [移植侧] 非左右对称：海岸改用"岛屿做法" ---------------------------
-+    // 实测依据（本机跑出来的，不是推断）：
-+    //   · 岛屿类（Continent 等）沿岸的陆格是 tile 0（平地）与普通地形，**完全不用岸片族**
-+    //     （水格 8035，沿岸陆格 top: 0/520/135/144/428 …），观感你一直认可；
-+    //   · 内陆 / 山地 180 的沿岸陆格全是岸片族（111/109/120/94/96/91 = ShorePieces+22/20/31/5/…）。
-+    // 岸片是**有朝向的多格片**，而 180 / 上下这两个映射不是格的同构（相邻格不映到相邻格），
-+    // 它们必然被打散 —— 任何摆放策略都救不回来（前后试过九种，含末端重铺、实例级修复、
-+    // 按镜像格成对重选、重建挖地形期状态等）。岛屿做法用的全是**逐格均匀**的美术（平地 + 水族），
-+    // 在打散下不变，所以两侧一致。
-+    // 于是：两半一起把岸片换成平地（**水格一瓦不碰** —— 水沿由 DecorateWaterTiles 照常铺，
-+    // 末端重置水格会把水沿抹掉，那是之前"光秃菱形"的真正成因）。左右对称不动这一支：
-+    // 它的岸片是足印镜像件，观感已经对了。
-+    if (kind != mg::MapSymmetry::AxialLeftRight && shorePieces_ >= 0)
-+    {
-+        long long converted = 0;
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                MapCell* c = cellSlots_[512 * y + x];
-+                if (c == nullptr)
-+                    continue;
-+                const int t = c->IsoTileTypeIndex;
-+                if (t >= shorePieces_ && t < shorePieces_ + 42)
-+                {
-+                    // 平地：与岛屿类的沿岸陆格同款。用绿地 tile（而不是 0）是为了不留暗格 ——
-+                    // 0 是占位格，渲染上比周围地面暗，实测暗像素 0.36% -> 0.58%。
-+                    c->IsoTileTypeIndex = (greenTileIndex_ >= 0) ? greenTileIndex_ : 0;
-+                    c->Height = 0;
-+                    ++converted;
-+                }
-+            }
-+        }
-+        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld shore cells -> plain "
-+                     "ground (the island recipe; water cells untouched)\n",
-+                     mg::MapSymmetryName(kind), converted);
 +    }
 +
 +    // Report, and check the result against itself - the rendered map cannot tell

@@ -789,6 +789,7 @@ def check_generation(failures: list[str]) -> int:
         #     90% (measured 99-100%), 180 25% (measured 50%; the old copy-verbatim
         #     behaviour measured 8%).
         for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.25)):
+            kind_is_reported_only = (sym == 2)   # 180 保持复制路线，自洽率是它的固有值
             # Explicit parameters, not GEN_PARAMS: the shore family only exists when the
             # carve actually makes a river or a lake, which needs water > 20.
             mp = tmp_path / f"cohesion-{sym}.yrm"
@@ -801,12 +802,44 @@ def check_generation(failures: list[str]) -> int:
             if proc.returncode != 0:
                 failures.append(f"cohesion {label}: generation failed: {proc.stderr[-300:]}")
                 continue
+            # 同一张 size-2 图上把"水面掩膜 IoU"也量一遍并设界 —— 套件默认尺寸下 180 没有
+            # 可比对的岸对，只有这里能把它盯住（我这几轮把 180 改到 0.589 的那次就是这样漏过去的）。
+            # 渲染直接用渲染器命令（render_cleanliness 里的那个 render 是它的局部函数）。
+            iou = None
+            try:
+                from verify_render import dotnet_env, RENDERER
+                from maptools.game_dir import find_game_dir
+                dotnet, renv = dotnet_env()
+                game = str(find_game_dir())
+                png = tmp_path / f"cohesion-{sym}.png"
+                subprocess.run([dotnet, str(RENDERER), "-i", str(mp), "-m", game,
+                                "-p", "-o", str(tmp_path / f"cohesion-{sym}"), "-Y"],
+                               capture_output=True, text=True, timeout=900, env=renv)
+                iou = coast_water_mask_iou(mp, png, sym)
+            except Exception as exc:                              # pragma: no cover
+                print(f"  coast   {label} water IoU: skipped ({exc})")
+            checks += 1
+            if iou is not None:
+                floor_iou = 0.90 if sym == 1 else 0.70
+                if iou[0] < floor_iou:
+                    failures.append(
+                        f"coast shape {label}: the rendered water mask matches its own mirror "
+                        f"with IoU {iou[0]:.3f} (floor {floor_iou:.2f}) - the two halves do not "
+                        f"draw the same coastline")
+                else:
+                    print(f"  coast   {label + ' water IoU':<24} {iou[0]:5.3f} mean / "
+                          f"{iou[1]:5.3f} median ({iou[2]} pairs)")
             got = shore_instance_coherence(mp, shore_family_base(ini))
             if not got or got[1] == 0:
                 print(f"  cohesion {label:<18} no shore instances to judge")
                 continue
             ratio = got[2] / got[1]
             cell_ratio = (got[3] / got[4]) if got[4] else 0.0
+            if kind_is_reported_only:            # 180：只报数（见 mirror.h：复制路线的固有值）
+                print(f"  cohesion {label:<18} shore instances {got[2]}/{got[1]} "
+                      f"({ratio:.0%}), cells {got[3]}/{got[4]} ({cell_ratio:.0%}) "
+                      f"- reported, not required")
+                continue
             if ratio < floor:
                 failures.append(
                     f"cohesion {label}: only {got[2]}/{got[1]} shore instances "
@@ -874,6 +907,26 @@ def check_generation(failures: list[str]) -> int:
                     scans[tag] = got
                     print(f"  coast   {tag + ' aligned':<18} best offset ({got[0]:+3d}, "
                           f"{got[1]:+3d}), residual {got[2]:5.2f}")
+        ious = {}
+        for tag in ("lr", "inland", "mountainous", "inland-180", "mountainous-180"):
+            if tag not in coast_maps:
+                continue
+            kind = 2 if tag.endswith("-180") else 1
+            got = coast_water_mask_iou(coast_maps[tag], coast_pngs[tag], kind)
+            if got is not None:
+                ious[tag] = got
+                print(f"  coast   {tag + ' water IoU':<18} {got[0]:5.3f} mean / {got[1]:5.3f} "
+                      f"median ({got[2]} pairs)")
+        for tag, floor in (("inland", 0.90), ("mountainous", 0.90),
+                           ("inland-180", 0.70), ("mountainous-180", 0.70)):
+            if tag not in ious:
+                continue
+            checks += 1
+            if ious[tag][0] < floor:
+                failures.append(
+                    f"coast shape {tag}: the rendered water mask matches its own mirror with "
+                    f"IoU {ious[tag][0]:.3f} (floor {floor:.2f}) - the two halves do not draw "
+                    f"the same coastline (see MapGenSymmetry.cpp and coast_water_mask_iou)")
         if "lr" in scans:
             checks += 1
             for tag in ("inland", "mountainous"):
@@ -1195,6 +1248,79 @@ def coast_alignment_scan(mapfile: Path, pngfile: Path, kind: int, radius: int = 
                 if mean < best[0]:
                     best = (mean, dx, dy)
     return best[1], best[2], best[0]
+
+
+def coast_water_mask_iou(mapfile: Path, pngfile: Path, kind: int,
+                         half_w: int = 60, half_h: int = 45) -> tuple | None:
+    """(mean IoU, median IoU, pairs) of the rendered WATER MASK between mirrored cells.
+
+    This is the metric that actually decides "is the coastline the same on both halves".
+    It exists because the earlier numbers were all biased, each in its own way:
+      * the pixel-difference metric rewards a translated copy of the art (a "staircase"
+        coast scores better than a correctly mirrored one);
+      * "compare only the pixels that are water on both sides" silently drops exactly the
+        pixels where one side is water and the other is land - i.e. the shape error itself;
+      * the shore-instance coherence counts piece integrity, not what the player sees.
+    Binarising the render (water is dark) and taking the intersection over union of the two
+    flipped crops has none of those problems.  Measured (size 2, same seed):
+        reference islands, both kinds   0.959-0.967
+        Inland / Mountainous, left-right 0.967
+        Inland, rotational-180           0.782   <- still short of the islands
+    and every attempt to redraw the 180 coast scored WORSE (paired re-selection 0.714,
+    end-of-pipeline rebuild 0.713, island recipe 0.648, island recipe + uniform water
+    0.589), which is why the 180 coast keeps the copied art.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+        from maptools.map_ini import load_map, extract_iso_pack_b64, parse_map_size
+        from maptools.iso_pack import decode_iso_map_pack
+    except Exception:                                          # pragma: no cover
+        return None
+    import re as _re
+    import statistics as _st
+    if not mapfile.is_file() or not pngfile.is_file():
+        return None
+    sections = load_map(mapfile)
+    width, height = parse_map_size(sections)
+    text = "\n".join(line for _, lines in sections for line in lines)
+    lx, ly = (int(g) for g in _re.search(
+        r"LocalSize\s*=\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)",
+        text).groups()[:2])
+    left, top = lx * 60, (ly - 3) * 30 + 15
+    cells = {(t.rx, t.ry): t
+             for t in decode_iso_map_pack(extract_iso_pack_b64(sections), width, height)}
+    im = np.asarray(Image.open(pngfile).convert("RGB")).astype(np.int16)
+    img_h, img_w, _ = im.shape
+
+    def centre(t):
+        return (int(((t.rx - t.ry + width - 1) + 1) * 30 - left),
+                int(((t.rx + t.ry - width - 1) - t.z) * 15 - top))
+
+    vals = []
+    for c, t in cells.items():
+        if not (314 <= t.tile_index < 328):
+            continue
+        m = mirror_cell(kind, width, height, *c)
+        o = cells.get(m)
+        if o is None or not (314 <= o.tile_index < 328) or not (c < m):
+            continue
+        x, y = centre(t)
+        x2, y2 = centre(o)
+        if not (half_w <= x < img_w - half_w and half_h <= y < img_h - half_h
+                and half_w <= x2 < img_w - half_w and half_h <= y2 < img_h - half_h):
+            continue
+        L = im[y - half_h:y + half_h, x - half_w:x + half_w]
+        R = im[y2 - half_h:y2 + half_h, x2 - half_w:x2 + half_w]
+        R = R[:, ::-1] if kind == 1 else R[::-1, ::-1]
+        ml = L.sum(axis=2) < 260
+        mr = R.sum(axis=2) < 260
+        union = np.logical_or(ml, mr).sum()
+        if union:
+            vals.append(float(np.logical_and(ml, mr).sum()) / float(union))
+    if not vals:
+        return None
+    return _st.mean(vals), _st.median(vals), len(vals)
 
 
 def shore_instance_coherence(map_path: Path, base: int | None = None):
