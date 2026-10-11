@@ -1418,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,985 @@
+@@ -0,0 +1,1016 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2008,24 +2008,52 @@
 +            // 水格 -> 基础水片；岸件（shorePieces_ 族）-> 占位格。两半随后一起由官方那套
 +            // SmoothWaterBody 重新上妆（见本函数末尾），于是每一格的岸片都是照着**现在这个
 +            // 对称形状**选的。--symmetry 0 不经过这里。
++            // [移植侧] 对称：只搬形状，不搬"为另一个形状选的海岸美术"（仅左右对称）。
++            // 水格 -> 基础水片（水沿细节交给 DecorateWaterTiles）、岸件 -> 占位格；两半随后一起
++            // 由官方那两趟选片 pass 成对重上妆（见本函数末尾）。180 保持原样：它的镜像关系是
++            // 绕中心的 180° 旋转，"照着自己形状选片"这条路线在它上面不成立（实测成对盖章 139 次
++            // 失败，markerBad 0 -> 45、最终 1158；水细节片偏移旋转虽让水层中位 15.19 -> 9.31，
++            // 但最终 markerBad 585 -> 1014、crossFam 1072 -> 1412，一并回退）。
 +            const bool srcIsWater = IsWaterTile(a);
 +            const bool srcIsShore = !srcIsWater && shorePieces_ >= 0
 +                && tile >= shorePieces_ && tile < shorePieces_ + 42;
-+            if (srcIsWater)
++            if (kind == mg::MapSymmetry::AxialLeftRight && srcIsWater)
 +            {
 +                b->IsoTileTypeIndex = waterTileIndex_;
 +                b->Height = height;
 +            }
-+            else if (srcIsShore)
++            else if (kind == mg::MapSymmetry::AxialLeftRight && srcIsShore)
 +            {
 +                b->IsoTileTypeIndex = 0;
 +                b->Height = 0;
 +                ++shoreKept;
 +            }
++            else if (srcIsShore)
++            {
++                b->IsoTileTypeIndex = tile;              // 180：基线行为（岸片原样）
++                b->Height = height;
++                ++shoreKept;
++            }
++            else if (srcIsWater)
++            {
++                b->IsoTileTypeIndex = tile;              // 180：基线行为（水片原样）
++                b->Height = height;
++            }
 +            else
 +            {
-+                b->IsoTileTypeIndex = tile;
-+                b->Height = height;
++                // 其它族（崖、水崖、瀑布…）走 MirrorTile 的足印+偏移镜像（与基线一致）
++                int t2 = tile;
++                int h2 = height;
++                const int partner = MirrorTile(tile, kind, &h2, &approx);
++                if (partner >= 0)
++                {
++                    t2 = partner;
++                    ++turned;
++                    if (approx)
++                        ++approximated;
++                }
++                b->IsoTileTypeIndex = t2;
++                b->Height = h2;
 +            }
 +            b->Level = a->Level;
 +            b->SlopeIndex = mg::ReflectSlope(kind, a->SlopeIndex);
@@ -2058,6 +2086,9 @@
 +    // 只做左右对称。180 的镜像格彼此远、盖章序列无法成对（实测 139 次失败），而且它本来
 +    // 就没有"同一张片平移"的岸片对（340/340 已是足印镜像件）——重妆只会把它弄差：
 +    // 岸带镜像差 25.06 -> 32.61（size2/4p、同参数），所以 180 保持复制路径。
++    // 只做左右对称：180 的镜像格彼此远、成对盖章有 139 次失败，实测把 markerBad 从 0 推到 45
++    // （最终 1158）、crossFam 推到 1616 —— 官方的选片 pass 是挖地形期的语义，在 180 的映射下
++    // 跑不成立。180 只保留下面的水细节片偏移旋转。
 +    if (kind == mg::MapSymmetry::AxialLeftRight)
 +    {
 +        const int side = size_.workSide;
@@ -2076,7 +2107,7 @@
 +                    c->Height = 0;
 +                    ++undressed;
 +                }
-+                else if (IsWaterTile(c))
++                else if (kind == mg::MapSymmetry::AxialLeftRight && IsWaterTile(c))
 +                {
 +                    c->IsoTileTypeIndex = waterTileIndex_;
 +                }
