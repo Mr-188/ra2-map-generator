@@ -307,7 +307,7 @@
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,265 @@
+@@ -3169,6 +3200,282 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -383,6 +383,18 @@
 +    0x87, 0x1F, 0x1F, 0x10, 0x10, 0x40, 0x40, 0x01, 0x01, 0x04,
 +    0x04, 0x00, 0x00
 +};
++
++// 180° 旋转：N<->S、NE<->SW、E<->W、SE<->NW —— 方向序为 [N,NE,E,SE,S,SW,W,NW]，
++// 所以就是 i -> (i+4)%8。用错这个置换会让"足印对、朝向错"的片被选中（见 MirrorTile）。
++static unsigned char Rot180WaterProfile(unsigned char m)
++{
++    static const int perm[8] = { 4, 5, 6, 7, 0, 1, 2, 3 };
++    unsigned char out = 0;
++    for (int i = 0; i < 8; ++i)
++        if ((m >> perm[i]) & 1)
++            out |= static_cast<unsigned char>(1u << i);
++    return out;
++}
 +
 +// 左右镜像按 N<->W、NE<->SW、E<->S 互换方向（SE 与 NW 各自不变）。
 +static unsigned char MirrorWaterProfile(unsigned char m)
@@ -496,8 +508,13 @@
 +        const unsigned char srcProf = kShoreWaterProfile[srcIdx];
 +        if (srcProf != 0)
 +        {
-+            const unsigned char want = MirrorWaterProfile(srcProf);
-+            const int prefer = kShoreMirrorPreference[srcIdx];
++            // [移植侧] 修正：180 必须用 180 的剖面置换。之前这里无论 kind 都用转置的
++            // MirrorWaterProfile，于是 180 挑出的"对应件"足印对、朝向错 —— 镜像侧岸线走样
++            // 的根源。数据层核对：42 片里 38 片存在"足印+剖面都对"的 180 对应件。
++            const bool rot180 = (kind == mg::MapSymmetry::Rotational180);
++            const unsigned char want = rot180 ? Rot180WaterProfile(srcProf)
++                                              : MirrorWaterProfile(srcProf);
++            const int prefer = rot180 ? 0 : kShoreMirrorPreference[srcIdx];
 +            int firstCand = -1, prefCand = -1;
 +            for (int k = 0; k < runs[ownRun].count; ++k)
 +            {
@@ -573,7 +590,7 @@
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4032,55 @@
+@@ -3742,6 +4049,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -629,7 +646,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4101,45 @@
+@@ -3762,36 +4118,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1418,7 +1435,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1038 @@
+@@ -0,0 +1,1050 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2030,10 +2047,22 @@
 +            }
 +            else if (srcIsShore)
 +            {
-+                // 180：岸片原样（基线）。这里试过三种镜像映射（足印转置、片内偏移转置、
-+                // 镜像半场不铺岸件），渲染质量都没变好或更差；机制见 mirror.h 的 180 段。
-+                b->IsoTileTypeIndex = tile;
-+                b->Height = height;
++                // [移植侧] 180 的岸片交给 MirrorTile 选对应件 —— 它现在按 **180 的剖面置换**
++                // 挑（MapGenRiver.cpp 的 Rot180WaterProfile）。数据层核对：42 片里 38 片存在
++                // "足印+剖面都对"的 180 对应件（缺 3、19 与 40/41）。原样复制只会把"为另一个
++                // 形状选的朝向"搬过去，镜像半场因此走样。
++                int t2 = tile;
++                int h2 = height;
++                const int partner = MirrorTile(tile, kind, &h2, &approx);
++                if (partner >= 0)
++                {
++                    t2 = partner;
++                    ++turned;
++                    if (approx)
++                        ++approximated;
++                }
++                b->IsoTileTypeIndex = t2;
++                b->Height = h2;
 +                ++shoreKept;
 +            }
 +            else if (srcIsWater)
