@@ -1418,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1016 @@
+@@ -0,0 +1,1036 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2036,7 +2036,10 @@
 +            }
 +            else if (srcIsWater)
 +            {
-+                b->IsoTileTypeIndex = tile;              // 180：基线行为（水片原样）
++                // 180：水片原样（基线）。试过在这里也退回基础水片、让 DecorateWaterTiles
++                // 按镜像后的邻居重选 —— 实测**地图逐字节不变**：那一趟本来就会重铺所有
++                // 基础水格的格，复制路径没有改变它的输入。所以 180 的水沿片不是这里的账。
++                b->IsoTileTypeIndex = tile;
 +                b->Height = height;
 +            }
 +            else
@@ -2086,13 +2089,16 @@
 +    // 只做左右对称。180 的镜像格彼此远、盖章序列无法成对（实测 139 次失败），而且它本来
 +    // 就没有"同一张片平移"的岸片对（340/340 已是足印镜像件）——重妆只会把它弄差：
 +    // 岸带镜像差 25.06 -> 32.61（size2/4p、同参数），所以 180 保持复制路径。
-+    // 只做左右对称：180 的镜像格彼此远、成对盖章有 139 次失败，实测把 markerBad 从 0 推到 45
-+    // （最终 1158）、crossFam 推到 1616 —— 官方的选片 pass 是挖地形期的语义，在 180 的映射下
-+    // 跑不成立。180 只保留下面的水细节片偏移旋转。
++    // 铺不上的格子要还原：卸妆之前先把每个岸格的 (片号, 片内偏移) 存一份，两趟跑完后仍是
++    // 占位格的格子说明官方 pass 在这个位置铺不下（180 实测 45 格，左右对称 0 格），把原来的
++    // 美术还回去 —— 否则那半场会留下"一边有美术、一边是空地"的镜像对，形状都不对称了。
++    std::vector<std::pair<int, std::pair<int, int> > > shoreBackup;
++    // 只做左右对称：180 的镜像格彼此远、成对盖章有 139 次失败，实测把它弄差（本函数末尾那段
++    // 的注释有数）；180 的水沿片改由上面的"退回基础水片 + DecorateWaterTiles 重选"处理。
 +    if (kind == mg::MapSymmetry::AxialLeftRight)
 +    {
 +        const int side = size_.workSide;
-+        long long undressed = 0, visited = 0, failed = 0;
++        long long undressed = 0, visited = 0, failed = 0, restored = 0;
 +        for (int y = 0; y < slotRows_; ++y)
 +        {
 +            for (int x = 0; x < 512; ++x)
@@ -2103,11 +2109,13 @@
 +                const int t = c->IsoTileTypeIndex;
 +                if (shorePieces_ >= 0 && t >= shorePieces_ && t < shorePieces_ + 42)
 +                {
++                    shoreBackup.push_back(std::make_pair(
++                        c->MapCoords, std::make_pair(t, c->Height)));
 +                    c->IsoTileTypeIndex = 0;
 +                    c->Height = 0;
 +                    ++undressed;
 +                }
-+                else if (kind == mg::MapSymmetry::AxialLeftRight && IsWaterTile(c))
++                else if (IsWaterTile(c) && kind == mg::MapSymmetry::AxialLeftRight)
 +                {
 +                    c->IsoTileTypeIndex = waterTileIndex_;
 +                }
@@ -2138,10 +2146,22 @@
 +                }
 +            }
 +        }
++        for (size_t i = 0; i < shoreBackup.size(); ++i)
++        {
++            const int packed = shoreBackup[i].first;
++            MapCell* c = CellAt(static_cast<int16_t>(packed & 0xFFFF),
++                                static_cast<int16_t>(static_cast<uint32_t>(packed) >> 16));
++            if (c != nullptr && c->IsoTileTypeIndex == 0)
++            {
++                c->IsoTileTypeIndex = shoreBackup[i].second.first;
++                c->Height = shoreBackup[i].second.second;
++                ++restored;
++            }
++        }
 +        std::fprintf(stderr, "[symmetry] coast: %s, undressed %lld shore cells, re-selected "
 +                     "in mirrored pairs over the whole map (%lld pair visits, %lld reported "
-+                     "failure)\n",
-+                     mg::MapSymmetryName(kind), undressed, visited, failed);
++                     "failure), restored %lld that the pass could not dress\n",
++                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
 +    }
 +
 +    // Report, and check the result against itself - the rendered map cannot tell
