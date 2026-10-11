@@ -131,6 +131,41 @@
 // pairs), the overlay layer and the ledgers are symmetric; the relief and the art
 // that dresses it cannot be, for the reason derived above.
 //
+// THE 180 COAST - THE ACTUAL ROOT CAUSE, PROVED AT THE END OF A LONG HUNT.
+//
+// The parity-180 map is a bijection of the diamond but NOT a lattice automorphism:
+// adjacent cells do not map to adjacent cells (that is exactly why the 180 corner lattice
+// in verify_symmetry is 16 cells rather than 8).  Everything about the 180 coast follows
+// from that one fact:
+//
+//   * A MULTI-CELL PIECE'S CELLS GET SCATTERED.  Copying a shore piece to its mirrored
+//     cells puts its four cells (2x2) at positions that are no longer neighbours, each
+//     keeping the frame index of the cell it came from.  The art cannot be reassembled,
+//     and the per-cell frames are the wrong slices - which is the diamond staircase.
+//     Measured: on the finished 180 Inland map the image half's shore cells carry EXACTLY
+//     the same tile and Height as their canonical partners (a rebuild pass found 0 cells
+//     to fix), and yet its pieces decode as 169 "instances" of which 99 are single cells
+//     and 49 are three cells - impossible shapes for even-masked pieces.  The canonical
+//     half is 85/87 coherent, the image half 14/169.  Left-right: 66/66 and 66/66.
+//   * UNIFORM ART SURVIVES ANY MAPPING.  A plain 2x2 water rectangle or a 1x1 ground tile
+//     draws the same picture whichever cell of the scatter it lands on.  That is why the
+//     island land types look right at 180 (coast metric 5.11-5.48 against 4.49 at
+//     left-right) while Inland / Mountainous, whose coast is drawn by DIRECTIONAL
+//     multi-cell shore pieces, cannot: any placement of those pieces under this mapping
+//     is a scatter.  Transpose, by contrast, is a lattice automorphism (it preserves the
+//     8-neighbourhood), so piece cells stay adjacent and left-right comes out coherent.
+//   * Re-running the generator's own shore pass changes nothing: on a rebuilt carve-time
+//     state it drops the refusals from 139 to 13, and at the very end of the pipeline
+//     (after every RecalculateCellAttributes) it still leaves the image half at 45/178
+//     coherent.  Pure copying leaves it at 14/169.  Neither renders differently.
+//
+// So this is not a bug to fix inside the symmetry passes: with this tileset the 180 mode
+// can only look right for coasts drawn with position-independent art.  Making Inland /
+// Mountainous look right at 180 would mean changing what its coast is made of (measured
+// alternatives: no shore art at all -> bare dark diamonds, dark pixels 0.36% -> 0.58%;
+// shore art replaced by the sand ground tile -> hard faceless zig-zag).  Both are worse
+// than what ships, so neither was taken.
+//
 // THE 180 COAST IS AN ART LIMIT, AND HERE IS THE MECHANISM, MEASURED.  The first
 // blocker turned out to be a STATE bug, not geometry: probing PlaceIsoTile's three
 // refusal sites on a 180 map showed 61 of 74 refusals were the same case - the covered
