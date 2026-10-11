@@ -1438,7 +1438,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1080 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1940,6 +1940,36 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
++    // ---- [移植侧] 非左右对称：水面统一成同一张 1x1 水片（子帧 0） ----------------
++    // 用户的观察：非左右对称时"水块没铺对称"。查下来确实如此 —— 水族里 314..321 是 2x2 片
++    // （四块纹理不同、相位在 180/上下这类映射下必翻面），而复制路径是**逐格照抄**，于是镜像
++    // 水格上的"片+子帧"只有 29.3% 与权威侧相同（左右对称是 64%、仅片同 97%）。
++    // 把每一格水都设成同一张 1x1 片 + 子帧 0 之后：镜像水格对 **174/174 = 100% 相同**（实测）。
++    // 必须在 DecorateWaterTiles **之后**做（那一趟只处理"片号==基础水片"的格，会重铺）。
++    // 不影响左右对称（它那半边不进来）。
++    if (kind != mg::MapSymmetry::AxialLeftRight && waterTileIndex_ >= 0)
++    {
++        long long unified = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t2 = c->IsoTileTypeIndex;
++                if (t2 >= waterTileIndex_ && t2 < waterTileIndex_ + 14)
++                {
++                    c->IsoTileTypeIndex = waterTileIndex_ + 8;   // 1x1，只覆盖自己这一格
++                    c->Height = 0;
++                    ++unified;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] water-uniform: %s, %lld water cells set to one "
++                     "1x1 piece\n", mg::MapSymmetryName(kind), unified);
++    }
++
 +    std::fprintf(stderr,
 +                 "[symmetry] placed: %s, %zu start points, %zu waypoints, %zu terrain "
 +                 "objects, %zu structures (the overlay layer is reported by "
