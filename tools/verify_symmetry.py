@@ -1042,6 +1042,14 @@ def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
     is printed because it is the number a reader expects to see and the one that
     is systematically misread (a symmetric map is supposed to differ there: the
     image cell carries the mirrored piece).
+
+    The last row of each land type is the REFERENCE: the same map generated with
+    symmetry off, compared against its own mirror.  That is what the statistic says
+    when nothing was done to make the map symmetric, so it is the floor a symmetric
+    map is trying to get away from - and, for 180, close to the ceiling of what the
+    cell map can deliver at all (the neighbour-derived choices cannot mirror, see
+    mirror.h), which is why inland/mountainous sits there much higher than the
+    island types: it has far more terrain for those choices to be made about.
     """
     if not MGCONSOLE.is_file() or not ASSETS.is_dir():
         print("--score needs build/engine/mgconsole and build/oracle_assets; "
@@ -1070,6 +1078,19 @@ def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
                 pairs, art, exact = interior_stats(cells, Wp, Hp, kind)
                 label = f"{land} ({names.get(land, '?')})"
                 print(f"  {label:<26}{kind_names[kind]:<16}{pairs:>7}"
+                      f"{100.0 * art / pairs:>17.1f}%{100.0 * exact / pairs:>16.1f}%")
+            # The reference: the same land type with symmetry OFF, measured against
+            # its own mirror.  Both kinds come out of the one generation.
+            plain = Path(tmp) / f"land{land}_sym0.yrm"
+            if run_generator(plain, land, 0).returncode != 0 or not plain.is_file():
+                continue
+            sections = sections_of(plain)
+            cells = cells_of(sections)
+            Wp, Hp = parse_map_size(sections)
+            label = f"  {land} ({names.get(land, '?')}) ref"
+            for kind in kinds:
+                pairs, art, exact = interior_stats(cells, Wp, Hp, kind)
+                print(f"  {label:<28}{kind_names[kind]:<16}{pairs:>7}"
                       f"{100.0 * art / pairs:>17.1f}%{100.0 * exact / pairs:>16.1f}%")
     return 0
 
