@@ -371,6 +371,28 @@ constexpr int kMapSymmetryImplementedMax =
 // interior difference is a texture-choice difference, not a direction that is being applied
 // wrongly - and that is the difference the suite reports as 16.2% at 180 against 1.7% at LR.
 //
+// WHICH STAGE MAKES THE CLIFFS ONE-SIDED (measured, per-stage census).  A read-only count of
+// CliffSet cells on the two halves, printed after each stage of MakeRegions (the pipeline runs
+// MirrorLevels -> FixCliffLevels -> PlaceCliffs -> CorrectCliffTiles -> RepairCliffPieces):
+//
+//   after MirrorLevels       A=0 B=0
+//   after FixCliffLevels     A=0 B=0
+//   after PlaceCliffs        A=0 B=111   x[112..167] y[88..144]
+//   after CorrectCliffTiles  A=0 B=111
+//   after RepairCliffPieces  A=0 B=111
+//
+// So PlaceCliffs itself decides everything, and it decides it on ONE half - its 111 cells sit in
+// a band at x+y ~ 254, i.e. against one edge of the diamond.  Nothing downstream removes the
+// other half's; there simply never were any.  Note also how FEW they are (111 of 13992 cells,
+// 0.8%): the CliffSet is not what draws the stepped water edge seen at top-bottom.
+//
+// That last point matters for what to fix next.  The wipe experiment (turn every shore / cliff /
+// water-cliff cell into ground and render) made the staircase disappear, and the CliffSet is far
+// too small to be it, so the staircase is SHORE art whose SUB-TILES are laid out wrongly on the
+// mirrored half.  The existing coherence metric cannot see that: it checks the SET of sub-tiles
+// an instance occupies against the footprint mask (that is 85/85 at top-bottom), not WHICH
+// sub-tile sits on WHICH cell.  The next measurement has to be an orientation check.
+//
 // TWO FIXES TRIED FOR THE CLIFF LAYER, BOTH REJECTED BY THE DARK-PIXEL GATE.  The cliff art is
 // placed AFTER the mirror (PlaceCliffs / CorrectCliffTiles / RepairCliffPieces read tile
 // indices, and a mirrored tile index is the footprint PARTNER, not an equal value - the same
