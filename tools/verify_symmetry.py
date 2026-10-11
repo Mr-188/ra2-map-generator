@@ -572,6 +572,28 @@ def check_generation(failures: list[str]) -> int:
                 sp_sections = sections_of(map_sp)
                 S = cells_of(sp_sections)
                 Sw, Sh = parse_map_size(sp_sections)
+
+                # The shore pieces: every mirrored pair must be a footprint-mirrored pair,
+                # not the same art translated sideways.  This is the structural signature
+                # of the Inland / Mountainous coast pass and the cheapest detector of a
+                # regression to "copy the coast art verbatim".
+                shore_base = shore_family_base(ini)
+                shore_tab = parse_table(FOOTPRINTS_CPP.read_text(encoding="utf-8",
+                                                                 errors="replace"),
+                                        "kShoreFootprints") if FOOTPRINTS_CPP.is_file() else []
+                if shore_base is not None and shore_tab:
+                    trans, mirror_ok, gaps = translated_shore_pairs(S, Sw, Sh, kind,
+                                                                    shore_tab, shore_base)
+                    checks += 1
+                    if trans:
+                        failures.append(
+                            f"{tag}: {trans} of {trans + mirror_ok + gaps} mirrored shore "
+                            "pairs carry translated art (the same piece with the same "
+                            "sub-cell offset) instead of the mirrored piece - that is the "
+                            "staircase coastline; see MapGenSymmetry.cpp MirrorSpecialTerrain")
+                    else:
+                        print(f"  special {tag:<24} shore pairs all footprint-mirrored "
+                              f"({mirror_ok} pairs, {gaps} without a counterpart)")
                 bad, pairs, _ = selfsym(S, lambda x, y: mirror_cell(kind, Sw, Sh, x, y),
                                         water_key)
                 checks += 1
@@ -866,6 +888,51 @@ def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
     else:
         print(f"  steps   {tag:<7} (map or png unreadable; the step check is skipped)")
     return checks
+
+
+def shore_family_base(ini) -> int | None:
+    """The engine tile index of the first Shore Pieces tile, read off the theater INI.
+
+    The engine's IsoTileTypeIndex is the running total over the INI's TileSet sections,
+    so the family starts at the first index the INI attributes to the "Shore Pieces"
+    set.  Read rather than hard-coded: the number belongs to the theater, not to us.
+    """
+    idx = [i for i, (set_no, off, name, base) in ini.index_map.items()
+           if name.strip().lower() == "shore pieces"]
+    return min(idx) if idx else None
+
+
+def translated_shore_pairs(cells: dict, Wp: int, Hp: int, kind: int,
+                           table: list, base: int):
+    """(translated, mirrored, gap) over the map's mirrored pairs of shore pieces.
+
+    A mirrored pair is CORRECT when the image cell carries the piece whose footprint is
+    the mirror of the source cell's footprint (and, implicitly, the mapped sub-cell
+    offset).  A pair is TRANSLATED when both cells carry the SAME piece with the SAME
+    sub-cell offset - the art moved sideways instead of mirrored.  That is the defect
+    the Inland / Mountainous coast pass removes: measured on a size-2 Inland map, 94 of
+    274 left-right pairs were translated before, 0 of 272 after, and the coastline went
+    from a diamond staircase to a smooth fringe on both halves
+    (build/render_test/symmetry-coast-mismatch.png shows the before).
+    """
+    translated = mirror_ok = gap = 0
+    n = len(table)
+    for c, t in cells.items():
+        if not (base <= t.tile_index < base + n):
+            continue
+        m = mirror_cell(kind, Wp, Hp, *c)
+        o = cells.get(m)
+        if o is None or not (base <= o.tile_index < base + n) or not (c < m):
+            continue
+        want = mirrored(table[t.tile_index - base],
+                        "left-right" if kind == 1 else "rotational-180")
+        if not any(g == want for g in table):
+            gap += 1                                   # pieces 41/42: no counterpart at all
+        elif table[o.tile_index - base] == want:
+            mirror_ok += 1
+        else:
+            translated += 1                            # same-piece translation, or wrong piece
+    return translated, mirror_ok, gap
 
 
 def uncovered_steps(map_path: Path, png: Path) -> tuple[int, int] | None:

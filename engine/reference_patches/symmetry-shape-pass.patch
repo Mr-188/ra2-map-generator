@@ -1418,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,917 @@
+@@ -0,0 +1,985 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2004,25 +2004,29 @@
 +            // 输出"（形状与变体都对应）。这里若再按"形状转置"覆盖一次，反而打散那份对应关系
 +            // —— 实测两者同时开着时，roll 共享对最终图完全没有影响。
 +            // （先前那次 A/B 结论是"交还更差"，但那时 roll 没有共享，镜像侧是另一次独立抽签。）
-+            const bool isShore = shorePieces_ >= 0
++            // [移植侧] 对称：只搬形状，不搬"为另一个形状选的海岸美术"。
++            // 水格 -> 基础水片；岸件（shorePieces_ 族）-> 占位格。两半随后一起由官方那套
++            // SmoothWaterBody 重新上妆（见本函数末尾），于是每一格的岸片都是照着**现在这个
++            // 对称形状**选的。--symmetry 0 不经过这里。
++            const bool srcIsWater = IsWaterTile(a);
++            const bool srcIsShore = !srcIsWater && shorePieces_ >= 0
 +                && tile >= shorePieces_ && tile < shorePieces_ + 42;
-+            const int partner = isShore ? -1 : MirrorTile(tile, kind, &height, &approx);
-+            if (partner >= 0)
++            if (srcIsWater)
 +            {
-+                tile = partner;
-+                ++turned;
-+                if (approx)
-+                    ++approximated;
++                b->IsoTileTypeIndex = waterTileIndex_;
++                b->Height = height;
 +            }
-+            else if (isShore)
++            else if (srcIsShore)
 +            {
-+                // [移植侧] 岸格：片号保留生成器的镜像感知选择；片内偏移的镜像转置**不在这里做**
-+                // —— 实测这道 pass 之后还有岸片盖章会把它按片内格号重算回去（dbg：写 3 -> 落盘前 1）。
-+                // 所以偏移转置放到最后一道 pass（MirrorMap）里做。见那里的注释。
++                b->IsoTileTypeIndex = 0;
++                b->Height = 0;
 +                ++shoreKept;
 +            }
-+            b->IsoTileTypeIndex = tile;
-+            b->Height = height;
++            else
++            {
++                b->IsoTileTypeIndex = tile;
++                b->Height = height;
++            }
 +            b->Level = a->Level;
 +            b->SlopeIndex = mg::ReflectSlope(kind, a->SlopeIndex);
 +            b->LandType = a->LandType;
@@ -2044,6 +2048,70 @@
 +    // already rewritten.  The pipeline calls it four more times further on anyway, so
 +    // dropping it here loses nothing and keeps the state as close to symmetric as
 +    // possible.
++
++    // ---- 海岸重新上妆：卸掉两半的挖地形岸件，按镜像格成对重选 --------------
++    // 只跑官方那两趟选片（mode 1 + mode 2），**不**跑 FloodFill/CleanupTile ——
++    // 那两趟是形状修补，会把刚腾出来的占位格再清掉（实测 size2 配置下岸件归零）。
++    // 访问顺序按"权威格与它的镜像格紧挨着"成对走：官方盖章是有顺序依赖的（一片盖住
++    // 的格子会影响后面的判定），成对访问让两半的盖章序列互为镜像，抽签共享也因此
++    // 天然对齐（权威格先记、镜像格随后取）。
++    // 只做左右对称。180 的镜像格彼此远、盖章序列无法成对（实测 139 次失败），而且它本来
++    // 就没有"同一张片平移"的岸片对（340/340 已是足印镜像件）——重妆只会把它弄差：
++    // 岸带镜像差 25.06 -> 32.61（size2/4p、同参数），所以 180 保持复制路径。
++    if (kind == mg::MapSymmetry::AxialLeftRight)
++    {
++        const int side = size_.workSide;
++        long long undressed = 0, visited = 0, failed = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t = c->IsoTileTypeIndex;
++                if (shorePieces_ >= 0 && t >= shorePieces_ && t < shorePieces_ + 42)
++                {
++                    c->IsoTileTypeIndex = 0;
++                    c->Height = 0;
++                    ++undressed;
++                }
++                else if (IsWaterTile(c))
++                {
++                    c->IsoTileTypeIndex = waterTileIndex_;
++                }
++                workCells_[x + side * y].data[16] = -1;      // 掩码按本侧瓦片重算
++            }
++        }
++        for (int mode = 1; mode <= 2; ++mode)
++        {
++            for (int y = 0; y < slotRows_; ++y)
++            {
++                for (int x = 0; x < 512; ++x)
++                {
++                    MapCell* a = cellSlots_[512 * y + x];
++                    if (a == nullptr)
++                        continue;
++                    int mx = 0, my = 0;
++                    if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
++                        continue;
++                    if (!(x < mx || (x == mx && y < my)))
++                        continue;                           // 每对只从权威格发起
++                    MapCell* b = cellSlots_[512 * my + mx];
++                    ++visited;
++                    if (!SelectShoreTile(a, mode, genCode_, 0))
++                        ++failed;
++                    if (b != nullptr && b != a
++                        && !SelectShoreTile(b, mode, genCode_, 0))
++                        ++failed;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] coast: %s, undressed %lld shore cells, re-selected "
++                     "in mirrored pairs over the whole map (%lld pair visits, %lld reported "
++                     "failure)\n",
++                     mg::MapSymmetryName(kind), undressed, visited, failed);
++    }
 +
 +    // Report, and check the result against itself - the rendered map cannot tell
 +    // whether a shape mirror worked (an unmirrored map scores 0.961 here by itself).
