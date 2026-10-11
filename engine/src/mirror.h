@@ -360,6 +360,33 @@ constexpr int kMapSymmetryImplementedMax =
 // table used should work: derive it by measurement - a ramp connects two levels, so the
 // direction is readable from the elevation grid of the cells around it.
 //
+// NAMING THE FAMILIES, AND WHAT THE NAMES SAY.  The clusters in that histogram were named by
+// accumulating TilesInSet over the theatre INI's [TileSetNNNN] sections, which reproduces the
+// engine's indices for the big families exactly (Cliff Set 49..88, Shore Pieces 89..130,
+// Cliff/Water pieces 148..175, Ramps 29..48 in INI order).  The three clusters that dominate an
+// inland map are 33..40, 131..147 and 512..523 - and a per-tile NEIGHBOUR-CLASS SIGNATURE
+// (the family census, extended) says their signature is "LLLL" for 100% of their cells, i.e.
+// all four neighbours are ordinary land: they are REGION-INTERIOR TEXTURES (131 is
+// "GrassThick Individual", 512..523 "Ramp edge fixup"), not directional pieces.  So the
+// interior difference is a texture-choice difference, not a direction that is being applied
+// wrongly - and that is the difference the suite reports as 16.2% at 180 against 1.7% at LR.
+//
+// TWO FIXES TRIED FOR THE CLIFF LAYER, BOTH REJECTED BY THE DARK-PIXEL GATE.  The cliff art is
+// placed AFTER the mirror (PlaceCliffs / CorrectCliffTiles / RepairCliffPieces read tile
+// indices, and a mirrored tile index is the footprint PARTNER, not an equal value - the same
+// class of bug MirrorWorkMarks documents), and on 180/Inland/size 2 the census shows the whole
+// CliffSet landing on ONE half (0 cells against 111).  Mirroring the art at the last station
+// from whichever half has it was measured twice:
+//   * keep the source piece and its frame when MirrorTile has no counterpart (110 of the 111
+//     cells): interior art 16.2% -> 14.7%, elevation 12399 -> 12545 pairs, but dark pixels
+//     1.89% against a 1.00% bound - the speckling defect;
+//   * leave those cells alone instead of copying the source piece: interior art 16.8%, dark
+//     pixels 1.96%.
+// Both break the hard constraint, so both were reverted.  What the numbers say is that only 1
+// of the 111 cliff cells has a 180 counterpart, so a copy-based mirror cannot work for this
+// family at all: the cliff art has to be RE-DERIVED from the (symmetric) shape, which is what
+// the goal's item 4 asks for.
+//
 // Twenty-three cliff pieces with no top-bottom counterpart means the mirrored half's cliffs
 // would be drawn as the wrong piece - a worse defect than the coastline this file spends so
 // long on.  verify_symmetry states the same thing as a gate ("top-bottom is closed now;
