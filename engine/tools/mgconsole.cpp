@@ -13,6 +13,8 @@
 //              [--single] [--out map.map]
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -88,11 +90,26 @@ static int diagTileFamily(const RandomMapGenerator& rmg, int tile)
 static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const char* stage)
 {
     if (cfg.symmetry == mg::MapSymmetry::None) return;
+    // [诊断用] The family bases the classifier below needs, once per run: without
+    // them a tile number cannot be attributed to a family by hand.
+    static bool dumped = false;
+    if (!dumped)
+    {
+        dumped = true;
+        const RandomMapGenerator::TileSets s = rmg.GetTileSets();
+        std::fprintf(stderr,
+                     "[diag-sets] water=%d shorePieces=%d shoreTile=%d waterCliffs=%d "
+                     "green=%d rough=%d sand=%d rampBase=%d rampSmooth=%d\n",
+                     s.water, s.shorePieces, s.shoreTile, s.waterCliffs, s.greenTile,
+                     s.roughTile, s.sandTile, s.rampBase, s.rampSmooth);
+    }
     const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
     MapCell* const* slots = rmg.GetCellSlots();
     const int rows = rmg.GetSlotRows();
     long long pairs = 0, lvlBad = 0, markerBad = 0, tileDiff = 0, subDiff = 0;
+    long long slopeBad = 0;
     long long crossFam = 0;
+    std::map<std::pair<int, int>, long long> slopePairs;
     for (int y = 0; y < rows; ++y)
     {
         for (int x = 0; x < 512; ++x)
@@ -125,6 +142,15 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
                 }
             }
             if (a->Height != b->Height) ++subDiff;
+            // [诊断用] SlopeIndex 的镜像关系是量出来的，不是猜的：镜像格的斜坡件由引擎自己
+            // 按**转置后的角值**选出来，所以两半的 SlopeIndex 满足角值模式的转置关系 ——
+            // 实测主组合是 1<->2、3<->4、6<->8、10<->12（下面的直方图直接打印）。
+            // mg::ReflectSlope 描述的是另一件事（斜坡平滑那两个探测位的互换：1<->3、2<->4），
+            // 复制路径用它。两者不是同一个关系，所以这里两个都量，别把 slopeBad 当成缺陷数。
+            if (b->SlopeIndex != mg::ReflectSlope(cfg.symmetry, a->SlopeIndex))
+                ++slopeBad;
+            if (a->SlopeIndex != b->SlopeIndex)
+                ++slopePairs[std::make_pair(a->SlopeIndex, b->SlopeIndex)];
             // The TILE is deliberately not compared for equality: a mirrored map is
             // supposed to give the image cell the MIRRORED piece, which is a different
             // tile index, so "tile indices equal" is the wrong expectation and an
@@ -133,8 +159,29 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
         }
     }
     std::fprintf(stderr,
-                 "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld tileDiff=%lld crossFam=%lld subDiff=%lld\n",
-                 stage, pairs, lvlBad, markerBad, tileDiff, crossFam, subDiff);
+                 "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld slopeBad=%lld "
+                 "tileDiff=%lld crossFam=%lld subDiff=%lld\n",
+                 stage, pairs, lvlBad, markerBad, slopeBad, tileDiff, crossFam, subDiff);
+    if (!slopePairs.empty())
+    {
+        // [诊断用] SlopeIndex 的镜像关系只能从数据里读出来：镜像格的斜坡件是引擎按
+        // 转置后的角值自己选出来的，所以"a 的镜像应该是几"不是猜出来的，是这对直方图
+        // 给出的。前 6 个组合足够看清主关系。
+        std::fprintf(stderr, "[diag-slopes] %s pairs whose SlopeIndex differs (top 6):",
+                     stage);
+        std::vector<std::pair<long long, std::pair<int, int> > > top;
+        for (std::map<std::pair<int, int>, long long>::const_iterator it =
+                 slopePairs.begin(); it != slopePairs.end(); ++it)
+            top.push_back(std::make_pair(it->second, it->first));
+        std::sort(top.begin(), top.end(),
+                  [](const std::pair<long long, std::pair<int, int> >& l,
+                     const std::pair<long long, std::pair<int, int> >& r)
+                  { return l.first > r.first; });
+        for (size_t i = 0; i < top.size() && i < 6; ++i)
+            std::fprintf(stderr, " %d<->%d x%lld", top[i].second.first,
+                         top[i].second.second, top[i].first);
+        std::fprintf(stderr, " (of %lld pairs)\n", pairs);
+    }
 }
 
 int main(int argc, char** argv)
@@ -342,7 +389,27 @@ int main(int argc, char** argv)
     rmg.RecalculateCellAttributes();                      // 0x59912A
     rmg.CreateHills();                                    // 0x599171
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateHills");
-    rmg.CreateLATs();                                     // 0x599215
+    // [诊断用] CreateLATs is four calls in a fixed order; --diag-symmetry runs
+    // them one at a time so the probe can say WHICH one breaks the mirror
+    // instead of only that the stage as a whole did.  The calls, their order and
+    // their arguments are exactly what CreateLATs does, so this path produces
+    // the same map - it is only taken when the flag is on.  (Without the split,
+    // "after CreateLATs" is the first probe that reports a difference at all.)
+    if (diagSym)
+    {
+        rmg.PrepareLATDensities();                        // 0x59922B
+        diagSymmetry(rmg, cfg, "lat: PrepareLATDensities");
+        rmg.ScatterLATBlobs();                            // 0x599232
+        diagSymmetry(rmg, cfg, "lat: ScatterLATBlobs");
+        rmg.ResetLATDensityFields();                      // 0x59923E
+        diagSymmetry(rmg, cfg, "lat: ResetLATDensityFields");
+        rmg.ScatterRocks();                               // 0x5992AB
+        diagSymmetry(rmg, cfg, "lat: ScatterRocks");
+    }
+    else
+    {
+        rmg.CreateLATs();                                 // 0x599215
+    }
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateLATs");
     rmg.RecalculateCellAttributes();                      // 0x599354
     rmg.PruneTerrainTrees();                              // port-side, after pass 4

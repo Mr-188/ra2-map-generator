@@ -51,10 +51,16 @@ Two things are settled here that do not need a generation run at all:
 
    Accept mirrored maps on the decoded geometry, and judge the look in the game.
 
-The generation-level checks that need a built engine and a game directory - mirror a
-map, decode both, compare cell by cell - are the next thing added here.
+The generation-level checks that need a built engine and a game directory are at the
+bottom of this file.  They generate maps and compare each one against its OWN mirror:
+the water/land outline, the shore ring, the overlay layer, the ledgers, the declared
+visible rect, and - added with the Inland / Mountainous work - the interior art, which
+is the number that separates "the outline is symmetric" from "the two halves show the
+same terrain".  Both special land types are generated; Mountainous used to be checked
+by nothing at all.
 
-    python3 tools/verify_symmetry.py
+    python3 tools/verify_symmetry.py            # the gate
+    python3 tools/verify_symmetry.py --score    # the same statistic, all lands/kinds
 """
 from __future__ import annotations
 
@@ -213,6 +219,14 @@ THEATER_INI = ASSETS / "x64" / "Release" / "temperatmd.ini"
 GEN_PARAMS = ["--land", "1", "--theater", "0", "--size", "1", "--players", "2",
               "--seed", "20260913"]
 
+# The bound the whole-map interior comparison uses (see interior_stats and the
+# Inland / Mountainous block below).  Measured on GEN_PARAMS with this file's own
+# --score mode: 2.3% for Inland and for Mountainous, 0.7% for Continent, 0.1%
+# (team continent) and 0.2% (archipelago) for the two island-heavy types.  The
+# bound is 3%, i.e. above the worst of them and far below the 10.7% these two land
+# types measured before the blob-stamp mirroring landed.
+INTERIOR_LIMIT = 0.03
+
 
 def md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -248,6 +262,54 @@ def _entries(sections, name: str) -> list[tuple[str, str]]:
 def packed_to_xy(v: int) -> tuple[int, int]:
     """[Waypoints] / [Terrain] cells are X + 1000*Y (MapGenMapFile.cpp:1092)."""
     return v % 1000, v // 1000
+
+
+# The gap between "a different piece of the same thing" and "a different thing".
+# A mirror hands the image cell the MIRRORED piece, which is a different tile
+# index by design, and the variants of one piece sit within a few indices of each
+# other; the next family is hundreds away.  Measured on a generated Inland map,
+# the histogram of |tile - mirror tile| has an empty band between 40 and 480, so
+# any threshold inside it separates the two.  ART_DIFF is where this file draws
+# the line, and everything below counts a pair as "the two halves do not show the
+# same thing".
+ART_DIFF = 20
+
+
+def mirror_of(kind: int, Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
+    if kind == 1:
+        return y, x
+    return rot180_cell(Wp, Hp, x, y)
+
+
+def interior_stats(cells: dict, Wp: int, Hp: int, kind: int):
+    """(pairs, art_diff, exact_diff) for a decoded map against its own mirror.
+
+    art_diff counts the mirrored pairs whose decoded tiles differ by more than
+    ART_DIFF.  exact_diff counts those that differ at all - printed, never
+    required: a symmetric map is SUPPOSED to put the mirrored piece on the image
+    cell, so "the indices are equal" is the wrong expectation (the same trap
+    --diag-symmetry documents).
+    """
+    pairs = art = exact = 0
+    for (x, y), t in cells.items():
+        o = cells.get(mirror_of(kind, Wp, Hp, x, y))
+        if o is None:
+            continue
+        pairs += 1
+        d = abs(t.tile_index - o.tile_index)
+        if d:
+            exact += 1
+        if d > ART_DIFF:
+            art += 1
+    return pairs, art, exact
+
+
+def run_generator(out: Path, land: int, symmetry: int,
+                  extra: list[str] | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(MGCONSOLE), "--root", str(ASSETS), *GEN_PARAMS, "--land", str(land),
+         *(extra or []), "--symmetry", str(symmetry), "--out", str(out)],
+        capture_output=True, text=True, timeout=900)
 
 
 def check_generation(failures: list[str]) -> int:
@@ -442,13 +504,21 @@ def check_generation(failures: list[str]) -> int:
         #     same as the same map generated with symmetry off).  The pass copies the
         #     half whole instead, so what has to hold is: the pass says so, its
         #     self-check disagrees nowhere, and the outline is symmetric.
-        proc_sp, map_sp = generate(1, "inland.yrm", ["--land", "3"])
-        proc_sp0, map_sp0 = generate(0, "inland_plain.yrm", ["--land", "3"])
-        checks += 1
-        if not (map_sp.is_file() and map_sp0.is_file()):
-            failures.append("the generator produced no Inland map: "
-                            f"{proc_sp.stderr.strip()[-200:]}")
-        else:
+        #     BOTH of the two land types are generated here.  They take the same code
+        #     path, but they are two separate entries in the UI and in the CLI, and
+        #     before this loop only Inland was generated at all - Mountainous could
+        #     have been broken without the suite saying a word.
+        special: dict[str, tuple[Path, Path]] = {}
+        for land, label in ((3, "Inland"), (4, "Mountainous")):
+            proc_sp, map_sp = generate(1, f"{label.lower()}.yrm", ["--land", str(land)])
+            proc_sp0, map_sp0 = generate(0, f"{label.lower()}_plain.yrm",
+                                         ["--land", str(land)])
+            special[label] = (map_sp, map_sp0)
+            checks += 1
+            if not (map_sp.is_file() and map_sp0.is_file()):
+                failures.append(f"the generator produced no {label} map: "
+                                f"{proc_sp.stderr.strip()[-200:]}")
+                continue
             m = re.search(r"special: .*self-check (\d+) pairs, (\d+) disagree",
                           proc_sp.stderr)
             checks += 1
@@ -459,18 +529,41 @@ def check_generation(failures: list[str]) -> int:
                 failures.append(f"the special-terrain pass reports {m.group(2)} of "
                                 f"{m.group(1)} mirrored pairs disagreeing about water")
             else:
-                print(f"  special Inland: the pass reports 0 of {m.group(1)} pairs "
+                print(f"  special {label}: the pass reports 0 of {m.group(1)} pairs "
                       f"disagreeing")
-            if ini is not None:
-                S = cells_of(sections_of(map_sp))
-                bad, pairs, _ = selfsym(S, lambda x, y: (y, x), water_key)
-                checks += 1
-                if bad:
-                    failures.append(f"Inland: the water/land outline is not symmetric on "
-                                    f"{bad} of {pairs} mirrored pairs")
-                else:
-                    print(f"  special Inland: water/land outline symmetric on "
-                          f"{pairs}/{pairs} pairs")
+            if ini is None:
+                continue
+            S = cells_of(sections_of(map_sp))
+            bad, pairs, _ = selfsym(S, lambda x, y: (y, x), water_key)
+            checks += 1
+            if bad:
+                failures.append(f"{label}: the water/land outline is not symmetric on "
+                                f"{bad} of {pairs} mirrored pairs")
+            else:
+                print(f"  special {label}: water/land outline symmetric on "
+                      f"{pairs}/{pairs} pairs")
+
+            # The INTERIOR, which is the number the Inland / Mountainous work is
+            # driven by: the outline can be (and is) symmetric while the art on the
+            # two halves still differs, and that is exactly the defect this file
+            # exists to catch.  The bound is not a taste judgement but a regression
+            # guard taken from the measurement (INTERIOR_LIMIT above): these two
+            # land types measure 2.3% here and the island types 0.1%..0.7%, while
+            # the same map family measured 10.7% before the blob-stamp mirroring in
+            # MapGenSymmetry.cpp.  A regression of that kind cannot slip through.
+            Sw, Sh = parse_map_size(sections_of(map_sp))
+            sp_pairs, sp_art, sp_exact = interior_stats(S, Sw, Sh, 1)
+            checks += 1
+            if sp_art > INTERIOR_LIMIT * sp_pairs:
+                failures.append(
+                    f"{label}: {sp_art} of {sp_pairs} mirrored pairs "
+                    f"({100.0 * sp_art / sp_pairs:.1f}%) show a different piece on the "
+                    f"two halves, over the {100 * INTERIOR_LIMIT:.0f}% bound")
+            else:
+                print(f"  special {label}: interior art differs on {sp_art}/{sp_pairs} "
+                      f"pairs ({100.0 * sp_art / sp_pairs:.1f}%, bound "
+                      f"{100 * INTERIOR_LIMIT:.0f}%; {100.0 * sp_exact / sp_pairs:.1f}% "
+                      f"differ at all, which a mirror is supposed to do)")
 
         # 4. The ledgers: a symmetric SET, with the counts preserved.  The unsymmetric
         #    map says how many there were, so a pass that duplicated or dropped
@@ -577,8 +670,32 @@ def check_generation(failures: list[str]) -> int:
         # 7. The render, which is what the user actually sees.  The dark-pixel
         #    fraction is compared against the SAME map generated with symmetry off, so
         #    the criterion does not depend on how dark a particular theater looks.
+        # 7a. The interior art of the left-right maps, on the same yardstick the
+        #     two special land types use above.  Continent is included so that a
+        #     change that makes Inland better and Continent worse is visible here
+        #     rather than only in a render.
+        lp_pairs, lp_art, lp_exact = interior_stats(B, Wp, Hp, 1)
+        checks += 1
+        if lp_art > INTERIOR_LIMIT * lp_pairs:
+            failures.append(f"left-right Continent: {lp_art} of {lp_pairs} mirrored "
+                            f"pairs show a different piece, over the "
+                            f"{100 * INTERIOR_LIMIT:.0f}% bound")
+        else:
+            print(f"  interior Continent: art differs on {lp_art}/{lp_pairs} pairs "
+                  f"({100.0 * lp_art / lp_pairs:.1f}%, bound "
+                  f"{100 * INTERIOR_LIMIT:.0f}%)")
+        # 180 degrees is measured and printed but NOT required: it is the second
+        # kind and its interior is a known, separate piece of work (MirrorElevationGrid
+        # only mirrors the left-right grid, and the usable band needs its one-row
+        # shift).  Printing it keeps the number from going quiet.
+        rp_pairs, rp_art, _ = interior_stats(R, Wp, Hp, 2)
+        print(f"  interior 180:       art differs on {rp_art}/{rp_pairs} pairs "
+              f"({100.0 * rp_art / rp_pairs:.1f}%) - reported, not required")
+
         checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr")
-        checks += render_cleanliness(failures, map_sp0, map_sp, tmp_path, "inland")
+        for label, (map_plain, map_sym) in special.items():
+            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path,
+                                         label.lower())
 
     return checks
 
@@ -694,8 +811,59 @@ def check_usable_band(failures: list[str]) -> int:
     return checks
 
 
+def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
+    """Print the whole-map interior yardstick, per land type and per kind.
+
+        python3 tools/verify_symmetry.py --score
+
+    Everything else in this file decides pass or fail.  This mode measures, and it
+    exists because the number the Inland / Mountainous work is steered by has to
+    come out of a checked-in script rather than out of whatever scratch file the
+    last session happened to write: the same statistic Check_generation gates on,
+    run over every land type and both kinds, printed as a table.
+
+    The two columns are interior_stats': the second is the one the gate uses (a
+    mirrored pair that shows a DIFFERENT piece - over ART_DIFF apart), the third
+    is printed because it is the number a reader expects to see and the one that
+    is systematically misread (a symmetric map is supposed to differ there: the
+    image cell carries the mirrored piece).
+    """
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        print("--score needs build/engine/mgconsole and build/oracle_assets; "
+              "run tools/verify_all.sh once")
+        return 2
+    sys.path.insert(0, str(ROOT))
+    from maptools.map_ini import parse_map_size
+
+    names = {0: "archipelago", 1: "continent", 2: "team continent",
+             3: "inland", 4: "mountainous"}
+    kind_names = {1: "left-right", 2: "rotational-180"}
+    print(f"  {'land':<26}{'kind':<16}{'pairs':>7}{'/different piece':>18}"
+          f"{'/differ at all':>17}")
+    with tempfile.TemporaryDirectory() as tmp:
+        for land in lands:
+            for kind in kinds:
+                out = Path(tmp) / f"land{land}_sym{kind}.yrm"
+                proc = run_generator(out, land, kind)
+                if not out.is_file():
+                    print(f"  land {land} sym {kind}: no map ({proc.returncode}): "
+                          f"{proc.stderr.strip()[-160:]}")
+                    continue
+                sections = sections_of(out)
+                cells = cells_of(sections)
+                Wp, Hp = parse_map_size(sections)
+                pairs, art, exact = interior_stats(cells, Wp, Hp, kind)
+                label = f"{land} ({names.get(land, '?')})"
+                print(f"  {label:<26}{kind_names[kind]:<16}{pairs:>7}"
+                      f"{100.0 * art / pairs:>17.1f}%{100.0 * exact / pairs:>16.1f}%")
+    return 0
+
+
 def main() -> int:
     failures: list[str] = []
+
+    if "--score" in sys.argv[1:]:
+        return score_matrix()
 
     if not MIRROR_H.is_file():
         print(f"missing {MIRROR_H}")

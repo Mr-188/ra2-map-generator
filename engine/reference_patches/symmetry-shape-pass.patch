@@ -44,7 +44,7 @@
  class RandomMapGenerator
  {
  public:
-@@ -1467,6 +1490,60 @@
+@@ -1472,6 +1495,60 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
  
@@ -105,7 +105,7 @@
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1720,6 +1797,14 @@
+@@ -1725,6 +1802,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -120,7 +120,7 @@
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2087,44 @@
+@@ -2007,6 +2092,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -165,7 +165,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2303,10 @@
+@@ -2185,6 +2308,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -774,6 +774,7 @@
              if (IsPlaceholderTile(nb))
                  pending.push_back(nb);
          }
+-    }
 +
 +        if (symFill)
 +        {
@@ -796,7 +797,7 @@
 +                }
 +            }
 +        }
-     }
++    }
 +    if (symFill)
 +        std::fprintf(stderr, "[symmetry] fill-green: %lld mirrored placeholder fills\n",
 +                     mirroredFills);
@@ -1046,7 +1047,15 @@
 +}
 --- a/MapGenerator/MapGenLAT.cpp
 +++ b/MapGenerator/MapGenLAT.cpp
-@@ -235,6 +235,34 @@
+@@ -102,6 +102,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstring>
++#include <cstdlib>
+ 
+ // ---------------------------------------------------------------------------
+ // The stage body - the four calls of sub_598960's slice, in order.
+@@ -235,6 +236,34 @@
      return tile >= clearToSandLatIndex_ && tile < clearToSandLatIndex_ + 16;
  }
  
@@ -1081,7 +1090,7 @@
  void RandomMapGenerator::ScatterLATBlobs()
  {
      if (cellSlots_ == nullptr || workCells_ == nullptr)
-@@ -282,9 +310,21 @@
+@@ -282,9 +311,21 @@
          while (n > 40);
          return n;
      };
@@ -1106,32 +1115,39 @@
  
      // The clipped Gaussian + PlaceBlob every branch ends with (0x5a3c92 -
      // 0x5a3d3a, 0x5a3d6d - 0x5a3e16, 0x5a3e49 - 0x5a3ef7): span 20 / centre n,
-@@ -305,6 +345,24 @@
+@@ -304,7 +345,17 @@
+             size = rng_.Gaussian() * span + mean;
          }
          while (size < 4.0 || size > 80.0);
-         PlaceBlob(cell, tileIndex, F2I64(size), slot, false);
-+
-+        // [移植侧] 对称：同一处斑块也在镜像中心盖一份（同类型、同尺寸），两半的地面纹理
-+        // 因此同步；不搬瓦片，只多盖一次。
+-        PlaceBlob(cell, tileIndex, F2I64(size), slot, false);
++        // [移植侧] 对称：斑块 = 一组格子 + **同一个无朝向的瓦片号**（PlaceBlob 把
++        // tileIndex 原样盖在该集合的每一格上），所以镜像那一片就是这一片格子的镜像，
++        // 不需要（也不该）再跑一次生长。实测过"再跑一次"：生长是按"到种子的距离 + 抖动"
++        // 的优先堆，前两对斑块能对上，第三对 31 格里就差了 4 格 —— 分歧累积成整图
++        // 455 对"只有一侧有瓦片"的格子。这里改成把盖出来的格子集合整体镜像盖过去，
++        // 由构造保证两侧一致；瓦片仍由本算法选出，只是把同一片镜像到另一半。
++        std::vector<int> stamped;
++        PlaceBlob(cell, tileIndex, F2I64(size), slot, false, false,
++                  symBlob ? &stamped : nullptr);
 +        if (symBlob)
-+        {
-+            const int bx = cell->MapCoords & 0xFFFF;
-+            const int by = static_cast<uint32_t>(cell->MapCoords) >> 16;
-+            int mx = 0, my = 0;
-+            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, bx, by, &mx, &my))
-+            {
-+                MapCell* mc = CellAt(mx, my);
-+                if (mc != nullptr && mc != cell)
-+                {
-+                    PlaceBlob(mc, tileIndex, F2I64(size), mx + (my << 9), false);
-+                    ++mirroredBlobs;
-+                }
-+            }
-+        }
++            mirroredBlobs += StampMirroredBlob(stamped, tileIndex);
      };
  
      // ---- 3. the LAT pass (0x5a3bea - 0x5a3f0a) ----------------------------
-@@ -388,12 +446,25 @@
+@@ -365,6 +416,12 @@
+         }
+     }
+ 
++    if (symBlob)
++        std::fprintf(stderr,
++                     "[symmetry] lat-blob: %lld blob cells stamped at the mirrored cell "
++                     "(the mirrored patch is the image of the patch the algorithm chose)\n",
++                     mirroredBlobs);
++
+     // ---- 4. SetupLAT refresh (0x5a3f19 - 0x5a3f2e) ------------------------
+     {
+         CellIterator it;
+@@ -388,12 +445,25 @@
      }
      while (overlayCount > overlayRange);                  // 0x5a4119
  
@@ -1158,7 +1174,7 @@
  
          // A random work slot whose packed coords are not (0,0) - no attempt cap
          // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
-@@ -434,7 +505,7 @@
+@@ -434,7 +504,7 @@
                  int pick;
                  do
                  {
@@ -1167,7 +1183,7 @@
                  }
                  while (pick > 4);
                  type = pick + 168;
-@@ -445,14 +516,34 @@
+@@ -445,14 +515,34 @@
                  int pick;
                  do
                  {
@@ -1203,17 +1219,7 @@
  
              // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
              // model and never writes - a no-op here.
-@@ -464,6 +555,9 @@
-         if (attempts >= 5 * overlayCount)                 // 0x5a4271
-             return;
-     }
-+    if (symBlob)
-+        std::fprintf(stderr, "[symmetry] lat-blob: %lld blobs also stamped at the mirrored centre\n",
-+                     mirroredBlobs);
- }
- 
- // ---------------------------------------------------------------------------
-@@ -564,6 +658,9 @@
+@@ -564,6 +654,9 @@
          * (static_cast<double>(globalOptions_.vegetation) * 0.01)
          * static_cast<double>(settings_.MaxTrees));
  
@@ -1223,7 +1229,7 @@
      int patches = 0;
      while (remaining > 0)
      {
-@@ -612,9 +709,35 @@
+@@ -612,9 +705,35 @@
          }
          while (count < 10.0 || count > 35.0);
  
@@ -1232,6 +1238,7 @@
 +        // 指标反而变差（岛屿 21.2%->21.9%、内陆 39.8%->41.1%），所以撤回。
          remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
          ++patches;
+-    }
 +
 +        // [移植侧] 对称：同一片也在镜像格撒一份（同尺寸、同数量）。落点是全局随机槽号，
 +        // 两半本来互不成对，这是地面/植被纹理不对称的一处来源。
@@ -1251,7 +1258,7 @@
 +                }
 +            }
 +        }
-     }
++    }
 +    if (symPatch)
 +        std::fprintf(stderr,
 +                     "[symmetry] green-patch: %lld tree patches also laid at the mirrored cell\n",
@@ -1259,7 +1266,7 @@
  }
  
  void RandomMapGenerator::ScatterRocks()
-@@ -672,13 +795,13 @@
+@@ -672,13 +791,13 @@
              // inline reset has just set to 0.005 on every cell.
              const double density28 =
                  *reinterpret_cast<const double*>(w.data + 10);
@@ -1275,33 +1282,48 @@
              }
              while (size < 4.0 || size > 60.0);
  
-@@ -689,6 +812,25 @@
+@@ -686,9 +805,18 @@
+             // vanilla's own expression, which carries the y << 16 term too
+             // (sub_5A3AE0's equivalent is the clean x + (y << 9)); harmless,
+             // since +0x3C is cleared per call and only compared for equality.
++            // [移植侧] 对称：岩石斑块同样"盖一处、镜像那一片"，理由与 ScatterLATBlobs
++            // 里的一致（再跑一次生长不保证落在镜像集合上）。ScatterRocks 没走那个 lambda，
++            // 所以在这里单独做一次镜像盖章。出生点净场与建筑地基的避让是镜像对称的谓词，
++            // 所以被镜像的那一格集合仍然是合法落点。
++            const bool symRock = (config_.symmetry != mg::MapSymmetry::None);
++            std::vector<int> stampedRocks;
              PlaceBlob(cell, roughTileIndex_, F2I64(size),
                        cell->MapCoords + (static_cast<int>(y) << 9), false,
-                       /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
-+
-+            // [移植侧] 对称：岩石斑块也在镜像中心盖一份（同尺寸，同样避开出生点）。
-+            // ScatterRocks 是直接调 PlaceBlob 的，没走 ScatterLATBlobs 里那个已成对处理的
-+            // lambda，所以这里单独补一次 —— 抽签与扩散都会经过 MirrorSharedValue 按格共享，
-+            // 因此镜像那份长成精确镜像。
-+            if (config_.symmetry != mg::MapSymmetry::None)
-+            {
-+                const int bx = cell->MapCoords & 0xFFFF;
-+                const int by = static_cast<uint32_t>(cell->MapCoords) >> 16;
-+                int mx = 0, my = 0;
-+                if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, bx, by, &mx, &my))
-+                {
-+                    MapCell* mc = CellAt(mx, my);
-+                    if (mc != nullptr && mc != cell)
-+                        PlaceBlob(mc, roughTileIndex_, F2I64(size),
-+                                  mc->MapCoords + (static_cast<int>(my) << 9), false,
-+                                  /*avoidStartClear=*/true);
-+                }
-+            }
+-                      /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
++                      /*avoidStartClear=*/true,
++                      symRock ? &stampedRocks : nullptr);   // [移植侧] 岩石避开出生点
++            if (symRock)
++                StampMirroredBlob(stampedRocks, roughTileIndex_);
          }
      }
  
-@@ -849,10 +991,14 @@
+@@ -722,7 +850,8 @@
+ // ---------------------------------------------------------------------------
+ void RandomMapGenerator::PlaceBlob(MapCell* cell, int tileIndex, int count,
+                                    int slotIndex, bool allowLatToLat,
+-                                   bool avoidStartClear)
++                                   bool avoidStartClear,
++                                   std::vector<int>* stampedOut)
+ {
+     if (cell == nullptr || count <= 0)
+         return;
+@@ -818,7 +947,10 @@
+             = (avoidStartClear && IsStartClearArea(cx, cy))
+            || ((CellAt(cx, cy)->AltFlags & AltCellFlags_ContainsBuilding) != 0);
+         if (!stampBlocked)
++        {
+             CellAt(cx, cy)->IsoTileTypeIndex = tileIndex;   // 0x5a4d13
++            if (stampedOut != nullptr) stampedOut->push_back(packed);
++        }
+ 
+         for (int k = 0; k < 8; ++k)                     // 0x5a4d44 - 0x5a4f42
+         {
+@@ -849,10 +981,14 @@
              const double dx = static_cast<double>(seedX - nx);
              const double dy = static_cast<double>(seedY - ny);
              const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
@@ -1332,7 +1354,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,862 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2136,6 +2158,56 @@
 +    std::fprintf(stderr, "[symmetry] overlays: %s, %lld overlay pairs and their building "
 +                 "flags evened out\n", mg::MapSymmetryName(kind), overlays);
 +    return true;
++}
++
++// ---------------------------------------------------------------------------
++// StampMirroredBlob - the mirrored copy of a blob that has just been placed.
++//
++// The blob scatter (ScatterLATBlobs / ScatterRocks) grows a patch with PlaceBlob,
++// which stamps ONE tile index on every accepted cell.  That tile is a 1x1 piece
++// with no orientation, so the mirrored patch is simply the mirror image of the
++// accepted cell set - there is nothing to re-decide.
++//
++// The first version of this instead called PlaceBlob a second time at the mirror
++// centre and trusted the two growths to come out mirrored: both draw the same
++// jitter (MirrorSharedValue keys it by cell) and both measure the same distances.
++// Measured, that is not enough.  The growth is a best-first heap: equal
++// priorities are broken by heap order, and the neighbour scan runs N, NE, E, SE,
++// S, SW, W, NW, whose mirror image is the reverse order.  Probed directly (a
++// trace of the stamped cells per pair): pair 1 stamped 27/27 cells and pair 2
++// 9/9 with the two sets exactly mirrored, but pair 3 stamped 31 cells with only
++// 27 in common - four cells of the patch landed on one side only.  Those four
++// spread, because every stamped cell changes what the LAT pass sees: after
++// ScatterLATBlobs the map had 455 mirrored pairs with a tile on one side and a
++// bare cell on the other.
++//
++// Mirroring the achieved set removes the question: the two halves get the same
++// patch by construction, while the patch itself is still the one the generator's
++// own algorithm chose.  Not a tile is moved from one half to the other - the
++// algorithm runs in the half it ran in, and its result is imaged.
++// ---------------------------------------------------------------------------
++int RandomMapGenerator::StampMirroredBlob(const std::vector<int>& stamped,
++                                          int tileIndex)
++{
++    if (config_.symmetry == mg::MapSymmetry::None || stamped.empty())
++        return 0;
++    int mirrored = 0;
++    for (size_t i = 0; i < stamped.size(); ++i)
++    {
++        const int16_t x = static_cast<int16_t>(stamped[i] & 0xFFFF);
++        const int16_t y = static_cast<int16_t>(
++                              static_cast<uint32_t>(stamped[i]) >> 16);
++        int mx = 0, my = 0;
++        if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                            x, y, &mx, &my))
++            continue;                       // cannot happen for a cell of the diamond
++        MapCell* m = CellAt(mx, my);
++        if (m == nullptr)
++            continue;
++        m->IsoTileTypeIndex = tileIndex;
++        ++mirrored;
++    }
++    return mirrored;
 +}
 +
 +// ---------------------------------------------------------------------------
