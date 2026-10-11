@@ -1434,7 +1434,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1074 @@
+@@ -0,0 +1,1088 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1936,6 +1936,18 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
++    // ---- [移植侧] 非左右对称：水层差的来源（下一步要处理的点） ----------------
++    // 实测（size2/4p、同种子，水格镜像对分类）：
++    //   · 内陆 180：镜对 172，其中"片+偏移全同"只有 49 —— **123 对的变体不同**（不同水纹）；
++    //     涉及水沿片（waterTileIndex_+8..13）的镜对 95/172，单对差 21~25；
++    //   · 岛屿 land1 180：镜对 2951，平面水镜对 2457 只差 4.10 —— 所以它好看。
++    // 试过两条"直接改美术"的路都被实测否决：
++    //   ① 把所有水格换成基础片（子帧 0）：暗像素 0.36% -> 3.19%、未覆盖落差 3.1%（超出验收界）
++    //      —— 2x2 水面片必须按格位取子帧，硬压平会把水面画漏；
++    //   ② 只压平水沿片：岸层 17.19 -> 19.42（中位 15.43 -> 13.67），收益不确定。
++    // 真正的根子是 **DecorateWaterTiles 的放置顺序不对称**：镜像格拿到的水纹变体不同（同一个病
++    // 在岸片上已经修过 —— 按镜像格成对访问）。下一步就照那个办法处理水这一层。
++
 +    std::fprintf(stderr,
 +                 "[symmetry] placed: %s, %zu start points, %zu waypoints, %zu terrain "
 +                 "objects, %zu structures (the overlay layer is reported by "
@@ -2207,7 +2219,9 @@
 +                const int t = c->IsoTileTypeIndex;
 +                if (t >= shorePieces_ && t < shorePieces_ + 42)
 +                {
-+                    c->IsoTileTypeIndex = 0;            // 平地：与岛屿类的沿岸陆格同款
++                    // 平地：与岛屿类的沿岸陆格同款。用绿地 tile（而不是 0）是为了不留暗格 ——
++                    // 0 是占位格，渲染上比周围地面暗，实测暗像素 0.36% -> 0.58%。
++                    c->IsoTileTypeIndex = (greenTileIndex_ >= 0) ? greenTileIndex_ : 0;
 +                    c->Height = 0;
 +                    ++converted;
 +                }
