@@ -322,6 +322,25 @@ constexpr int kMapSymmetryMax = 2;
 constexpr int kMapSymmetryImplementedMax =
     static_cast<int>(MapSymmetry::Rotational180);
 
+// WHY TOP-BOTTOM IS NOT OFFERED, RE-MEASURED (a prototype was built and withdrawn).
+//
+// The cell map is implementable - flipping r (s = x+y) while holding c (d = x-y), with the
+// same parity stagger Rotational180 needs - and a prototype generated Inland maps whose
+// self-check reported 0 of 6996 pairs disagreeing about water, i.e. a symmetric SHAPE.
+// It still cannot ship, because the tileset has no art for it:
+//
+//      family                          left-right   top-bottom   rotational-180
+//      kShoreFootprints                     2            2              2
+//      kCliffFootprints                     0           13              0
+//      kCliffWaterFootprints                0           10              4
+//      kDestroyableCliffFootprints          0            0              0
+//
+// Twenty-three cliff pieces with no top-bottom counterpart means the mirrored half's cliffs
+// would be drawn as the wrong piece - a worse defect than the coastline this file spends so
+// long on.  verify_symmetry states the same thing as a gate ("top-bottom is closed now;
+// MapSymmetry could offer it" fails if that ever becomes true), so the mode stays at
+// kMapSymmetryMax with the pass refusing it in so many words.
+
 inline const char* MapSymmetryName(MapSymmetry s)
 {
     switch (s)
