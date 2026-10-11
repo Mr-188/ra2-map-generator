@@ -342,6 +342,20 @@ constexpr int kMapSymmetryImplementedMax =
 // long on.  verify_symmetry states the same thing as a gate ("top-bottom is closed now;
 // MapSymmetry could offer it" fails if that ever becomes true), so the mode stays at
 // kMapSymmetryMax with the pass refusing it in so many words.
+//
+// RE-MEASURED ONCE MORE, WITH THE PURE MAPPING AND THE COAST WORK IN PLACE.  A prototype was
+// built again with (x, y) -> (W'+H'-y, W'+H'-x) (the anti-transpose: an isometry, same as the
+// pure 180 rotation), the per-kind water-direction permutation (N<->E, S<->W, SE<->NW, NE and
+// SW fixed) and the uniform 1x1 water.  What that prototype measures:
+//   * the water CELLS are symmetric (the pass self-check reports 0 of 6917 pairs disagreeing)
+//     and their ART is 100% identical after the uniform-water rule;
+//   * the shore instances are fully coherent - canonical 90/90, image 85/85, all even sizes
+//     (better than the shipped 180, which is 85/87 and 80/82);
+//   * and the rendered map still shows a black staircase along the mirrored half's water,
+//     because the CliffWater family (10 pieces) and the CliffSet (13) have no counterpart:
+//     MirrorTile cannot map them, the copy falls back to carrying the source piece and its
+//     sub-cell offset, and the instance comes apart.  That is the whole remaining defect -
+//     it is in the cliff art, not in the water and not in the coast.
 
 inline const char* MapSymmetryName(MapSymmetry s)
 {
