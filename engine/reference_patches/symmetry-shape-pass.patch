@@ -1435,7 +1435,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1082 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2193,6 +2193,38 @@
 +                     "in mirrored pairs over the whole map (%lld pair visits, %lld reported "
 +                     "failure), restored %lld that the pass could not dress\n",
 +                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
++    }
++
++    // ---- [移植侧] 非左右对称：海岸改"岛屿做法"（逐格均匀美术） -----------------
++    // 用户已拍板"用外观换一致"。依据（全部本机实测）：
++    //   · 岛屿类沿岸的陆格是 tile 0/普通地形，**完全不用岸片族**，观感被认可；
++    //   · 内陆沿岸陆格全是岸片族（ShorePieces+22/20/31/5/…），而岸片是**有朝向的多格片**，
++    //     180/上下这两个映射不是格同构，对应片之间也不是彼此的旋转 —— 十二个变体实测都到不了
++    //     岛屿那档（水面掩膜 IoU 0.589~0.797，岛屿 0.959）。
++    // 于是：把岸片族换成**绿地**（不是 0：0 是占位格，渲染偏暗，实测暗像素 0.36% -> 0.58%），
++    // 水格一瓦不碰 —— 水沿仍由 DecorateWaterTiles 照常铺。
++    if (kind != mg::MapSymmetry::AxialLeftRight && shorePieces_ >= 0)
++    {
++        long long converted = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t = c->IsoTileTypeIndex;
++                if (t >= shorePieces_ && t < shorePieces_ + 42)
++                {
++                    c->IsoTileTypeIndex = (greenTileIndex_ >= 0) ? greenTileIndex_ : 0;
++                    c->Height = 0;
++                    ++converted;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld shore cells -> plain ground "
++                     "(island recipe; water cells untouched)\n",
++                     mg::MapSymmetryName(kind), converted);
 +    }
 +
 +    // Report, and check the result against itself - the rendered map cannot tell
