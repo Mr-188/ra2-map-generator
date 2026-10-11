@@ -1438,7 +1438,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1080 @@
+@@ -0,0 +1,1139 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1482,6 +1482,8 @@
 +// map is unchanged when symmetry is off (tools/verify_symmetry.py compares
 +// --symmetry 0 against the oracle map byte for byte).
 +// ===========================================================================
++
++#include <cstring>
 +
 +#include "MapGen.h"
 +
@@ -1968,6 +1970,63 @@
 +        }
 +        std::fprintf(stderr, "[symmetry] water-uniform: %s, %lld water cells set to one "
 +                     "1x1 piece\n", mg::MapSymmetryName(kind), unified);
++    }
++
++    // ---- [诊断·只读] 最后一站的族统计：两半各有多少格、多少格映不出对应件 -------
++    if (kind != mg::MapSymmetry::AxialLeftRight)
++    {
++        const int W = size_.mapWidth, H = size_.mapHeight;
++        struct Fam { const char* name; int base; int count; };
++        Fam fams[] = {
++            {"CliffSet", shoreTileIndex_, 40},
++            {"CliffWater", waterCliffsIndex_, 28},
++            {"DestroyableCliff", destroyableCliffsIndex_, 2},
++            {"Ramps", cliffRampsIndex_, -1},
++            {"Caves", waterCavesIndex_, -1},
++            {"Waterfall", waterFamily4Base_[0], 4},
++        };
++        for (Fam& f : fams)
++        {
++            if (f.base < 0)
++                continue;
++            long long total = 0, can = 0, img = 0, canNoPartner = 0;
++            for (int y = 0; y < slotRows_; ++y)
++            {
++                for (int x = 0; x < 512; ++x)
++                {
++                    MapCell* c = cellSlots_[512 * y + x];
++                    if (c == nullptr)
++                        continue;
++                    const int t2 = c->IsoTileTypeIndex;
++                    bool in = false;
++                    if (f.count > 0)
++                        in = (t2 >= f.base && t2 < f.base + f.count);
++                    else if (std::strcmp(f.name, "Ramps") == 0)
++                        in = (t2 >= f.base && t2 < f.base + 49);
++                    else
++                        in = (t2 >= f.base && t2 < f.base + 6);
++                    if (!in)
++                        continue;
++                    ++total;
++                    int mx = 0, my = 0;
++                    if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
++                        continue;
++                    const bool canonical = (x < mx || (x == mx && y < my));
++                    if (canonical)
++                    {
++                        ++can;
++                        int h2 = 0; bool approx = false;
++                        if (MirrorTile(t2, kind, &h2, &approx) < 0)
++                            ++canNoPartner;
++                    }
++                    else
++                        ++img;
++                }
++            }
++            std::fprintf(stderr, "[diag] family %-18s base %4d  total %5lld  canonical %5lld "
++                         "(no partner %lld)  image %5lld\n", f.name, f.base, total, can,
++                         canNoPartner, img);
++        }
 +    }
 +
 +    std::fprintf(stderr,

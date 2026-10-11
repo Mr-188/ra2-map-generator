@@ -337,6 +337,29 @@ constexpr int kMapSymmetryImplementedMax =
 //      kCliffWaterFootprints                0           10              4
 //      kDestroyableCliffFootprints          0            0              0
 //
+// WHERE THE REMAINING ASYMMETRY ACTUALLY LIVES (measured, 180, Inland, size 2).
+// A read-only family census at the last station (MapGenSymmetry.cpp, "[diag] family ...")
+// counts, per multi-cell family, how many cells the canonical half has, how many the image
+// half has, and how many of the canonical ones MirrorTile cannot map:
+//
+//   [diag] family CliffSet   base  49  total 112  canonical   0  image 111
+//   [diag] family Ramps      base 384  total 790  canonical 396 (no partner 396)  image 394
+//   [diag] family CliffWater / DestroyableCliff / Caves / Waterfall: 0 cells each
+//
+// Two things follow, and they are what is left to fix:
+//   * the art a player reads as "the cliff line" on an inland map is mostly the RAMPS
+//     family - 790 cells - and MirrorTile does not map it at all: the family is not one of
+//     its five runs, and the runs it has end in `if (w * h <= 1) return -1;`, so a 1x1
+//     directional piece is never mapped even when it is found.  The two halves therefore
+//     choose their ramps independently and the slopes/steps do not match;
+//   * the CliffSet art sits on ONE half only (0 canonical, 111 image), so a copy from the
+//     canonical half has nothing to copy - those pieces have to be re-derived from the
+//     shape, not mapped.
+// Fixing the ramps needs a DIRECTION table for the 20 ramp pieces (there is no footprint
+// table for them, because their footprint is one cell).  The same trick the shore profile
+// table used should work: derive it by measurement - a ramp connects two levels, so the
+// direction is readable from the elevation grid of the cells around it.
+//
 // Twenty-three cliff pieces with no top-bottom counterpart means the mirrored half's cliffs
 // would be drawn as the wrong piece - a worse defect than the coastline this file spends so
 // long on.  verify_symmetry states the same thing as a gate ("top-bottom is closed now;
