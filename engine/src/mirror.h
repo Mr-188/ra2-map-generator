@@ -131,6 +131,38 @@
 // pairs), the overlay layer and the ledgers are symmetric; the relief and the art
 // that dresses it cannot be, for the reason derived above.
 //
+// THE 180 COAST IS AN ART LIMIT, AND HERE IS THE MECHANISM, MEASURED.  The first
+// blocker turned out to be a STATE bug, not geometry: probing PlaceIsoTile's three
+// refusal sites on a 180 map showed 61 of 74 refusals were the same case - the covered
+// cell held the ground tile (493 = GreenTile) with work.data[14] == 0, i.e. it was not
+// marked for the generation doing the stamping.  PlaceIsoTile admits such a cell only if
+// it is a placeholder.  During the carve FloodFill/CleanupTile mark the water body
+// together with its bank, so re-running the pass needs that same marking; rebuilding the
+// state (water cells marked with the generation code, every land cell within two cells
+// of water marked too, mask cache invalidated) drops the refusals from 139 to 13 - and
+// the 13 that remain are the pass' own legit "pieces facing nearly opposite" conflicts.
+// So the selection tree CAN dress a 180-mirrored shape; the earlier claim in this file
+// that the tree is not 180-symmetric was wrong, and this paragraph replaces it.
+//
+// What cannot be fixed is the ART.  Dressing the mirrored half for its own shape puts
+// the footprint-partner piece there (the only partner the tileset has), and that piece's
+// art is not the 180 rotation of the source piece's: measured on the coast metric
+// (water + shore pairs) a 180 Inland map scores 30.99 mean / 27.88 median with the
+// re-selection and 24.89 / 21.68 with the copied art - both far from the island land
+// types' 5.11-5.48, whose coasts never use the shore family at all.  For left-right the
+// same measurement is 4.54 against the islands' 3.60, because the shore family DOES
+// contain transpose partners.  The render agrees with the numbers: every left-right crop
+// matches its own mirror, every 180 crop is a diamond staircase.
+//
+// Two look-changing alternatives were measured and are worse, so neither ships:
+//   * no shore art on 180 (island style): the coast collapses to bare dark diamonds,
+//     dark pixels 0.36% -> 0.58%, and the metric only improves to 17.19 because the
+//     pairs left are water-only;
+//   * shore art replaced by the sand ground tile (418) on both halves: hard, faceless
+//     zig-zag edge, mirrored crops still differ.
+// Seven post-hoc routes have now been measured in total.  Left-right is fixed, gated in
+// verify_symmetry, and visually verified; 180 keeps the copied art.
+//
 // AND WHY THE ISLAND ORDER CANNOT SIMPLY BE REPLAYED EITHER.  The island land types
 // get their coast right because GenerateSpecialTerrain does not exist for them:
 // MirrorShape copies the SHAPE first and GenerateTerrain then carves and dresses it in
