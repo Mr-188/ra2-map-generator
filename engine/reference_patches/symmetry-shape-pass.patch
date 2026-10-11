@@ -34,20 +34,50 @@
  };
  
  // ============================================================================
-@@ -962,6 +982,9 @@
+@@ -962,6 +982,13 @@
      uint8_t ok;         // 1 stamped, 0 blocked
  };
  
 +unsigned long long MgShoreProfilePicked();
 +unsigned long long MgShoreStyleFallback();
++// [port-side] Symmetry: patches dropped because they could not be mirrored, and how
++// many cells they covered (see MapGenSymmetry.cpp).
++unsigned long long MgMirrorStampDroppedBlobs();
++unsigned long long MgMirrorStampDroppedCells();
 +
  class RandomMapGenerator
  {
  public:
-@@ -1472,6 +1495,60 @@
+@@ -1450,13 +1477,21 @@
+     void ScatterRocks();
+     // sub_5A4B60: best-first growth of a LAT / rock blob of `count` cells,
+     // stamping work dword +0x3C with the seed's slot index.
++    // [移植侧] 对称：一片斑块盖过的格子 + 它盖之前的瓦片号。旧值留着，是因为镜像那一片
++    // 若有一格不是占位格（在它上面盖就等于把生成器为高度落差选好的美术打穿），整片要能回滚。
++    struct BlobStamp
++    {
++        int packed;      // MapCoords
++        int oldTile;     // IsoTileTypeIndex before the stamp
++    };
+     void PlaceBlob(MapCell* cell, int tileIndex, int count, int slotIndex,
+                    bool allowLatToLat, bool avoidStartClear = false,
+-                   std::vector<int>* stampedOut = nullptr);
++                   std::vector<BlobStamp>* stampedOut = nullptr);
+     // [移植侧] 对称：把一片刚盖好的斑块（它盖住的格子集合）整体镜像盖过去。斑块是
+     // "一组格子 + 同一个无朝向的瓦片号"，所以镜像那一片就是它的镜像，不需要再跑一次
+-    // 生长 —— 实测生长会分叉（见 MapGenLAT.cpp 的说明）。返回镜像盖了几格。
+-    int StampMirroredBlob(const std::vector<int>& stamped, int tileIndex);
++    // 生长 —— 实测生长会分叉（见 MapGenLAT.cpp 的说明）。镜像那一片若有一格不是占位格，
++    // 这一片**整片回滚**（两半都没有，保持对称，也不打穿现成的美术）。返回镜像盖了几格。
++    int StampMirroredBlob(const std::vector<BlobStamp>& stamped, int tileIndex);
+     // sub_5A45E0: plant up to `count` TREE01..TREE25 objects around the cell,
+     // returning how many were planted. Route B: records MapTerrainObject.
+     int ScatterTrees(MapCell* cell, int count, double probability);
+@@ -1471,6 +1506,60 @@
+     // WaterCliffs）、以及 0xFFFF 多格片覆盖格上的树一律删除；坡（RampBase /
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
- 
++
 +    // [移植侧] 第一阶段：镜像**形状**。调用点：GenerateMapBody 之后、
 +    // GenerateTerrain / GenerateSpecialTerrain 之前，三个驱动同一处。
 +    //
@@ -101,11 +131,10 @@
 +    //
 +    // 返回 false 表示前置条件不满足（未分配格子、或尚未实现的对称种类）。
 +    bool MirrorMap(mg::MapSymmetry kind);
-+
+ 
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
-     // 用它避让，而不是事后改地形。
-@@ -1725,6 +1802,14 @@
+@@ -1725,6 +1814,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -120,7 +149,7 @@
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2007,6 +2092,44 @@
+@@ -2007,6 +2104,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -165,7 +194,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2185,6 +2308,10 @@
+@@ -2185,6 +2320,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -1090,7 +1119,7 @@
  void RandomMapGenerator::ScatterLATBlobs()
  {
      if (cellSlots_ == nullptr || workCells_ == nullptr)
-@@ -282,9 +311,21 @@
+@@ -282,9 +311,22 @@
          while (n > 40);
          return n;
      };
@@ -1102,6 +1131,7 @@
 +    // 判定于是分叉）。改成"盖一处、同时在镜像中心盖同一处"，三个数量减半保持密度。
 +    // 本函数只被调用一次，减半不会重复生效。
 +    const bool symBlob = (config_.symmetry != mg::MapSymmetry::None);
++    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
 +    int countRough = drawBlobCount();                     // 0x5a3b62 var_4C
 +    int countSand = drawBlobCount();                      // 0x5a3b92 var_54
 +    int countGreen = drawBlobCount();                     // 0x5a3bc2 var_3C
@@ -1115,7 +1145,7 @@
  
      // The clipped Gaussian + PlaceBlob every branch ends with (0x5a3c92 -
      // 0x5a3d3a, 0x5a3d6d - 0x5a3e16, 0x5a3e49 - 0x5a3ef7): span 20 / centre n,
-@@ -304,7 +345,17 @@
+@@ -304,7 +346,17 @@
              size = rng_.Gaussian() * span + mean;
          }
          while (size < 4.0 || size > 80.0);
@@ -1126,7 +1156,7 @@
 +        // 的优先堆，前两对斑块能对上，第三对 31 格里就差了 4 格 —— 分歧累积成整图
 +        // 455 对"只有一侧有瓦片"的格子。这里改成把盖出来的格子集合整体镜像盖过去，
 +        // 由构造保证两侧一致；瓦片仍由本算法选出，只是把同一片镜像到另一半。
-+        std::vector<int> stamped;
++        std::vector<BlobStamp> stamped;
 +        PlaceBlob(cell, tileIndex, F2I64(size), slot, false, false,
 +                  symBlob ? &stamped : nullptr);
 +        if (symBlob)
@@ -1134,20 +1164,27 @@
      };
  
      // ---- 3. the LAT pass (0x5a3bea - 0x5a3f0a) ----------------------------
-@@ -365,6 +416,12 @@
+@@ -365,6 +417,19 @@
          }
      }
  
 +    if (symBlob)
++    {
++        const unsigned long long droppedCells =
++            MgMirrorStampDroppedCells() - dropped0;
 +        std::fprintf(stderr,
 +                     "[symmetry] lat-blob: %lld blob cells stamped at the mirrored cell "
-+                     "(the mirrored patch is the image of the patch the algorithm chose)\n",
-+                     mirroredBlobs);
++                     "(the mirrored patch is the image of the patch the algorithm chose), "
++                     "%llu cells dropped from BOTH halves because their image cell is not "
++                     "a placeholder (it carries art the generator chose for a height "
++                     "step)\n",
++                     mirroredBlobs, droppedCells);
++    }
 +
      // ---- 4. SetupLAT refresh (0x5a3f19 - 0x5a3f2e) ------------------------
      {
          CellIterator it;
-@@ -388,12 +445,25 @@
+@@ -388,12 +453,25 @@
      }
      while (overlayCount > overlayRange);                  // 0x5a4119
  
@@ -1174,7 +1211,7 @@
  
          // A random work slot whose packed coords are not (0,0) - no attempt cap
          // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
-@@ -434,7 +504,7 @@
+@@ -434,7 +512,7 @@
                  int pick;
                  do
                  {
@@ -1183,7 +1220,7 @@
                  }
                  while (pick > 4);
                  type = pick + 168;
-@@ -445,14 +515,34 @@
+@@ -445,14 +523,34 @@
                  int pick;
                  do
                  {
@@ -1219,7 +1256,7 @@
  
              // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
              // model and never writes - a no-op here.
-@@ -564,6 +654,9 @@
+@@ -564,6 +662,9 @@
          * (static_cast<double>(globalOptions_.vegetation) * 0.01)
          * static_cast<double>(settings_.MaxTrees));
  
@@ -1229,7 +1266,7 @@
      int patches = 0;
      while (remaining > 0)
      {
-@@ -612,9 +705,35 @@
+@@ -612,9 +713,35 @@
          }
          while (count < 10.0 || count > 35.0);
  
@@ -1266,7 +1303,16 @@
  }
  
  void RandomMapGenerator::ScatterRocks()
-@@ -672,13 +791,13 @@
+@@ -645,6 +772,8 @@
+     }
+ 
+     // ---- 2. the rock pass (0x5a42e7 - 0x5a43e6) ---------------------------
++    long long mirroredRockCells = 0;
++    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
+     {
+         CellIterator it;
+         it.Reset(cellSlots_, size_.mapWidth);
+@@ -672,13 +801,13 @@
              // inline reset has just set to 0.005 on every cell.
              const double density28 =
                  *reinterpret_cast<const double*>(w.data + 10);
@@ -1282,7 +1328,7 @@
              }
              while (size < 4.0 || size > 60.0);
  
-@@ -686,9 +805,18 @@
+@@ -686,11 +815,26 @@
              // vanilla's own expression, which carries the y << 16 term too
              // (sub_5A3AE0's equivalent is the clean x + (y << 9)); harmless,
              // since +0x3C is cleared per call and only compared for equality.
@@ -1291,39 +1337,57 @@
 +            // 所以在这里单独做一次镜像盖章。出生点净场与建筑地基的避让是镜像对称的谓词，
 +            // 所以被镜像的那一格集合仍然是合法落点。
 +            const bool symRock = (config_.symmetry != mg::MapSymmetry::None);
-+            std::vector<int> stampedRocks;
++            std::vector<BlobStamp> stampedRocks;
              PlaceBlob(cell, roughTileIndex_, F2I64(size),
                        cell->MapCoords + (static_cast<int>(y) << 9), false,
 -                      /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
+-        }
+-    }
 +                      /*avoidStartClear=*/true,
 +                      symRock ? &stampedRocks : nullptr);   // [移植侧] 岩石避开出生点
 +            if (symRock)
-+                StampMirroredBlob(stampedRocks, roughTileIndex_);
-         }
-     }
++                mirroredRockCells += StampMirroredBlob(stampedRocks, roughTileIndex_);
++        }
++    }
++
++    if (config_.symmetry != mg::MapSymmetry::None)
++        std::fprintf(stderr,
++                     "[symmetry] rock-mirror: %lld rock blob cells stamped at the "
++                     "mirrored cell, %llu cells dropped from both halves\n",
++                     mirroredRockCells, MgMirrorStampDroppedCells() - dropped0);
  
-@@ -722,7 +850,8 @@
+     // ---- 3. SetupLAT refresh (0x5a43f5 - 0x5a440a) ------------------------
+     {
+@@ -722,7 +866,8 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::PlaceBlob(MapCell* cell, int tileIndex, int count,
                                     int slotIndex, bool allowLatToLat,
 -                                   bool avoidStartClear)
 +                                   bool avoidStartClear,
-+                                   std::vector<int>* stampedOut)
++                                   std::vector<BlobStamp>* stampedOut)
  {
      if (cell == nullptr || count <= 0)
          return;
-@@ -818,7 +947,10 @@
+@@ -818,7 +963,17 @@
              = (avoidStartClear && IsStartClearArea(cx, cy))
             || ((CellAt(cx, cy)->AltFlags & AltCellFlags_ContainsBuilding) != 0);
          if (!stampBlocked)
+-            CellAt(cx, cy)->IsoTileTypeIndex = tileIndex;   // 0x5a4d13
 +        {
-             CellAt(cx, cy)->IsoTileTypeIndex = tileIndex;   // 0x5a4d13
-+            if (stampedOut != nullptr) stampedOut->push_back(packed);
++            MapCell* stamped = CellAt(cx, cy);
++            if (stampedOut != nullptr)
++            {
++                BlobStamp s;
++                s.packed = packed;
++                s.oldTile = stamped->IsoTileTypeIndex;
++                stampedOut->push_back(s);
++            }
++            stamped->IsoTileTypeIndex = tileIndex;          // 0x5a4d13
 +        }
  
          for (int k = 0; k < 8; ++k)                     // 0x5a4d44 - 0x5a4f42
          {
-@@ -849,10 +981,14 @@
+@@ -849,10 +1004,14 @@
              const double dx = static_cast<double>(seedX - nx);
              const double dy = static_cast<double>(seedY - ny);
              const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
@@ -1354,7 +1418,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,862 @@
+@@ -0,0 +1,917 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2160,6 +2224,14 @@
 +    return true;
 +}
 +
++// The stamp guard below drops the cells that cannot be mirrored (see
++// StampMirroredBlob); the counts are reported by the callers so a silent loss of
++// mirroring - and of terrain detail - is visible.
++static unsigned long long g_mirrorStampDroppedBlobs = 0;
++static unsigned long long g_mirrorStampDroppedCells = 0;
++unsigned long long MgMirrorStampDroppedBlobs() { return g_mirrorStampDroppedBlobs; }
++unsigned long long MgMirrorStampDroppedCells() { return g_mirrorStampDroppedCells; }
++
 +// ---------------------------------------------------------------------------
 +// StampMirroredBlob - the mirrored copy of a blob that has just been placed.
 +//
@@ -2186,22 +2258,68 @@
 +// own algorithm chose.  Not a tile is moved from one half to the other - the
 +// algorithm runs in the half it ran in, and its result is imaged.
 +// ---------------------------------------------------------------------------
-+int RandomMapGenerator::StampMirroredBlob(const std::vector<int>& stamped,
++int RandomMapGenerator::StampMirroredBlob(const std::vector<BlobStamp>& stamped,
 +                                          int tileIndex)
 +{
 +    if (config_.symmetry == mg::MapSymmetry::None || stamped.empty())
 +        return 0;
-+    int mirrored = 0;
++
++    // Which cells of the patch can be mirrored?  A cell can, when its image is a
++    // placeholder - PlaceBlob grew the canonical patch by accepting placeholders and
++    // nothing else, so an image cell that is NOT one carries something the generator
++    // picked for a REASON.  Under left-right the two halves are neighbourhood-
++    // equivalent and this always passes; under 180 the cell map is not an automorphism
++    // of the lattice and it does not, and stamping there punches the art out of a
++    // height step's cover.  Measured on an Inland map (size 1, 2 players, seed
++    // 20260913) by rendering every stage: after CreateHills the map has 0 of 2721
++    // height steps without covering art and 0.04% dark pixels; CreateLATs took that to
++    // 73 of 2721 and 2.50% dark, and it was this stamp doing it.  With the guard the
++    // same map renders 0.30% dark and 0 uncovered steps.
++    //
++    // A cell that cannot be mirrored is dropped from BOTH halves: a half-stamped
++    // patch is exactly the asymmetry this work removes, so the source cell goes back
++    // to the tile it carried before the stamp.  Dropping the whole patch instead was
++    // tried first and costs far too much - one unmirrorable cell out of eighty kills
++    // the other seventy-nine (measured: 4609 of 5673 blob cells gone on that map).
++    std::vector<std::pair<int, int> > images;          // (image packed, source index)
 +    for (size_t i = 0; i < stamped.size(); ++i)
 +    {
-+        const int16_t x = static_cast<int16_t>(stamped[i] & 0xFFFF);
++        const int16_t x = static_cast<int16_t>(stamped[i].packed & 0xFFFF);
 +        const int16_t y = static_cast<int16_t>(
-+                              static_cast<uint32_t>(stamped[i]) >> 16);
++                              static_cast<uint32_t>(stamped[i].packed) >> 16);
++        MapCell* src = CellAt(x, y);
 +        int mx = 0, my = 0;
-+        if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                            x, y, &mx, &my))
-+            continue;                       // cannot happen for a cell of the diamond
++        if (src == nullptr
++            || !mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                               x, y, &mx, &my))
++        {
++            if (src != nullptr)
++                src->IsoTileTypeIndex = stamped[i].oldTile;
++            ++g_mirrorStampDroppedCells;
++            continue;
++        }
++        if (mx == x && my == y)
++            continue;                                  // on the axis: its own image
 +        MapCell* m = CellAt(mx, my);
++        if (m == nullptr || !IsPlaceholderTile(m))
++        {
++            src->IsoTileTypeIndex = stamped[i].oldTile;   // drop from both halves
++            ++g_mirrorStampDroppedCells;
++            continue;
++        }
++        images.push_back(std::make_pair(mx | (my << 16), static_cast<int>(i)));
++    }
++    if (images.empty())
++        ++g_mirrorStampDroppedBlobs;
++
++    // The image cells now hold the same, orientation-free tile index as their
++    // sources.
++    int mirrored = 0;
++    for (size_t k = 0; k < images.size(); ++k)
++    {
++        MapCell* m = CellAt(static_cast<int16_t>(images[k].first & 0xFFFF),
++                            static_cast<int16_t>(
++                                static_cast<uint32_t>(images[k].first) >> 16));
 +        if (m == nullptr)
 +            continue;
 +        m->IsoTileTypeIndex = tileIndex;
@@ -2209,6 +2327,7 @@
 +    }
 +    return mirrored;
 +}
++
 +
 +// ---------------------------------------------------------------------------
 +// [已测并否决] 曾试过"收尾把 1x1 单格瓦片（地面/水面纹理）也做成镜像一致"。

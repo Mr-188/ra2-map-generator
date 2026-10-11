@@ -232,15 +232,24 @@ INTERIOR_LIMIT = 0.03
 # is a bijection of the diamond but NOT an automorphism of the 8-neighbourhood
 # (measured, see check_geometry and mirror.h), so every neighbour-derived choice
 # made after the shape mirror can differ: measured on GEN_PARAMS, Inland and
-# Mountainous sit at 17.2% and Continent at 9.4%, against 0.1%..0.7% for the same
+# Mountainous sit at 22.9% and Continent at 12.3%, against 0.1%..0.7% for the same
 # land types under left-right.  25% is a regression guard around that floor, not a
 # target; the floor itself is discussed in engine/src/mirror.h.
+#
+# This number READ HIGHER AFTER A FIX, which is worth knowing before someone treats
+# it as a score: it was 17.2% while the mirrored blob stamp was still overwriting
+# cliff and ramp tiles on the image half, because overwriting the art also made the
+# two cells agree more often.  It is 22.9% now that those cells keep the art the
+# generator chose for them - the same change that took the 180 render from 2.12%
+# dark pixels and 73 uncovered height steps to 0.40% and 0.
 INTERIOR_LIMIT_180 = 0.25
 
-# The dark-pixel bound the 180-degree renders are held to.  See render_cleanliness
-# for the measurement and for why this is a floor to watch rather than a criterion
-# the mode meets: Inland and Mountainous measure 2.12% against 0.44% plain.
-DARK_LIMIT_180 = 0.05
+# The share of height steps a symmetric map may leave without art covering the drop.
+# Measured: 0.0% for Inland/Mountainous under both kinds with the stamp guard in
+# place, 0.4% for the left-right base map, and 2.6% for the 180-degree Inland map
+# before the guard (which is what its 2.14% dark pixels were made of).
+STEP_LIMIT = 0.02
+
 
 
 def md5(data: bytes) -> str:
@@ -747,12 +756,7 @@ def check_generation(failures: list[str]) -> int:
 
         checks += render_cleanliness(failures, map_none, map_lr, tmp_path, "lr")
         for tag, map_plain, map_sym in special_renders:
-            # The 180-degree maps get the explicit bound render_cleanliness
-            # documents: their measured 2.12% is a known open defect, not the
-            # left-right criterion.
-            lim = DARK_LIMIT_180 if tag.endswith("-180") else None
-            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag,
-                                         bound=lim)
+            checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag)
 
     return checks
 
@@ -767,19 +771,22 @@ def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
     deliberately loose (twice the plain map, floor one percent) so it catches that
     class of regression without pinning a particular tileset's shading.
 
-    `bound` overrides it, and exactly one caller does: the 180-degree maps, which
-    measure 2.12% dark against 0.44% plain for Inland and Mountainous at this
-    configuration (left-right: 0.56% against 0.44%).  That is 4.6x the plain map and
-    it is NOT passed off as fine - it is an open defect.  What it is NOT is a proof
-    that the decoded map is wrong: this file's docstring records that a map whose
-    cells mirror exactly can still render 2.30% black, because the drawing outcome
-    depends on position and draw order.  Sampling each mirrored pair's cell centre
-    (with the map's own cell -> pixel projection, so the absolute numbers are only
-    indicative) points the same way: under 180 the dark cells are mostly unpaired
-    between the halves, while under left-right they are mostly paired - so the two
-    halves of a 180 map really are drawn differently and the cause has to be
-    separated.  Until then the 180 floor stays visible and bounded at 5%;
-    left-right keeps the tight rule."""
+    `bound` overrides it; no caller does today, it stays for a map family that needs
+    its own rule.
+
+    The step check in here is the one that catches the defect this file's mirroring
+    work actually fixed.  Dark pixels say THAT a map has holes; the height steps say
+    WHERE they come from: for every 4-neighbour pair whose z differs, the drop has to
+    be covered by art (a cliff facade or a ramp), and when it is not the renderer
+    paints black there.  Measured on an Inland map (size 1, 2 players, seed
+    20260913), rendering every pipeline stage in turn: after CreateHills the map has
+    0 of 2721 steps uncovered; CreateLATs took it to 73 (2.50% dark pixels) because
+    its mirrored blob stamp was overwriting the art that covered them; with the stamp
+    guarded (MapGenSymmetry.cpp, StampMirroredBlob) the finished map is 0 of 2721 and
+    0.41% dark - cleaner than the same map with symmetry off (0.46%).  A dark-pixel
+    bound alone would have passed a build that traded the holes for a lower "interior
+    differs" number by overwriting the art, which is exactly what the first version
+    of that guard did."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from verify_render import dotnet_env, RENDERER
@@ -819,23 +826,101 @@ def render_cleanliness(failures: list[str], map_none: Path, map_sym: Path,
                 dark += 1
         return dark / total if total else None
 
-    f_none = dark_fraction(render(map_none, tmp_path / f"render_none{tag}"))
-    f_lr = dark_fraction(render(map_sym, tmp_path / f"render_lr{tag}"))
+    png_none = render(map_none, tmp_path / f"render_none{tag}")
+    png_sym = render(map_sym, tmp_path / f"render_lr{tag}")
+    f_none = dark_fraction(png_none)
+    f_lr = dark_fraction(png_sym)
     if f_none is None or f_lr is None:
         print("  render  (a render produced no png; the dark-pixel check is skipped)")
         return 0
     if bound is None:
         bound = max(0.010, 2.0 * f_none)
+    checks = 1
     if f_lr > bound:
         failures.append(
             f"the symmetric map renders with {100 * f_lr:.2f}% dark pixels against "
             f"{100 * f_none:.2f}% for the same map without symmetry (bound "
             f"{100 * bound:.2f}%): the two halves are not drawn consistently - this is "
             "the speckling defect")
-        return 1
-    print(f"  render  {tag:<7} dark pixels {100 * f_lr:.2f}% (plain "
-          f"{100 * f_none:.2f}%, bound {100 * bound:.2f}%)")
-    return 1
+    else:
+        print(f"  render  {tag:<7} dark pixels {100 * f_lr:.2f}% (plain "
+              f"{100 * f_none:.2f}%, bound {100 * bound:.2f}%)")
+
+    # The height steps, which is where dark pixels come from when they are not
+    # scattered noise: an uncovered drop is a hole in the art.
+    steps = uncovered_steps(map_sym, png_sym)
+    if steps is not None:
+        uncovered, total = steps
+        checks += 1
+        if total and uncovered > STEP_LIMIT * total:
+            failures.append(
+                f"{tag}: {uncovered} of {total} height steps "
+                f"({100.0 * uncovered / total:.1f}%) have no art covering the drop (the "
+                f"renderer paints them black); bound {100 * STEP_LIMIT:.0f}%. This is "
+                "the defect the mirrored blob stamp used to cause by overwriting cliff "
+                "and ramp tiles - see MapGenSymmetry.cpp, StampMirroredBlob")
+        else:
+            print(f"  steps   {tag:<7} uncovered {uncovered}/{total} "
+                  f"({100.0 * uncovered / max(1, total):.1f}%, bound "
+                  f"{100 * STEP_LIMIT:.0f}%)")
+    else:
+        print(f"  steps   {tag:<7} (map or png unreadable; the step check is skipped)")
+    return checks
+
+
+def uncovered_steps(map_path: Path, png: Path) -> tuple[int, int] | None:
+    """(uncovered, total) 4-neighbour height steps of a map, judged on its render.
+
+    A step exists where two orthogonal neighbours have different z; the drop between
+    them has to be covered by the higher cell's art.  The check samples the pixel
+    halfway between the two cells' centres (CNCMaps' own projection: dx = rx - ry +
+    width - 1, centre x = (dx + 1) * 60 / 2 - LocalSize.left * 60, y = (rx + ry -
+    width - 1 - z) * 30 / 2 - ((LocalSize.top - 3) * 30 + 15)) and calls the step
+    uncovered when most of that patch is black.
+    """
+    try:
+        from PIL import Image
+        from maptools.map_ini import load_map, extract_iso_pack_b64, parse_map_size
+        from maptools.iso_pack import decode_iso_map_pack
+    except Exception:                                          # pragma: no cover
+        return None
+    if not map_path.is_file() or not png.is_file():
+        return None
+    sections = load_map(map_path)
+    width, _height = parse_map_size(sections)
+    cells = {(t.rx, t.ry): t
+             for t in decode_iso_map_pack(extract_iso_pack_b64(sections),
+                                          *parse_map_size(sections))}
+    im = Image.open(png).convert("RGB")
+    px = im.load()
+    img_w, img_h = im.size
+
+    def centre(t):
+        dx = t.rx - t.ry + width - 1
+        dy = t.rx + t.ry - width - 1
+        return (dx + 1) * 30 - 120, (dy - t.z) * 15 - 105
+
+    uncovered = total = 0
+    for (x, y), t in cells.items():
+        for n in ((x + 1, y), (x, y + 1)):
+            o = cells.get(n)
+            if o is None or o.z == t.z:
+                continue
+            ax, ay = centre(t)
+            bx, by = centre(o)
+            mx, my = (ax + bx) // 2, (ay + by) // 2
+            votes = []
+            for ox in (-6, 0, 6):
+                for oy in (-4, 0, 4):
+                    sx, sy = mx + ox, my + oy
+                    if 0 <= sx < img_w and 0 <= sy < img_h:
+                        r, g, b = px[sx, sy]
+                        votes.append((r + g + b) / 3.0 < 10.0)
+            if votes:
+                total += 1
+                if sum(votes) >= len(votes) * 0.6:
+                    uncovered += 1
+    return uncovered, total
 
 
 def usable_rect(Wp: int, visW: int, visH: int, visX: int, visY: int,

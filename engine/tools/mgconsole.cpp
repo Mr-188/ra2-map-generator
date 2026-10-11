@@ -44,7 +44,9 @@ void usage()
         "                   (top-bottom is not offered: the tile set has no art for\n"
         "                   the orientations it needs - see engine/src/mirror.h)\n"
         "  --size-range     print the legal/useful --size bounds for --land/--players, exit\n"
-        "  --out PATH       output map path\n");
+        "  --out PATH       output map path\n"
+        "  --stop-after S   [diagnostic] write the map after stage S and exit;\n"
+        "                   S in special|terrain|water|regions|hills|lats|prune|mirror\n");
 }
 
 // UTF-8 -> UTF-16, via the shim.  The obvious byte-wise cast is WRONG here:
@@ -190,6 +192,10 @@ int main(int argc, char** argv)
     std::string out = "oracle.map";
     int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
     bool diagSym = false;
+    // [诊断用] Write the map after one named stage and stop there, so a render of
+    // every intermediate state can say WHICH stage leaves a height step without art
+    // covering it (see docs in verify_symmetry.py / mirror.h).  Empty = run to the end.
+    std::string stopAfter;
     double size = 1.0;
     int width = 0, height = 0;   // explicit rectangle, overrides --size when both > 0
     unsigned seed = 1, mapSeed = 0;
@@ -216,6 +222,7 @@ int main(int argc, char** argv)
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
         else if (a == "--diag-symmetry") diagSym = true;
+        else if (a == "--stop-after") stopAfter = next();
         else if (a == "--seed") seed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--map-seed") mapSeed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--single") single = true;
@@ -346,6 +353,30 @@ int main(int argc, char** argv)
         }
     }
 
+    // [诊断用] Finish + write, for --stop-after: the writer needs the cells, and
+    // Cleanup() keeps them (the normal flow writes after it too).
+    const auto emit = [&]() -> int
+    {
+        rmg.Cleanup();                                    // 0x5993A5
+        rmg.ComputeRadarImage();                          // 0x599451
+        rmg.Done();                                       // 0x59947E
+        const std::wstring w = widen(out);
+        if (!rmg.SaveMapFile(w.c_str()))
+        {
+            std::fprintf(stderr, "[mgconsole] SaveMapFile failed\n");
+            return 4;
+        }
+        std::fprintf(stderr, "[mgconsole] wrote %s (stopped after %s)\n",
+                     out.c_str(), stopAfter.c_str());
+        return 0;
+    };
+    const auto stopHere = [&](const char* stage) -> bool
+    {
+        if (stopAfter.empty() || stopAfter != stage)
+            return false;
+        return true;
+    };
+
     // ---- the pipeline, in WinMain.cpp's order -----------------------------
     if (!rmg.GenerateMapBody(cfg))                       // sub_599650
     {
@@ -363,17 +394,21 @@ int main(int argc, char** argv)
             return 8;
         }
         if (diagSym) diagSymmetry(rmg, cfg, "after MirrorSpecialTerrain");
+        if (stopHere("special")) return emit();
     }
     else
     {
         rmg.GenerateTerrain();                            // sub_59A6C0
     }
 
+    if (stopHere("terrain")) return emit();
     rmg.DecorateWaterTiles();                             // 0x598b14  sub_59C630
+    if (stopHere("water")) return emit();
     if (diagSym) diagSymmetry(rmg, cfg, "after DecorateWaterTiles");
     rmg.InitRegions();                                    // 0x598C24
     rmg.MakeRegions();                                    // 0x598D44
     if (diagSym) diagSymmetry(rmg, cfg, "after MakeRegions");
+    if (stopHere("regions")) return emit();
     rmg.RecalculateCellAttributes();                      // 0x598E1F
     rmg.CreateStartingPoints();                           // 0x598E9E
     rmg.AddTechBuildings();                               // 0x598EBF
@@ -389,6 +424,7 @@ int main(int argc, char** argv)
     rmg.RecalculateCellAttributes();                      // 0x59912A
     rmg.CreateHills();                                    // 0x599171
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateHills");
+    if (stopHere("hills")) return emit();
     // [诊断用] CreateLATs is four calls in a fixed order; --diag-symmetry runs
     // them one at a time so the probe can say WHICH one breaks the mirror
     // instead of only that the stage as a whole did.  The calls, their order and
@@ -411,9 +447,11 @@ int main(int argc, char** argv)
         rmg.CreateLATs();                                 // 0x599215
     }
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateLATs");
+    if (stopHere("lats")) return emit();
     rmg.RecalculateCellAttributes();                      // 0x599354
     rmg.PruneTerrainTrees();                              // port-side, after pass 4
     if (diagSym) diagSymmetry(rmg, cfg, "after PruneTrees");
+    if (stopHere("prune")) return emit();
     // [移植侧] 对称镜像。放在 PruneTerrainTrees 之后、Cleanup 之前：所有吃 RNG
     // 与所有出处出自反汇编的阶段都已结束，而 ComputeRadarImage 与写盘都在其后，
     // 雷达与 [Header] 因此自动重算。
@@ -422,6 +460,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[mgconsole] MirrorMap failed\n");
         return 6;
     }
+    if (stopHere("mirror")) return emit();
     rmg.Cleanup();                                        // 0x5993A5
     rmg.ComputeRadarImage();                              // 0x599451
     rmg.Done();                                           // 0x59947E

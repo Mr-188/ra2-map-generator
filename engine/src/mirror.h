@@ -100,30 +100,36 @@
 // prints that floor for every land type and bounds it so it cannot regress
 // silently; it is not a pass waiting to be written.
 //
-// AND IT IS NOT ONLY "ART DIFFERS": the 180 maps also RENDER with holes.  Same
-// configuration, dark pixels (luminance < 10) as tools/verify_symmetry.py measures
-// them: Inland and Mountainous 2.12% against 0.44% for the same map with symmetry
-// off, where the left-right map measures 0.56% against the same 0.44%.  Sampling
-// each mirrored pair's cell centre (indicative numbers - the cell -> pixel
-// projection is approximate) puts the dark cells mostly on ONE side: 92 canonical
-// only and 117 image only against 4 dark on both, where the left-right map is 44
-// on both against 4 / 27.  So the two halves of a 180 map are not drawn alike.
-// What that is NOT is proof the decoded map is bad: the verify_symmetry docstring
-// records that a map whose cells mirror exactly can still render 2.30% black,
-// because the renderer's outcome depends on position and draw order.  The cause is
-// therefore still to be separated, and until it is, this file records the number
-// instead of a conclusion: verify_symmetry prints it for every land type and holds
-// 180 to a 5% bound (left-right keeps max(1%, 2x plain)).
+// AND THE HOLES THE 180 MAPS USED TO RENDER WERE OURS, NOT THE MAPPING'S.  For one
+// round this file recorded an open defect: the 180 maps rendered 2.12% dark pixels
+// against 0.44% for the same map with symmetry off (left-right: 0.56%).  It is
+// closed, and how it was found is worth keeping because the shortcut was tempting.
+// Rendering every pipeline stage in turn on an Inland map (size 1, 2 players, seed
+// 20260913) localises it exactly:
+//     after CreateHills   0.04% dark,  0 of 2721 height steps uncovered
+//     after CreateLATs    2.50% dark, 73 of 2721 uncovered
+// A height step is a 4-neighbour pair whose z differs; the drop between them has to
+// be covered by cliff or ramp art.  CreateLATs was punching that art out: the
+// mirrored blob stamp (StampMirroredBlob, MapGenSymmetry.cpp) copied a patch onto
+// the image half WITHOUT the placeholder test PlaceBlob itself applies to every
+// neighbour it accepts.  Under left-right the image cells are placeholders too, so
+// it never showed; under 180 the cell map is not an automorphism and some images
+// carry a cell that the generator had already dressed for a height step.  Guarded
+// (stamp a mirrored cell only if it is a placeholder; otherwise drop that cell from
+// BOTH halves, so the patch stays symmetric and nothing is overwritten), the same
+// map now measures 0.41% dark and 0 of 2721 uncovered - cleaner than with symmetry
+// off.  verify_symmetry now measures the uncovered-step share itself and bounds it,
+// because a dark-pixel bound alone can be satisfied by overwriting art: the first
+// version of the guard did exactly that and pushed the 180 "interior differs"
+// number from 22.9% down to 17.2% while putting 73 holes in the picture.
 //
-// THE SHAPE OF A REAL FIX, if the holes turn out to be map data: the hill stage's
-// per-cell results would have to be produced once and mirrored - Level and Height
-// are orientation-free scalars, the slope piece has to be rotated by the 180
-// pattern rotation of kSlopeCorners (MapGenHills.cpp:477), and multi-cell pieces
-// go through MirrorTile.  Copying only Level, as was tried once, is what made the
-// render DARKER (0.39% -> 3.31% on left-right) because the art had already been
-// chosen for the old heights.  Left-right does not need any of this: there
-// MirrorElevationGrid mirrors the corner grid exactly, and the engine derives
-// symmetric art from it for free.
+// What remains for 180 is the FLOOR above: the interior art is not the mirror of
+// the other half's (measured 22.9% of mirrored pairs show a different piece for
+// Inland/Mountainous against 2.4% left-right, and 7.4%..12.3% for the island land
+// types), because every neighbour-derived choice made after the shape mirror runs on
+// a lattice the cell map does not preserve.  The shape, the outline (0 of 13005
+// pairs), the overlay layer and the ledgers are symmetric; the relief and the art
+// that dresses it cannot be, for the reason derived above.
 //
 // (An earlier revision of this comment claimed the mapping "preserves the
 // 8-neighbour adjacency graph" for both kinds.  That is false for 180 - see the
