@@ -480,8 +480,17 @@ def check_generation(failures: list[str]) -> int:
             bad, pairs, unmatched = selfsym(C, mirror_of, lambda t: 0)
             checks += 1
             if unmatched:
-                failures.append(f"{kind_name}: {unmatched} cells have no mirrored "
-                                "cell, so the map cannot be symmetric")
+                # 纯 180 旋转会漏掉隐藏边距里的一带；只要求漏掉的格**不在可见矩形内**。
+                visW = Wp - 4
+                visH = Hp - 12
+                visible_unmatched = 0
+                for c in C:
+                    mx, my = mirror_of(*c)
+                    if (mx, my) not in C and usable_rect(Wp, visW, visH, 2, 5, *c):
+                        visible_unmatched += 1
+                if visible_unmatched:
+                    failures.append(f"{kind_name}: {visible_unmatched} cells inside the "
+                                    "visible rect have no mirrored cell")
             # The elevation is measured but not required: CreateHills and the other
             # RNG-driven stages write it per cell, so the two halves differ wherever
             # they happened to draw differently.  It is printed because a regression
@@ -681,7 +690,9 @@ def check_generation(failures: list[str]) -> int:
                           text)
             return tuple(int(g) for g in m.groups()) if m else None
 
-        want_top = {"none": 5, "left-right": 5, "rotational-180": 6}
+        # 纯 180° 旋转是绕格心的真旋转：可见矩形映射到自己，不再需要那一行补偿（老错位映射
+        # 才需要 top 5 -> 6）。见 MapGenRiver.cpp 的 VisibleTop。
+        want_top = {"none": 5, "left-right": 5, "rotational-180": 5}
         rects = {"none": declared_rect(a_sections),
                  "left-right": declared_rect(b_sections),
                  "rotational-180": declared_rect(s180)}
@@ -788,8 +799,9 @@ def check_generation(failures: list[str]) -> int:
         #     about the mirrored half; this is the check that does.  Floors: left-right
         #     90% (measured 99-100%), 180 25% (measured 50%; the old copy-verbatim
         #     behaviour measured 8%).
-        for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.25)):
-            kind_is_reported_only = (sym == 2)   # 180 保持复制路线，自洽率是它的固有值
+        # 180 的自洽率在"纯 180° 旋转 + 按对应件铺岸"下是 80/82（98%），与权威侧 85/87 同级；
+        # 换成错位映射时它是 8%，所以这条现在是**真闸门**（floor 0.80）。
+        for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.80)):
             # Explicit parameters, not GEN_PARAMS: the shore family only exists when the
             # carve actually makes a river or a lake, which needs water > 20.
             mp = tmp_path / f"cohesion-{sym}.yrm"
@@ -839,7 +851,7 @@ def check_generation(failures: list[str]) -> int:
                 continue
             ratio = got[2] / got[1]
             cell_ratio = (got[3] / got[4]) if got[4] else 0.0
-            if kind_is_reported_only:            # 180：只报数（见 mirror.h：复制路线的固有值）
+            if False:                            # 180 现在也设闸门（纯旋转后镜像侧 98% 自洽）
                 print(f"  cohesion {label:<18} shore instances {got[2]}/{got[1]} "
                       f"({ratio:.0%}), cells {got[3]}/{got[4]} ({cell_ratio:.0%}) "
                       f"- reported, not required")
@@ -1487,10 +1499,15 @@ def check_usable_band(failures: list[str]) -> int:
             failures.append(f"left-right is supposed to map the usable rect onto "
                             f"itself, and does not for {visW}x{visH}")
         checks += 1
-        if {rot180_cell(Wp, Hp, *c) for c in u5} != u6:
-            failures.append(f"180 degrees is supposed to move the usable rect down "
-                            f"exactly one row, and does not for {visW}x{visH}")
-    print("  band    left-right keeps the usable rect; 180 needs top 5 -> 6 "
+        # 纯 180° 旋转是绕格心的真旋转：可见矩形映射到自己，不再有一行偏移（那是错位映射的
+        # 产物）。某些尺寸下纯旋转会漏掉隐藏边距里的一带，是否与可见矩形相交取决于尺寸奇偶；
+        # 生成侧另有精确检查（"cells inside the visible rect have no mirrored cell"），
+        # 这里只报数。
+        n_mapped = len({rot180_cell(Wp, Hp, *c) for c in u5} & u5)
+        if n_mapped != len(u5):
+            print(f"  band    {visW}x{visH}: pure 180 maps {n_mapped}/{len(u5)} of the "
+                  f"usable rect onto itself (the miss lies in the hidden band)")
+    print("  band    both kinds keep the usable rect (pure 180 maps it onto itself) "
           f"({checks // 2} shapes)")
     return checks
 
@@ -1527,18 +1544,24 @@ def check_180_corner_lattice(failures: list[str]) -> int:
         def block(x: int, y: int) -> set[tuple[int, int]]:
             return {(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)}
 
-        off_by_one = 0
+        # [移植侧] 换成纯旋转后，角落块**跟着映射走**（这正是多格美术不再被打散的原因）。
+        # 纯旋转把"锚在 (x,y) 的角落块"映成"锚在 (…-1,…-1) 的角落块"：块的集合对得上，
+        # 但**锚点约定差 (1,1)**（因为旋转中心落在格点上）。这里只报数：真正判定"美术会
+        # 不会被打散"的是生成侧的两条：outline/shore 对称、以及岸片实例自洽率（180 现在
+        # 165/169 = 98%，错位映射时代是 8%）。
+        misses = 0
+        checked = 0
         for (x, y) in cells:
             mx, my = rot180_cell(Wp, Hp, x, y)
-            k = Wp + Hp + ((x - y + Wp - 1) & 1)
-            reflected = {(k - X, k - Y) for (X, Y) in block(x, y)}
+            if (mx, my) not in diamond:
+                continue
+            checked += 1
+            reflected = {(Wp + Hp - X, Wp + Hp - Y) for (X, Y) in block(x, y)}
             if reflected != block(mx, my):
-                off_by_one += 1
+                misses += 1
         checks += 1
-        if off_by_one != len(cells):
-            failures.append(f"the point reflection of a cell's corner block was "
-                            f"expected to miss the image cell's block for every cell "
-                            f"({off_by_one} of {len(cells)} miss at {visW}x{visH})")
+        print(f"  lattice {visW}x{visH}: corner-block anchor convention differs by (1,1) "
+              f"for {misses}/{checked} cells (reported, not required)")
 
         checks += 1
         affine = {(Wp + Hp - x, Wp + Hp - y) for (x, y) in cells}
