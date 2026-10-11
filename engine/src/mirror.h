@@ -135,7 +135,8 @@
 //
 // Twelve variants were built and measured on a size-2 Inland map (same seed), each rendered
 // and compared with its own mirror:
-//   copied art (ships)                       water-mask IoU 0.782
+//   copied art (ships, now with the profile fix) 0.797
+//   copied art as it shipped before that fix     0.782
 //   paired re-selection of the coast         0.714
 //   end-of-pipeline rebuild                  0.713
 //   image-half-only re-selection             0.698
@@ -145,7 +146,8 @@
 //   all water forced to one 1x1 piece        0.589
 //   instance-level stamping of the coast     0.797  (no change: the holes are not empty frames)
 //   shared "which class" decision per pair   0.788  (and dark pixels 0.36% -> 0.44%)
-//   profile-correct 180 partner (SHIPS)      0.797
+//   shore art -> sand bank (island-style look) 0.621, and dark pixels 0.36% -> 1.49%,
+//                                             i.e. past the suite's bound as well
 //   reference: islands 180 0.959, Inland LR 0.967
 // Only the last one is shipped, and it is a real bug fix: MirrorTile was choosing the 180
 // partner with the TRANSPOSE profile permutation, so 314 of 340 shore pieces took the wrong
