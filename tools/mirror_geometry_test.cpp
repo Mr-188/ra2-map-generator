@@ -10,15 +10,19 @@
 // What it pins:
 //   * |S| == (2W'-1) * H' for every size, i.e. the mapping is stated over the
 //     same cell set tools/decode.py reads back out of a written map;
-//   * for both kinds: the image of every cell is a cell, the map is injective,
-//     and it is an involution (so a pass that swaps pairs may process each pair
-//     once);
-//   * left-right preserves the 8-neighbourhood exactly - 0 breaks, and it is
-//     asserted, because LAT and ramp art is re-derived from neighbours;
-//   * 180 degrees does NOT preserve it.  That is asserted as a fact, with the
-//     count printed, so nobody re-derives a "fix" for it later: the (c, r) grid
-//     it comes from is sheared, and a +1 step in x flips the stagger term p.
-//     Anything neighbour-derived must be recomputed after a 180 rotation.
+//   * for both kinds: the image of a cell that has one is a cell, the map is
+//     injective on its domain, and it is an involution (so a pass that swaps
+//     pairs may process each pair once);
+//   * BOTH kinds preserve the 8-neighbourhood exactly - 0 breaks, asserted,
+//     because LAT and ramp art is re-derived from neighbours.  The 180 form used
+//     to be the staggered one ((W'+H'+p-x, W'+H'+p-y)), which is a bijection of the
+//     whole diamond but breaks 98% of neighbour pairs; it was replaced by the PURE
+//     rotation (W'+H'-x, W'+H'-y), which is an isometry (0 breaks) and misses only
+//     the cells of the hidden border band - measured 79 cells for W'=80,H'=88, and
+//     every one of them outside the visible rectangle.  This test asserts exactly
+//     that: whatever the pure rotation cannot map must lie outside the visible
+//     diamond (CellExists with the visible dims), so the player sees a true 180
+//     degree rotation.
 
 #include "mirror.h"
 
@@ -97,7 +101,13 @@ int main()
                     int mx = 0, my = 0, bx = 0, by = 0;
                     if (!MirrorCell(W, H, kind, p.first, p.second, &mx, &my))
                     {
-                        Check(false, kn + ": mirror left the diamond");
+                        // 纯 180 旋转只漏掉隐藏边距里的一带（可见区外）。要求：漏掉的格
+                        // 必须**不在可见菱形内**（可见尺寸 = 内部尺寸 - (4, 12)，见
+                        // mirror.h 顶部 CalcMapSize 的说明）。
+                        const int vw = W - 4, vh = H - 12;
+                        Check(kind == MapSymmetry::Rotational180 && vw > 0 && vh > 0 &&
+                              !CellExists(vw, vh, p.first, p.second),
+                              kn + ": unmapped cell must lie outside the visible diamond");
                         continue;
                     }
                     image.insert({mx, my});
@@ -125,8 +135,28 @@ int main()
                     }
                 }
 
-                Check(image.size() == cellsOfS.size(), kn + ": injective");
-                Check(image == S, kn + ": onto (image == S)");
+                if (kind == MapSymmetry::AxialLeftRight)
+                {
+                    Check(image.size() == cellsOfS.size(), kn + ": injective");
+                    Check(image == S, kn + ": onto (image == S)");
+                }
+                else
+                {
+                    // 180：在定义域上单射，且"映射到的格集合 == 那些镜像仍在菱形内的格"。
+                    std::set<std::pair<int, int>> domainImages;
+                    for (const auto& p : cellsOfS)
+                    {
+                        int mx = 0, my = 0;
+                        if (MirrorCell(W, H, kind, p.first, p.second, &mx, &my))
+                        {
+                            Check(domainImages.insert({mx, my}).second,
+                                  kn + ": injective on its domain");
+                            domainImages.insert({mx, my});
+                        }
+                    }
+                    Check(image.size() == domainImages.size(),
+                          kn + ": every image is the image of a mapped cell");
+                }
 
                 if (kind == MapSymmetry::AxialLeftRight)
                 {
@@ -135,10 +165,9 @@ int main()
                 }
                 else
                 {
+                    // 纯旋转是等距变换：相邻关系必须 0 破坏（老错位映射在 64x72 上破坏上万对）。
                     rotBreaks += adjacencyBreaks;
-                    if (W == 64 && H == 72)
-                        std::printf("  180 at 64x72 breaks the 8-neighbourhood %lld times\n",
-                                    adjacencyBreaks);
+                    Check(adjacencyBreaks == 0, "180: 8-neighbourhood preserved (pure rotation)");
                 }
             }
 

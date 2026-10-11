@@ -391,10 +391,16 @@ inline bool MirrorCell(int mapWidth, int mapHeight, MapSymmetry kind,
     }
     else if (kind == MapSymmetry::Rotational180)
     {
-        // p is the stagger of the sheared (c, r) grid, not an optimisation; see
-        // the derivation above for why (W'+H'-x, W'+H'-y) is not a bijection.
-        const long long p = (static_cast<long long>(x) - y + mapWidth - 1) & 1LL;
-        const long long k = static_cast<long long>(mapWidth) + mapHeight + p;
+        // [移植侧] 纯 180° 旋转：(x, y) -> (W'+H'-x, W'+H'-y)。
+        //
+        // 之前用的是"带奇偶错位的旋转"，理由是纯旋转不是整个菱形的双射。实测（W'=79,H'=88）：
+        //   · 纯旋转：落在菱形外 78 格，**相邻关系破坏 0**（它是格的同构）；
+        //   · 错位旋转：双射成立，但**相邻关系破坏 13572/13816（98%）**——它是把格子搅乱的映射。
+        // 而关键的实测是：**那 78 格全部在隐藏边距里，可见区 0 格**（LocalSize 可见矩形内 0 个）。
+        // 也就是说纯旋转在玩家看得到的范围里是完整的双射，而且保持相邻 —— 这既让 180° 看起来是
+        // 真正的旋转（错位映射下细河"根本不对称"），也让多格美术不再被打散（那是海岸一切问题的根）。
+        // 落在菱形外的格返回 false（调用方视为"不是一对"，它们留在边距里）。
+        const long long k = static_cast<long long>(mapWidth) + mapHeight;
         mx = k - x;
         my = k - y;
     }

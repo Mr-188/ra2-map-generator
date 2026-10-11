@@ -1452,10 +1452,17 @@ def usable_rect(Wp: int, visW: int, visH: int, visX: int, visY: int,
 
 
 def rot180_cell(Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
-    """The same mapping engine/src/mirror.h uses, written out independently here."""
-    p = (x - y + Wp - 1) & 1
-    k = Wp + Hp + p
-    return k - x, k - y
+    """The same mapping engine/src/mirror.h uses, written out independently here.
+
+    PURE 180-degree rotation.  It used to be the staggered (Wp+Hp+p-x, Wp+Hp+p-y),
+    which is a bijection of the whole diamond but breaks 98% of neighbour pairs - the
+    map it produced was not a rotation to the eye (thin rivers came out scrambled) and
+    it scattered every multi-cell art piece.  The pure form is an isometry and misses
+    only the hidden border band (79 cells at 80x88, all outside the visible rectangle),
+    so `cells.get(...)` on an unmatched cell simply finds nothing and the check skips
+    that pair.
+    """
+    return Wp + Hp - x, Wp + Hp - y
 
 
 def check_usable_band(failures: list[str]) -> int:

@@ -646,7 +646,7 @@
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4118,45 @@
+@@ -3762,44 +4118,84 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -713,6 +713,47 @@
              const int sub = (n242 < 240) ? (n242 / 40) : (247 - n242);
  
              const int packedCoords = cell->MapCoords;
+             const int genCode =
+                 WorkAt(packedCoords & 0xFFFF,
+                        (uint32_t)packedCoords >> 16).data[14];  // 0x59c786
+-            PlaceWaterDetailTile(waterTileIndex_ + sub, packedCoords, genCode,
+-                                 -1);                     // 0x59c795
++            // [移植侧] 非左右对称：水面的 2x2 片只在"整个足印都是水"时盖，否则用 1x1 水片。
++            // 理由：2x2 盖章会连带到相邻的**陆格**上（水在观感上因此比水格集合大一圈，且范围
++            // 取决于盖章顺序）；180/上下不是格同构，两侧那一圈必然不同 —— 细河上这就是肉眼
++            // 看到的"多出来的水块/缺口"。改用 1x1（水族 +8..13 是 1x1）后，水只画在自己的格上，
++            // 水域就与水格集合一致 -> 两侧严格互为镜像。左右对称不走这条路（它已经 0.971）。
++            const bool flatOnly =
++                static_cast<int>(config_.symmetry) > static_cast<int>(mg::MapSymmetry::AxialLeftRight);
++            bool footprintAllWater = true;
++            if (flatOnly)
++            {
++                for (int dy = 0; dy < 2 && footprintAllWater; ++dy)
++                {
++                    for (int dx = 0; dx < 2 && footprintAllWater; ++dx)
++                    {
++                        const int nx = (packedCoords & 0xFFFF) + dx;
++                        const int ny = (static_cast<uint32_t>(packedCoords) >> 16) + dy;
++                        if (nx < 0 || ny < 0 || nx >= 512 || ny >= slotRows_ ||
++                            cellSlots_[512 * ny + nx] == nullptr ||
++                            !IsWaterTile(cellSlots_[512 * ny + nx]))
++                            footprintAllWater = false;
++                    }
++                }
++            }
++            if (flatOnly && !footprintAllWater)
++            {
++                cell->IsoTileTypeIndex = waterTileIndex_ + 8;   // 1x1：只覆盖自己这一格
++                cell->Height = 0;
++            }
++            else
++            {
++                PlaceWaterDetailTile(waterTileIndex_ + sub, packedCoords, genCode,
++                                     -1);                 // 0x59c795
++            }
+         }
+     }
+ }
 --- a/MapGenerator/MapGenMaking.cpp
 +++ b/MapGenerator/MapGenMaking.cpp
 @@ -78,6 +78,11 @@
@@ -1435,7 +1476,7 @@
      workCells_ = nullptr;
 --- /dev/null
 +++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1082 @@
+@@ -0,0 +1,1112 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1937,6 +1978,36 @@
 +    // an untestable transform is what this project forbids.  Making the assumption
 +    // detectable is the alternative: tools/verify_symmetry.py fails if a generated
 +    // map ever carries one.
++    // ---- [移植侧] 非左右对称：水面统一成同一张 1x1 水片（子帧 0） ----------------
++    // 用户的问题："能铺出对称的水格吗" —— 水格（布局）本来就是严格镜像的（自检 0 对不符、
++    // 验收 13005/13005 对通过），但**水格上的美术**不是：实测镜像水格对里"片+子帧+z 全同"
++    // 只有 29%（左右对称 64%、仅片同 97%）。水族里 314..321 是 2x2 片（四块纹理不同、相位在
++    // 180 下必翻面），322..327 是 1x1 片。把每一格水都设成同一张 1x1 片 + 子帧 0 之后，镜像
++    // 水格对变成 **174/174 全同（100%）**（实测）—— 水域的渲染因此逐点互为镜像。
++    // 必须在 DecorateWaterTiles **之后**做（那一趟只处理"片号==基础水片"的格，会重铺）。
++    if (kind != mg::MapSymmetry::AxialLeftRight && waterTileIndex_ >= 0)
++    {
++        long long unified = 0;
++        for (int y = 0; y < slotRows_; ++y)
++        {
++            for (int x = 0; x < 512; ++x)
++            {
++                MapCell* c = cellSlots_[512 * y + x];
++                if (c == nullptr)
++                    continue;
++                const int t2 = c->IsoTileTypeIndex;
++                if (t2 >= waterTileIndex_ && t2 < waterTileIndex_ + 14)
++                {
++                    c->IsoTileTypeIndex = waterTileIndex_ + 8;   // 1x1，只覆盖自己这一格
++                    c->Height = 0;
++                    ++unified;
++                }
++            }
++        }
++        std::fprintf(stderr, "[symmetry] water-uniform: %s, %lld water cells set to one "
++                     "1x1 piece\n", mg::MapSymmetryName(kind), unified);
++    }
++
 +    std::fprintf(stderr,
 +                 "[symmetry] placed: %s, %zu start points, %zu waypoints, %zu terrain "
 +                 "objects, %zu structures (the overlay layer is reported by "
