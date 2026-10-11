@@ -400,11 +400,26 @@ constexpr int kMapSymmetryImplementedMax =
 //   * the stepped water edge is shore art laid out wrongly on the mirrored half, not the cliffs;
 //   * the cliff layer is a SEPARATE, much smaller defect (111 cells, one edge band, measured in
 //     the census above) and it is not what a player sees at the water.
-// The fix that follows is the one the shore family already got for left-right: place the mirrored
-// SHORE INSTANCE as a whole at the mirrored anchor with the partner piece and the partner's own
-// sub-tile layout, instead of mapping the cells one at a time.  Cell-wise mapping keeps the
-// instance's cells coherent (hence 85/85) but can pair the wrong sub-tile with the wrong cell,
-// which is exactly a staircase along an edge.
+// TWO REAL DEFECTS WERE FOUND IN MirrorTile ITSELF, AND FIXING THEM IS NOT ENOUGH.
+//   * it computed the mirrored footprint as "rotate 180" for EVERY non-left-right kind
+//     (`nr = h-1-row, nc = w-1-col`), but top-bottom is the ANTI-transpose ((x,y) -> (K-y,K-x)),
+//     which needs `nr = w-1-col, nc = h-1-row` with the width and height swapped;
+//   * the same was true of the sub-tile ("Height") remap, which had the same
+//     `transpose ? ... : (h-1-row, w-1-col)` split.
+// Both were given an explicit top-bottom branch and rebuilt: the map stays shape-symmetric
+// (self-check 0 of 6917 pairs disagreeing) - and the stepped water edge on the mirrored half is
+// STILL THERE.  So the mapping is no longer the explanation.
+//
+// WHAT THAT LEAVES.  The wipe named the shore family as what draws the staircase, its instances
+// on the mirrored half are coherent (85/85), its footprints close under top-bottom (40 of 42
+// pieces have a counterpart) - and it still renders stepped.  The only reading left is that the
+// tileset has no shore art drawn for the anti-transpose relation: the pieces' footprints close,
+// their ART does not.  That is the same wall as the 23 counterpart-less cliff pieces, one level
+// deeper (footprint closure does not imply art closure).  Mapping therefore cannot produce a
+// top-bottom coast that matches; the coast has to be composed out of art that does not need a
+// top-bottom relation at all - which is exactly the "island" coast the user approved for the
+// 180-degree mode, where the shore family is replaced by plain ground and the water family
+// carries the edge.  That is the next thing to build for top-bottom.
 //
 // TWO FIXES TRIED FOR THE CLIFF LAYER, BOTH REJECTED BY THE DARK-PIXEL GATE.  The cliff art is
 // placed AFTER the mirror (PlaceCliffs / CorrectCliffTiles / RepairCliffPieces read tile
