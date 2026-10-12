@@ -1,7 +1,7 @@
 diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
---- a/MapGenerator/MapGen.cpp	2026-10-12 10:18:58.822754216 +0800
-+++ b/MapGenerator/MapGen.cpp	2026-10-11 21:14:58.000000000 +0800
-@@ -809,6 +809,25 @@
+--- a/MapGenerator/MapGen.cpp	2026-10-12 11:31:23.989628142 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-12 11:28:27.649628119 +0800
+@@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
      // into bare land on purpose, so the shores have to be repainted here.
@@ -24,11 +24,34 @@ diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
 +    if (!MirrorShape(config_.symmetry))
 +        std::fprintf(stderr, "[symmetry] MirrorShape failed inside GenerateTerrain\n");
 +
++    // -----------------------------------------------------------------------
++    // [移植侧] 对称：把岛的生长标记清掉，再画海岸线。
++    //
++    // 段 2 的岛屿生长给每座岛占到的格子盖了归属标记（work 单元 data[14] = genCode），
++    // 而段 4 的整图海岸上妆第一步 FloodFill 里有一步"外来水体"判定：
++    //     owner > 0 && owner != genCode && !flag  ->  return false
++    // 只要有一格命中，`if (!ok) break` 就会让 SmoothWaterBody 的清理 + 两趟选岸片
++    // 全部跳过 —— **海岸线一片都不铺**。
++    //
++    // 这些标记描述的是**镜像前**的形状；形状被搬过之后它们就落在不对的格子上了。
++    // 实测（门禁用的群岛图，size 1 / 2人 / seed 20260913）：不设对称 872 格岸片，
++    // 开了对称 0 格 —— 水直接贴着草，没有沙滩；抓到的失败格是中线上的 (89,89)。
++    // 段 5（紧接在下面）本来就会把这两个标记复位，这里只是提前到段 4 之前做，
++    // 让那一步只按现在的（已经对称的）形状判断。
++    // config_.symmetry == None 时不进这里，原版路径逐字节不变。
++    // -----------------------------------------------------------------------
++    if (config_.symmetry != mg::MapSymmetry::None && workCells_ != nullptr)
++    {
++        const int workCellCount = size_.workSide * size_.workSide;
++        for (int idx = 0; idx < workCellCount; ++idx)
++            workCells_[idx].data[14] = -1;
++    }
++
      SmoothWaterBody(0, 0);                                       // sub_57A0C0(0, 0)
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
---- a/MapGenerator/MapGen.h	2026-10-12 10:18:58.821844587 +0800
+--- a/MapGenerator/MapGen.h	2026-10-12 11:31:23.988639393 +0800
 +++ b/MapGenerator/MapGen.h	2026-10-12 10:09:57.978225975 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
@@ -1158,7 +1181,7 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
---- a/MapGenerator/MapGenMapFile.cpp	2026-10-12 10:18:58.823493422 +0800
+--- a/MapGenerator/MapGenMapFile.cpp	2026-10-12 11:31:23.990332406 +0800
 +++ b/MapGenerator/MapGenMapFile.cpp	2026-10-11 21:14:58.000000000 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
@@ -1185,14 +1208,34 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 --- a/MapGenerator/MapGenRiver.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenRiver.cpp	2026-10-11 21:14:58.000000000 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-12 11:31:10.465480435 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
  // MapGenRiver.cpp - river / water-body subsystem of the random map generator
  //
  // Everything in this file was moved verbatim out of MapGen.cpp; the addresses
-@@ -2171,8 +2171,39 @@
+@@ -2000,9 +2000,19 @@
+         return true;
+ 
+     // 4a. Foreign-water pollution test.
++    //
++    // [移植侧] The mark this reads (work data[14]) describes WHICH island/patch grew
++    // the cell.  One hit here returns false, and SmoothWaterBody turns that into
++    // "skip the cleanup and both shore passes" - so a stale mark costs the whole
++    // coastline (measured: the symmetric Archipelago map had 0 shore cells).  The
++    // symmetry path clears the marks before this pass for exactly that reason; the
++    // line below is what makes such a failure visible instead of silent.
+     const int owner = WorkAt(cx, cy).data[14];
+     if (owner > 0 && owner != genCode && !flag)
++    {
++        DiagLog("FLOOD-OWNER cell=(%d,%d) owner=%d gen=%d mask=%d", cx, cy, owner, genCode, mask);
+         return false;
++    }
+ 
+     // 4b. Flatten and set the water base tile.
+     cell->Height = 0;
+@@ -2171,8 +2181,39 @@
  
  bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
  {
@@ -1233,7 +1276,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3200,294 @@
+@@ -3169,6 +3210,294 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -1528,7 +1571,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4061,55 @@
+@@ -3742,6 +4071,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -1584,7 +1627,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4130,45 @@
+@@ -3762,36 +4140,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1653,8 +1696,8 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
              const int packedCoords = cell->MapCoords;
 diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 --- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-12 10:15:56.688863760 +0800
-@@ -0,0 +1,1296 @@
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-12 11:28:27.638335558 +0800
+@@ -0,0 +1,1297 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1821,6 +1864,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            b->IsoTileTypeIndex = a->IsoTileTypeIndex;
 +            b->Level = a->Level;
 +            b->Height = a->Height;
++
 +            ++swapped;
 +        }
 +    }
