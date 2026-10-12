@@ -876,6 +876,9 @@ goBtn.addEventListener('click', () => {
     outPath,
   };
   rolledEl.textContent = roll.notes.length ? `本次随机：${roll.notes.join(' · ')}` : '';
+  // Everything the user set is remembered from here (the rolled values are the note
+  // above, which is remembered with it).
+  saveParams();
 
   // The picked directory wins when there is one (the user may have switched games);
   // otherwise the cached extraction is rehydrated, which needs no permission at all.
@@ -939,6 +942,68 @@ function startExtract() {
   worker.postMessage({ type: 'assets', files: archives, theater, all: true });
 }
 
+// ---- the last generated parameters (persisted) ------------------------------
+//
+// A refresh should not cost the user their setup, so clicking 生成 records the control
+// values (plus the note saying what the roll picked, if anything was on 随机) and boot
+// puts them back.  What is restored is what the CONTROLS held at that click - a control
+// left on 随机 comes back on 随机, because that is the setting the user chose; the
+// concrete values of that run are the 上次生成 note, which is restored with it, so the
+// map can still be reproduced by typing them in.
+//
+// A saved value that no longer exists as an option (an option removed in a later
+// version) is skipped rather than written into a control that cannot hold it.
+const PARAMS_KEY = 'ra2mg.params';
+const PERSIST_FIELDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry',
+                        'kind', 'seed', 'map-seed'];
+
+function paramsSnapshot() {
+  const controls = {};
+  for (const id of PERSIST_FIELDS) controls[id] = el(id).value;
+  controls.sizeMode = sizeMode;
+  controls.size = String(sizeInput.value);
+  controls.rectW = String(rectW.value);
+  controls.rectH = String(rectH.value);
+  return { controls, rolled: rolledEl.textContent };
+}
+
+function saveParams() {
+  try { localStorage.setItem(PARAMS_KEY, JSON.stringify(paramsSnapshot())); }
+  catch { /* private mode: the page just starts from the defaults next time */ }
+}
+
+function restoreParams() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PARAMS_KEY) || 'null'); } catch { saved = null; }
+  if (!saved || !saved.controls) return false;
+  const c = saved.controls;
+  for (const id of PERSIST_FIELDS) {
+    const node = el(id);
+    const v = c[id];
+    if (typeof v !== 'string') continue;
+    if (node.options) {
+      // A select: only restore a value that still exists as an option.
+      if ([...node.options].some((o) => o.value === v)) node.value = v;
+    } else if (/^\d+$/.test(v)) {
+      // The seed fields are <input type=number>: no options, and a non-numeric value
+      // would be rejected by the control anyway.
+      node.value = v;
+    }
+  }
+  if (c.sizeMode === 'square' || c.sizeMode === 'rect' || c.sizeMode === 'random') {
+    setSizeMode(c.sizeMode);
+  }
+  if (Number.isFinite(Number(c.size))) sizeInput.value = String(c.size);
+  if (Number.isFinite(Number(c.rectW))) rectW.value = String(c.rectW);
+  if (Number.isFinite(Number(c.rectH))) rectH.value = String(c.rectH);
+  if (typeof saved.rolled === 'string' && saved.rolled) {
+    rolledEl.textContent = `上次生成：${saved.rolled.replace(/^本次随机：/, '')}`;
+  }
+  syncSize();
+  syncSymmetry();
+  return true;
+}
+
 // ---- cache controls --------------------------------------------------------
 el('theater').addEventListener('change', renderCacheNote);
 cacheClearBtn.addEventListener('click', () => {
@@ -947,6 +1012,9 @@ cacheClearBtn.addEventListener('click', () => {
   setTimeout(() => { cacheClearBtn.disabled = false; }, 1500);
 });
 renderCacheNote();
+// Put back the parameters of the last generation (see paramsSnapshot) before the engine
+// boots, so the page comes up showing the user's setup rather than the defaults.
+restoreParams();
 
 worker.postMessage({ type: 'boot' });
 setStatus('正在加载引擎……');

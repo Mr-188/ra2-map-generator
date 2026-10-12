@@ -594,6 +594,46 @@ try {
           + `${Buffer.compare(Buffer.from(snowBytes || []), Buffer.from(fromCache || [])) !== 0}, `
           + `note="${snowNote.slice(0, 60)}…"`);
 
+  // ---- the parameters of the last generation survive a refresh ----------------
+  //
+  // Clicking 生成 records every control (and the note about what the roll picked), and
+  // boot puts them back, so a refresh does not cost the user their setup.  This is the
+  // whole point of persisting them, so it is driven: set a distinctive setup, generate,
+  // reload, and read the controls back.  The game directory is gone after the reload
+  // (the injected Files die with the page); the cache written earlier covers it.
+  console.log('  params   set a distinctive setup, generate, reload');
+  const WANT = { land: '3', time: '2', theater: '1', players: '5', ore: '2',
+                 symmetry: '1', kind: '1', seed: '12345', 'map-seed': '7' };
+  await page.evaluate((want) => {
+    for (const [id, v] of Object.entries(want)) document.getElementById(id).value = v;
+    document.querySelector('#size-mode button[data-mode="rect"]').click();
+    const w = document.getElementById('rect-w');
+    const h = document.getElementById('rect-h');
+    w.value = '200';
+    h.value = '150';
+    w.dispatchEvent(new Event('input', { bubbles: true }));
+  }, WANT);
+  await installCapture();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForReady();
+  const restored = await page.evaluate((ids) => {
+    const o = {};
+    for (const id of ids) o[id] = document.getElementById(id).value;
+    o.sizeMode = [...document.querySelectorAll('#size-mode button')]
+      .find((b) => b.classList.contains('on'))?.dataset.mode;
+    o.rectW = document.getElementById('rect-w').value;
+    o.rectH = document.getElementById('rect-h').value;
+    return o;
+  }, Object.keys(WANT));
+  const wrong = Object.entries(WANT).filter(([k, v]) => restored[k] !== v);
+  check('the last generated parameters come back after a refresh',
+        wrong.length === 0 && restored.sizeMode === 'rect'
+          && restored.rectW === '200' && restored.rectH === '150',
+        wrong.length ? `restored wrong: ${JSON.stringify(wrong)}`
+                     : JSON.stringify(restored));
+
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);
 } catch (err) {
