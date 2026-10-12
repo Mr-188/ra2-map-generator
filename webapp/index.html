@@ -4,9 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>RA2 随机地图生成器</title>
-<!-- Inline SVG favicon: no extra file, no extra request, no /favicon.ico 404. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' fill='%230a0b0d'/%3E%3Cpath d='M6 18V6h4.6a3 3 0 0 1 0 6H6m4 0 4 6' fill='none' stroke='%23e0a33a' stroke-width='2.2'/%3E%3C/svg%3E">
+<title>RA2 / YR 随机地图生成器</title>
+<!-- Tab + header icon: the RA2 icon itself (ra2.ico, from the retail install).
+
+     THIS FILE IS A RETAIL GAME ASSET AND IS AN EXPLICIT, AUTHORISED EXCEPTION to
+     AGENTS.md rule 1 ("no retail game assets in the repository or the product").
+     The user asked for the RA2 icon rather than a drawn mark and authorised the
+     exception on 2026-10-12; the note in AGENTS.md says the same thing.  It is
+     here so nobody removes it as a "cleanup" and so the exception is visible in
+     the rules rather than only in a commit message.
+
+     Everything else in this product still reads from the player's own install and
+     ships no game bytes - this icon is the one deliberate exception. -->
+<link rel="icon" href="ra2.ico" sizes="16x16 32x32">
+<link rel="apple-touch-icon" href="ra2.ico">
 <style>
 /* ===========================================================================
    RA2 / YR map generator -- instrument-panel styling.
@@ -100,7 +111,8 @@ body {
 .bar-r b { color: var(--ink-2); font-weight: 400; }
 
 .glyph { width: 26px; height: 26px; flex: none; color: var(--amber); }
-.glyph svg { width: 100%; height: 100%; display: block; }
+.glyph svg, .glyph img { width: 100%; height: 100%; display: block; }
+.glyph img { border-radius: 3px; }
 h1 {
   margin: 0; font: 400 18px/1 var(--sans);
   letter-spacing: .02em; text-transform: uppercase;
@@ -374,11 +386,11 @@ a.dl svg { width: 12px; height: 12px; }
 <header class="bar">
   <div class="bar-l">
     <span class="glyph" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="square" stroke-linejoin="miter">
-        <rect x="2.5" y="2.5" width="19" height="19"></rect>
-        <path d="M7.5 17V7h3.6a2.6 2.6 0 0 1 0 5.2H7.5m3.6 0L14.5 17"></path>
-      </svg>
+      <!-- The same file the tab uses (see the note at the top of <head>): the retail
+           RA2 icon, authorised by the user as an explicit exception to AGENTS.md
+           rule 1.  Drawn as an <img> rather than inlined so the header and the tab
+           can never drift apart. -->
+      <img src="ra2.ico" alt="" width="26" height="26">
     </span>
     <h1>RA2 <b>/</b> YR 随机地图生成器</h1>
     <span class="tag">C++ → WASM · CNCMaps 渲染</span>
