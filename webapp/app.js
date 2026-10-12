@@ -601,6 +601,12 @@ function renderCacheNote() {
       + `${new Date(man.savedAt).toLocaleString()}`
       + `——本次生成和渲染直接用缓存，不需要游戏目录，也不会要权限。`;
     cacheClearBtn.hidden = false;
+    // The remember block is about the File System Access handle, which is now the
+    // fallback rather than the normal path - say so instead of "刷新后不用重选",
+    // which the cache has already made true on its own.
+    if (!rememberEl.hidden) {
+      rememberNote.textContent = '想换游戏或换剧场时再选一次目录；平时这一块不用管。';
+    }
   } else {
     cacheEl.textContent =
       `尚未缓存${name}的素材：选一次游戏目录，之后开页面就不用再选了${pending}。`;
