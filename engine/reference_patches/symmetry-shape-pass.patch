@@ -1,5 +1,35 @@
---- a/MapGenerator/MapGen.h
-+++ b/MapGenerator/MapGen.h
+diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
+--- a/MapGenerator/MapGen.cpp	2026-10-12 10:18:58.822754216 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-11 21:14:58.000000000 +0800
+@@ -809,6 +809,25 @@
+     // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
+     // reclaim sweep (0x59c449) that turns those temporary shore tiles back
+     // into bare land on purpose, so the shores have to be repainted here.
++
++    // -----------------------------------------------------------------------
++    // [移植侧] 对称：把形状做成**对称**，就在此刻。
++    //
++    // 到这里形状刚定型：IsoTileTypeIndex 是陆/水标记（水 = waterTileIndex_），
++    // Level 是海拔，Height 为 0，而任何带朝向的地形美术都还没有铺 —— 段 4 的
++    // SmoothWaterBody(0, 0) 才开始画海岸线。
++    //
++    // 关键：这里必须**复制**权威半场，而不是交换两半。交换得到的是"原图的镜像"，
++    // 那不是对称图（实测交换后 6460 对里仍有 802 对在"是不是水"上不一致，而未镜像
++    // 原图的随机水平同样是 0.877 —— 交换等于没做）。复制之后整张图的形状才是真正
++    // 对称的，随后段 4/6 与 DecorateWaterTiles、CreateHills、CreateLATs 都会为这份
++    // 对称形状各自选美术，两半的朝向与咬合因此都正确 —— 这正是官方对称图的成因。
++    //
++    // config_.symmetry == None 时 MirrorShape 立即返回，既有地图逐字节不变。
++    // -----------------------------------------------------------------------
++    if (!MirrorShape(config_.symmetry))
++        std::fprintf(stderr, "[symmetry] MirrorShape failed inside GenerateTerrain\n");
++
+     SmoothWaterBody(0, 0);                                       // sub_57A0C0(0, 0)
+ 
+     // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
+diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
+--- a/MapGenerator/MapGen.h	2026-10-12 10:18:58.821844587 +0800
++++ b/MapGenerator/MapGen.h	2026-10-12 10:09:57.978225975 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -48,7 +78,7 @@
  class RandomMapGenerator
  {
  public:
-@@ -1450,13 +1477,21 @@
+@@ -1450,8 +1477,21 @@
      void ScatterRocks();
      // sub_5A4B60: best-first growth of a LAT / rock blob of `count` cells,
      // stamping work dword +0x3C with the seed's slot index.
@@ -60,24 +90,21 @@
 +        int oldTile;     // IsoTileTypeIndex before the stamp
 +    };
      void PlaceBlob(MapCell* cell, int tileIndex, int count, int slotIndex,
-                    bool allowLatToLat, bool avoidStartClear = false,
--                   std::vector<int>* stampedOut = nullptr);
+-                   bool allowLatToLat, bool avoidStartClear = false);
++                   bool allowLatToLat, bool avoidStartClear = false,
 +                   std::vector<BlobStamp>* stampedOut = nullptr);
-     // [移植侧] 对称：把一片刚盖好的斑块（它盖住的格子集合）整体镜像盖过去。斑块是
-     // "一组格子 + 同一个无朝向的瓦片号"，所以镜像那一片就是它的镜像，不需要再跑一次
--    // 生长 —— 实测生长会分叉（见 MapGenLAT.cpp 的说明）。返回镜像盖了几格。
--    int StampMirroredBlob(const std::vector<int>& stamped, int tileIndex);
++    // [移植侧] 对称：把一片刚盖好的斑块（它盖住的格子集合）整体镜像盖过去。斑块是
++    // "一组格子 + 同一个无朝向的瓦片号"，所以镜像那一片就是它的镜像，不需要再跑一次
 +    // 生长 —— 实测生长会分叉（见 MapGenLAT.cpp 的说明）。镜像那一片若有一格不是占位格，
 +    // 这一片**整片回滚**（两半都没有，保持对称，也不打穿现成的美术）。返回镜像盖了几格。
 +    int StampMirroredBlob(const std::vector<BlobStamp>& stamped, int tileIndex);
      // sub_5A45E0: plant up to `count` TREE01..TREE25 objects around the cell,
      // returning how many were planted. Route B: records MapTerrainObject.
      int ScatterTrees(MapCell* cell, int count, double probability);
-@@ -1471,6 +1506,60 @@
-     // WaterCliffs）、以及 0xFFFF 多格片覆盖格上的树一律删除；坡（RampBase /
+@@ -1467,6 +1507,66 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
-+
+ 
 +    // [移植侧] 第一阶段：镜像**形状**。调用点：GenerateMapBody 之后、
 +    // GenerateTerrain / GenerateSpecialTerrain 之前，三个驱动同一处。
 +    //
@@ -110,6 +137,12 @@
 +    // 平结果、不改那个算法。
 +    bool MirrorLevels(mg::MapSymmetry kind);
 +
++    // [移植侧] 收尾修补：到最后仍然对不上的那几对镜像格整格搬平（海拔 + 美术，美术过
++    // MirrorTile）。只动**本来就不一致**的格（内陆图实测 13005 对里 28 个），不是整半场
++    // ——整半场事后搬被实测否决过（2.09%~2.61% 露黑），原因见该函数头。只做左右对称；
++    // 180 那条 16% 的地板在 mirror.h 里有记录。不设对称时直接返回。
++    bool MirrorDivergedCells(mg::MapSymmetry kind);
++
 +    // [移植侧] 只镜像 **overlay 层与建筑标记**（矿片不带朝向，逐值搬运是精确的）。
 +    // 调两次：驱动里 AddTiberium 之后、CreateHills 之前 —— CanHostSlope 读的正是
 +    // OverlayTypeIndex 与 AltFlags，不平掉它们 CreateHills 就会在两半做出不同判断；
@@ -131,10 +164,11 @@
 +    //
 +    // 返回 false 表示前置条件不满足（未分配格子、或尚未实现的对称种类）。
 +    bool MirrorMap(mg::MapSymmetry kind);
- 
++
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
-@@ -1725,6 +1814,14 @@
+     // 用它避让，而不是事后改地形。
+@@ -1720,6 +1820,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -149,7 +183,7 @@
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2007,6 +2104,44 @@
+@@ -2002,6 +2110,44 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -194,7 +228,7 @@
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2185,6 +2320,10 @@
+@@ -2180,6 +2326,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -205,36 +239,927 @@
      MapCell** cellSlots_;   // 512-stride pointer array with nullptr sentinel
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
---- a/MapGenerator/MapGen.cpp
-+++ b/MapGenerator/MapGen.cpp
-@@ -809,6 +809,25 @@
-     // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
-     // reclaim sweep (0x59c449) that turns those temporary shore tiles back
-     // into bare land on purpose, so the shores have to be repainted here.
-+
-+    // -----------------------------------------------------------------------
-+    // [移植侧] 对称：把形状做成**对称**，就在此刻。
-+    //
-+    // 到这里形状刚定型：IsoTileTypeIndex 是陆/水标记（水 = waterTileIndex_），
-+    // Level 是海拔，Height 为 0，而任何带朝向的地形美术都还没有铺 —— 段 4 的
-+    // SmoothWaterBody(0, 0) 才开始画海岸线。
-+    //
-+    // 关键：这里必须**复制**权威半场，而不是交换两半。交换得到的是"原图的镜像"，
-+    // 那不是对称图（实测交换后 6460 对里仍有 802 对在"是不是水"上不一致，而未镜像
-+    // 原图的随机水平同样是 0.877 —— 交换等于没做）。复制之后整张图的形状才是真正
-+    // 对称的，随后段 4/6 与 DecorateWaterTiles、CreateHills、CreateLATs 都会为这份
-+    // 对称形状各自选美术，两半的朝向与咬合因此都正确 —— 这正是官方对称图的成因。
-+    //
-+    // config_.symmetry == None 时 MirrorShape 立即返回，既有地图逐字节不变。
-+    // -----------------------------------------------------------------------
-+    if (!MirrorShape(config_.symmetry))
-+        std::fprintf(stderr, "[symmetry] MirrorShape failed inside GenerateTerrain\n");
-+
-     SmoothWaterBody(0, 0);                                       // sub_57A0C0(0, 0)
+diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
+--- a/MapGenerator/MapGenCleanup.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenCleanup.cpp	2026-10-11 21:14:58.000000000 +0800
+@@ -45,6 +45,8 @@
  
-     // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
---- a/MapGenerator/MapGenMapFile.cpp
-+++ b/MapGenerator/MapGenMapFile.cpp
+ void RandomMapGenerator::Cleanup()
+ {
++    shoreRoll_.clear();   // 逐张图清空（浏览器 worker 会连跑多张）
++    sharedDraws_.clear();
+     // ---- 0x5993BB - 0x5993D0: the work array ------------------------------
+     delete[] workCells_;
+     workCells_ = nullptr;
+diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
+--- a/MapGenerator/MapGenHills.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenHills.cpp	2026-10-12 10:12:24.361381644 +0800
+@@ -74,9 +74,12 @@
+ {
+     MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
+     MarkHillProtection();        // 0x5a35f9  sub_5A33F0
++    // [移植侧] 对称：这两个标记是 CanHostSlope / CliffMask 的输入，而它们读的瓦片在两半是镜像的。
++    MirrorWorkMarks(config_.symmetry);   // [port-only]
+     BuildHillHeightField();      // 0x5a3600  sub_5A2F50
+     BuildElevationGrid();        // 0x5a3605  sub_6B2A70
+     ApplyElevationLevels();      // 0x5a361a  the inline level-apply loop
++    MirrorElevationGrid();       // [移植侧] 施加之后再次转置（这一步自己写角值与 touched）
+     FinalizeElevationSlopes();   // 0x5a36c1  sub_6B3850
+     MergeSlopeBlocks();          // 0x5a36cb  the inline 2x2 slope merge
+     RemoveCliffsOverRamps();     // port-only: keep ramp seams free of walls
+@@ -252,6 +255,39 @@
+     const int side = size_.workSide;
+     const int count = side * side;
+ 
++    // -----------------------------------------------------------------------
++    // [移植侧] 对称：只算权威半场，另一半在 pass A 之后整体镜像过去。
++    //
++    // The field is built by a directional recurrence (height += west; height += north),
++    // and a left-right mirror swaps exactly those two directions, so the recurrence IS
++    // mirror-covariant - but only if both members of a pair read final neighbour values.
++    // In one row-major walk they do not: for a pair member, the mirror of its NORTH
++    // neighbour sits later in the same walk, so a member that ran the recurrence itself
++    // would read a value the other side had not written yet.  Measured: with the two
++    // draws shared per pair but both members still running the recurrence, CreateHills
++    // left 1350 of 6952 mirrored pairs with a different Level.
++    //
++    // So only the canonical member runs it.  Whenever x < y the west and north
++    // neighbours are canonical themselves (x-1 < y and x < y-1) and already final,
++    // because the walk is row-major.  The other member is filled from it right after
++    // pass A and before pass B rounds the field, so a pair draws exactly once and no
++    // cache is needed.
++    //
++    // With symmetry off none of this runs and the RNG stream is untouched, which is what
++    // keeps --symmetry 0 byte-identical.
++    // -----------------------------------------------------------------------
++    const bool symmetric = config_.symmetry != mg::MapSymmetry::None;
++    const auto canonical = [&](int x, int y) -> bool {
++        if (!symmetric)
++            return true;
++        int mx = 0, my = 0;
++        if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                            x, y, &mx, &my))
++            return true;
++        return x < mx || (x == mx && y < my);
++    };
++
++
+     // The two doubles a work cell carries: the HEIGHT field at +8 and the
+     // AMPLITUDE field at +16. WorkCell stores 20 ints, so they are reached
+     // through the raw bytes (the vanilla does the same qword fp loads/stores).
+@@ -273,6 +309,11 @@
+         const int16_t y = static_cast<int16_t>(
+                               static_cast<uint32_t>(packed) >> 16);
+         const int16_t xm = static_cast<int16_t>(x - 1);
++
++        // [移植侧] 对称：非权威格不跑递推，pass A 之后从镜像格取结果。
++        if (!canonical(x, y))
++            continue;
++
+         const int16_t ym = static_cast<int16_t>(y - 1);
+ 
+         amplitude(i) = 0.0;                             // 0x5a2fe7 / 0x5a2ff0
+@@ -342,10 +383,10 @@
+                 centre = span - amplitude(i);           // 0x5a324f
+             }
+             double d;
+-            do                                          // 0x5a3272 / 0x5a3281
++            do                                      // 0x5a3272 / 0x5a3281
+                 d = rng_.Gaussian() * span + centre;
+             while (d < lo || d > hi);
+-            amplitude(i) += d;                          // 0x5a328a
++            amplitude(i) += d;                      // 0x5a328a
+         }
+ 
+         // ---- draw 2, the height (0x5a329a - 0x5a335d) ---------------------
+@@ -361,10 +402,32 @@
+                 centre = span + lo;                     // 0x5a332b
+             }
+             double d;
+-            do                                          // 0x5a334e / 0x5a335d
++            do                                      // 0x5a334e / 0x5a335d
+                 d = rng_.Gaussian() * span + centre;
+             while (d < lo || d > hi);
+-            height(i) += d;                             // 0x5a336c
++            height(i) += d;                         // 0x5a336c
++        }
++    }
++
++    // ---- [移植侧] 对称：把权威半场的结果镜像到另一半（在 pass B 取整之前）----
++    if (symmetric)
++    {
++        for (int i = 0; i < count; ++i)
++        {
++            const int packed = workCells_[i].MapCoords();
++            if (packed == 0)
++                continue;
++            const int x = static_cast<int16_t>(packed & 0xFFFF);
++            const int y = static_cast<int16_t>(static_cast<uint32_t>(packed) >> 16);
++            int mx = 0, my = 0;
++            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                                x, y, &mx, &my))
++                continue;
++            if (x < mx || (x == mx && y < my))
++                continue;                              // canonical: it did the work
++            const int src = mx + side * my;
++            height(i) = height(src);
++            amplitude(i) = amplitude(src);
+         }
+     }
+ 
+@@ -434,6 +497,16 @@
+     { 15,  0, 15,  0 },     // 18
+ };
+ 
++// [移植侧] 对称：同一张表在左右转置下的对应项，即
++//     (c0, c1, c2, c3) -> (c0, c3, c2, c1)
++// 从一个格子的角值模式得到它镜像格的模式。表在这条置换下是闭合的（1<->2、3<->4、
++// 6<->8、10<->12、14<->16，其余自对应）—— 这也是 --diag-symmetry 打印的 SlopeIndex
++// 主组合。FinalizeElevationSlopes 用它把一次判定同时写到镜像两格，见该函数里那段注释。
++static const int kSlopeCornerMirror[19] =
++{
++    0, 2, 1, 4, 3, 5, 8, 7, 6, 9, 12, 11, 10, 13, 16, 15, 14, 17, 18
++};
++
+ // ---------------------------------------------------------------------------
+ // IsMorphableTile - the vanilla's morphable clause on an UNSIGNED index:
+ //     tile < IsometricTileTypeClass::Array.Count || tile == 0xFFFF
+@@ -464,7 +537,26 @@
+     if (WorkAt(x, y).Byte(69) != 0)
+         return false;
+ 
+-    return IsMorphableTile(cell->IsoTileTypeIndex);
++    // [移植侧] 对称：镜像半场的格子拿的是**镜像片**，而 tileMorphable_ 是按片索引
++    // 查的、在镜像下并不封闭（早先实测：LR 下 Shore 缺 2 片、180 下 CliffWater 缺 4 片）。
++    // 直接问会得到与权威半场不同的答案，CanHostSlope 于是只在一侧为真，
++    // FinalizeElevationSlopes 便只在一侧更新海拔。所以这里把镜像片映射回权威侧那张片
++    // 再问（MirrorTile 是成对的：映射两次回到原来那张）。映射不出来的片（缺对应）保留
++    // 本片，这个缺口与 pass 里报的告警是同一份清单。
++    int tileForTest = cell->IsoTileTypeIndex;
++    if (config_.symmetry != mg::MapSymmetry::None)
++    {
++        int mx = 0, my = 0;
++        if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, x, y, &mx, &my)
++            && !(x < mx || (x == mx && y < my)))
++        {
++            int backHeight = cell->Height;
++            const int back = MirrorTile(cell->IsoTileTypeIndex, config_.symmetry, &backHeight);
++            if (back >= 0)
++                tileForTest = back;
++        }
++    }
++    return IsMorphableTile(tileForTest);
+ }
+ 
+ // Step 3 - BuildElevationGrid (sub_6B2A70, 0x6B2A70 - 0x6B2F28).
+@@ -564,6 +656,8 @@
+             }
+         }
+     }
++    // [移植侧] 对称：网格播种后先转置一次，让 ApplyElevationLevels 读到对称的角值。
++    MirrorElevationGrid();
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -907,6 +1001,43 @@
+         const int16_t x = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
+         const int16_t y = static_cast<int16_t>(
+                               static_cast<uint32_t>(cell->MapCoords) >> 16);
++
++        // [移植侧] 对称：镜像对共享这一次判定。
++        //
++        // Everything this step reads is symmetric by the time it runs: the elevation
++        // grid was transposed by MirrorElevationGrid, and the protection marks
++        // CanHostSlope reads were evened out by MirrorWorkMarks.  What is NOT
++        // symmetric is the state the step starts from - MakeRegions/PlaceCliffs leave
++        // a few mirrored pairs differing (measured: 7 of 6460 on the gate's Inland
++        // map) - and this step's neighbour-sensitive rules (the CliffSet clearance
++        // below reads a neighbour's Level) AMPLIFY them: measured with --diag-hills,
++        // levelBad goes 7 -> 35 right here and nowhere else, and those 35 pairs are
++        // the two-level walls that render black.
++        //
++        // So the authoritative cell decides once and the image cell is written from
++        // that decision: same Level, and the slope whose corner pattern is this one's
++        // transpose (kSlopeCornerMirror).  The image cell is skipped in the loop, so
++        // no second, independent decision exists for it.  Without symmetry the block
++        // costs one branch and changes nothing.
++        //
++        // LEFT-RIGHT ONLY.  kSlopeCornerMirror is the transpose permutation, which is
++        // what left-right needs; 180 and top-bottom need different permutations of the
++        // same table and, measured, writing the transpose there takes the 180 Inland
++        // map from 0.40% to 4.59% black (21 uncovered steps).  They keep the old
++        // independent evaluation until their own table is derived and measured.
++        int mx = 0, my = 0;
++        const bool paired = config_.symmetry == mg::MapSymmetry::AxialLeftRight
++            && size_.mapWidth > 0
++            && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                              x, y, &mx, &my);
++        // A cell ON the mirror axis is its own image, so it must be processed here -
++        // the usual "skip the image side" test would skip it and FinalizeElevationSlopes
++        // would never lay its slope (measured: 4 black patches of 330 px along the
++        // diagonal of the Inland map when it did not).
++        const bool selfPaired = paired && mx == x && my == y;
++        if (paired && !selfPaired && !(x < mx || (x == mx && y < my)))
++            continue;                                     // the image side
++
+         const int indexA = (x - elevLeft_) + elevStride_ * (y - elevTop_);
+         const int indexB = indexA + elevStride_;          // the row below
+         const int index[4] = { indexA, indexA + 1, indexB + 1, indexB };
+@@ -1011,12 +1142,52 @@
+             }
+         }
+         if (slope < 0)
++        {
++            // The partner is still owed the LEVEL (see the paired write below).
++            if (paired && !selfPaired)
++            {
++                MapCell* pb = CellAt(mx, my);
++                if (pb != nullptr)
++                    pb->Level = cell->Level;
++            }
+             continue;                                     // 0x6b3a25 -> LABEL_36
++        }
+ 
+         cell->SlopeIndex = slope;                         // 0x6b3a2b
+         cell->IsoTileTypeIndex = slope
+             ? (rampBaseIndex_ + slope - 1)                // 0x6b3a40 (0xABC1D8)
+             : clearTileIndex_;                            // 0x6b3a33 (0xAA10B0)
++
++        // [移植侧] 对称：镜像对共享这一次判定（见函数头）。The mirrored cell takes
++        // the SAME level, and the slope whose corner pattern is this one's transpose
++        // (kSlopeCornerMirror); the tile follows from that index, so the image half
++        // gets the mirrored ramp piece rather than a second, independent decision.
++        if (paired)
++        {
++            MapCell* pb = (selfPaired ? nullptr : CellAt(mx, my));
++            if (pb != nullptr)
++            {
++                pb->Level = cell->Level;
++                const int ms = kSlopeCornerMirror[slope];
++                pb->SlopeIndex = ms;
++                pb->IsoTileTypeIndex = ms
++                    ? (rampBaseIndex_ + ms - 1)
++                    : clearTileIndex_;
++                // The mirrored cell gets a 1x1 ramp (or clear) tile, and those want
++                // sub-frame 0.  Its Height is whatever the pair's OTHER stages left
++                // there - on the image half that is the footprint offset of the
++                // multi-cell piece the cell carried before this write (measured:
++                // sub 1/4/5/6 on the cells whose mirror had 0).  Left alone,
++                // RecalculateCellAttributes' "this tile has no frame at this height"
++                // rule wipes the cell to 0xFFFF at the next stage and it renders
++                // black: measured 1313 px and 1065 px of the Inland map's black came
++                // from exactly that, not from a missing piece.
++                //
++                // The authoritative cell is NOT touched here: this block only runs
++                // with symmetry on, and the vanilla write must stay byte-identical.
++                pb->Height = 0;
++            }
++        }
+     }
+ 
+     // 0x6b3a68: the scratch grid is freed and dword_B0B6EC cleared.
+@@ -1055,6 +1226,19 @@
+         const int16_t x = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
+         const int16_t y = static_cast<int16_t>(
+                               static_cast<uint32_t>(cell->MapCoords) >> 16);
++
++        // [移植侧] 对称：锚点只由权威半场提供，镜像块跟着一起盖章（见下面那段）。
++        // Left-right only, like FinalizeElevationSlopes: the block pattern this pairs
++        // by is the transpose, which is what left-right means.
++        int pairX = 0, pairY = 0;
++        const bool paired = config_.symmetry == mg::MapSymmetry::AxialLeftRight
++            && size_.mapWidth > 0
++            && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                              x, y, &pairX, &pairY);
++        const bool selfPaired = paired && pairX == x && pairY == y;
++        if (paired && !selfPaired && !(x < pairX || (x == pairX && y < pairY)))
++            continue;                                     // the image side
++
+         const int anchor = cell->SlopeIndex;              // 0x5a375a
+ 
+         // Only the two anchor slopes take part; everything else is skipped
+@@ -1126,6 +1310,15 @@
+ 
+         // Collapse the four cells into the multi-cell tile (0x5a382b - 0x5a3891):
+         // 0xFFFF is the "no own tile" mark the delta corners use too.
++        //
++        // [移植侧] 对称：块判定同样是按镜像对共享的。The four cells of the block and
++        // their mirror images are stamped together, and the image-side anchor is
++        // skipped above, so a block cannot merge on one half only.  Without this the
++        // 0xFFFF erase lands on one side: measured on the gate's Inland map, 1313 px
++        // of black at one anchor whose mirror cells were fine.  kSlopeCornerMirror's
++        // block pattern is self-consistent - the mirrored 5-block is 5/6/7/8 in its
++        // own offset order and the mirrored 11-block is 11/12/9/10 - so forcing both
++        // is the same decision, not a second guess.
+         for (int k = 0; k < 4; ++k)
+         {
+             MapCell* c = CellAt(static_cast<int16_t>(x + kOffX[k]),
+@@ -1135,6 +1328,20 @@
+             c->Height = 0;                                // 0x5a387d
+             c->SlopeIndex = 0;                            // 0x5a3884
+             c->Level = bump + level;                      // 0x5a388b
++
++            if (paired && !selfPaired)
++            {
++                MapCell* m = CellAt(static_cast<int16_t>(y + kOffY[k]),
++                                    static_cast<int16_t>(x + kOffX[k]));
++                if (m != nullptr && m != c)
++                {
++                    const int mlevel = m->Level;
++                    m->IsoTileTypeIndex = 0xFFFF;
++                    m->Height = 0;
++                    m->SlopeIndex = 0;
++                    m->Level = bump + mlevel;
++                }
++            }
+         }
+     }
+ }
+@@ -1290,3 +1497,91 @@
+         }
+     }
+ }
++
++
++// ===========================================================================
++// MirrorElevationGrid - the scratch elevation grid, mirrored by transposing it.
++//
++// The grid is square (side == rows, elevLeft_ == elevTop_ == 0) and grid point (gx, gy)
++// belongs to the map cell of the same coordinates, so the left-right mirror of the grid
++// is its transpose.  Its seed is 15 * cell->Level + off_83FF18[cell->SlopeIndex][0], and
++// SlopeIndex is an ORIENTATION code - the two halves carry mirrored codes - so without
++// this the grids differ, FinalizeElevationSlopes' "lowest corner / 15" differs, and the
++// elevation it writes differs.
++//
++// Called twice on purpose: once after BuildElevationGrid (so ApplyElevationLevels reads
++// symmetric corners) and once after ApplyElevationLevels (which sets the corners and the
++// touched flags itself - measured: 142 of 6952 pairs had a different touched flag until
++// this second call existed).
++//
++// Left-right only: the 180-degree rotation would need its own mapping over this
++// rectangle and has not been measured.  With symmetry off nothing happens.
++// ===========================================================================
++void RandomMapGenerator::MirrorElevationGrid()
++{
++    const int side = size_.workSide;
++    if (config_.symmetry != mg::MapSymmetry::AxialLeftRight || side <= 0
++        || elevStride_ != side
++        || elevGrid_.size() < static_cast<size_t>(side) * static_cast<size_t>(side))
++        return;
++
++    for (int gy = 0; gy < side; ++gy)
++    {
++        for (int gx = gy + 1; gx < side; ++gx)
++        {
++            const ElevationEntry& src = elevGrid_[gy + elevStride_ * gx];
++            ElevationEntry& dst = elevGrid_[gx + elevStride_ * gy];
++            dst.corner = src.corner;
++            dst.blocked = src.blocked;
++            dst.touched = src.touched;
++        }
++    }
++}
++
++// ===========================================================================
++// MirrorWorkMarks - the two protection marks the hill stage sets for itself.
++//
++// CanHostSlope reads WorkAt(x,y).Byte(69), and CliffMask reads Byte(74).  MarkHillProtection
++// and MarkTechBuildingProtection set them from what they see around a cell, and what they
++// see includes the tile indices - which are MIRRORED on the two halves, not equal.  So the
++// marks come out different, CanHostSlope answers differently, and FinalizeElevationSlopes
++// then updates the elevation on one side only: measured 369 of 6952 mirrored pairs with a
++// different CanHostSlope() answer.  Copying the canonical half's marks over is the same
++// move as MirrorLevels, one field narrower.
++// ===========================================================================
++bool RandomMapGenerator::MirrorWorkMarks(mg::MapSymmetry kind)
++{
++    if (kind == mg::MapSymmetry::None)
++        return true;
++    if (cellSlots_ == nullptr || workCells_ == nullptr)
++        return true;
++    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++        && kind != mg::MapSymmetry::AxialTopBottom)
++        return false;
++
++    const int W = size_.mapWidth;
++    const int H = size_.mapHeight;
++    long long pairs = 0;
++    for (int y = 0; y < slotRows_; ++y)
++    {
++        for (int x = 0; x < 512; ++x)
++        {
++            MapCell* a = cellSlots_[512 * y + x];
++            if (a == nullptr)
++                continue;
++            int mx = 0, my = 0;
++            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
++                continue;
++            if (!(x < mx || (x == mx && y < my)))
++                continue;
++            WorkCell& src = WorkAt(static_cast<int16_t>(x), static_cast<int16_t>(y));
++            WorkCell& dst = WorkAt(static_cast<int16_t>(mx), static_cast<int16_t>(my));
++            dst.Byte(69) = src.Byte(69);
++            dst.Byte(74) = src.Byte(74);
++            ++pairs;
++        }
++    }
++    std::fprintf(stderr, "[symmetry] marks: %s, %lld cell pairs' protection marks "
++                 "evened out\n", mg::MapSymmetryName(kind), pairs);
++    return true;
++}
+diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
+--- a/MapGenerator/MapGenLAT.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenLAT.cpp	2026-10-11 21:14:58.000000000 +0800
+@@ -1,4 +1,4 @@
+-﻿// ============================================================================
++// ============================================================================
+ // MapGenLAT.cpp - the "RMG: Creating LATs, rocks etc" stage
+ // (sub_598960 @ 0x599215 - 0x599353).
+ //
+@@ -102,6 +102,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstring>
++#include <cstdlib>
+ 
+ // ---------------------------------------------------------------------------
+ // The stage body - the four calls of sub_598960's slice, in order.
+@@ -235,6 +236,34 @@
+     return tile >= clearToSandLatIndex_ && tile < clearToSandLatIndex_ + 16;
+ }
+ 
++
++// ---------------------------------------------------------------------------
++// [移植侧] 对称：随机抽签取值的镜像共享。见 MapGen.h 的说明。
++// 调用方先照常抽签（own），再把值送进来；镜像侧返回伙伴在**同一个抽签点**上的值。
++// ---------------------------------------------------------------------------
++double RandomMapGenerator::MirrorSharedValue(double own, const MapCell* c, int site)
++{
++    if (config_.symmetry == mg::MapSymmetry::None || c == nullptr)
++        return own;
++    const int rx = c->MapCoords & 0xFFFF;
++    const int ry = static_cast<uint32_t>(c->MapCoords) >> 16;
++    int mx = 0, my = 0;
++    if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, rx, ry, &mx, &my))
++        return own;
++    const bool canonical = (rx < mx || (rx == mx && ry < my));
++    const unsigned long long key =
++        static_cast<unsigned long long>(canonical ? rx : mx)
++      | (static_cast<unsigned long long>(canonical ? ry : my) << 16)
++      | (static_cast<unsigned long long>(static_cast<unsigned>(site) + 1) << 32);
++    if (canonical)
++    {
++        sharedDraws_[key] = own;
++        return own;
++    }
++    const std::map<unsigned long long, double>::const_iterator it = sharedDraws_.find(key);
++    return (it != sharedDraws_.end()) ? it->second : own;
++}
++
+ void RandomMapGenerator::ScatterLATBlobs()
+ {
+     if (cellSlots_ == nullptr || workCells_ == nullptr)
+@@ -282,9 +311,22 @@
+         while (n > 40);
+         return n;
+     };
+-    const int countRough = drawBlobCount();               // 0x5a3b62 var_4C
+-    const int countSand = drawBlobCount();                // 0x5a3b92 var_54
+-    const int countGreen = drawBlobCount();               // 0x5a3bc2 var_3C
++    // [移植侧] 对称：斑块盖章是按栅格顺序在中心周围铺的，所以即使"中心点"镜像对称，
++    // 盖出来的区域也不是镜像的（实测：一格进入 LAT 判定时已是沙地 493、它的镜像格还是 0，
++    // 判定于是分叉）。改成"盖一处、同时在镜像中心盖同一处"，三个数量减半保持密度。
++    // 本函数只被调用一次，减半不会重复生效。
++    const bool symBlob = (config_.symmetry != mg::MapSymmetry::None);
++    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
++    int countRough = drawBlobCount();                     // 0x5a3b62 var_4C
++    int countSand = drawBlobCount();                      // 0x5a3b92 var_54
++    int countGreen = drawBlobCount();                     // 0x5a3bc2 var_3C
++    if (symBlob)
++    {
++        countRough = (countRough + 1) / 2;
++        countSand = (countSand + 1) / 2;
++        countGreen = (countGreen + 1) / 2;
++    }
++    long long mirroredBlobs = 0;
+ 
+     // The clipped Gaussian + PlaceBlob every branch ends with (0x5a3c92 -
+     // 0x5a3d3a, 0x5a3d6d - 0x5a3e16, 0x5a3e49 - 0x5a3ef7): span 20 / centre n,
+@@ -304,7 +346,17 @@
+             size = rng_.Gaussian() * span + mean;
+         }
+         while (size < 4.0 || size > 80.0);
+-        PlaceBlob(cell, tileIndex, F2I64(size), slot, false);
++        // [移植侧] 对称：斑块 = 一组格子 + **同一个无朝向的瓦片号**（PlaceBlob 把
++        // tileIndex 原样盖在该集合的每一格上），所以镜像那一片就是这一片格子的镜像，
++        // 不需要（也不该）再跑一次生长。实测过"再跑一次"：生长是按"到种子的距离 + 抖动"
++        // 的优先堆，前两对斑块能对上，第三对 31 格里就差了 4 格 —— 分歧累积成整图
++        // 455 对"只有一侧有瓦片"的格子。这里改成把盖出来的格子集合整体镜像盖过去，
++        // 由构造保证两侧一致；瓦片仍由本算法选出，只是把同一片镜像到另一半。
++        std::vector<BlobStamp> stamped;
++        PlaceBlob(cell, tileIndex, F2I64(size), slot, false, false,
++                  symBlob ? &stamped : nullptr);
++        if (symBlob)
++            mirroredBlobs += StampMirroredBlob(stamped, tileIndex);
+     };
+ 
+     // ---- 3. the LAT pass (0x5a3bea - 0x5a3f0a) ----------------------------
+@@ -365,6 +417,19 @@
+         }
+     }
+ 
++    if (symBlob)
++    {
++        const unsigned long long droppedCells =
++            MgMirrorStampDroppedCells() - dropped0;
++        std::fprintf(stderr,
++                     "[symmetry] lat-blob: %lld blob cells stamped at the mirrored cell "
++                     "(the mirrored patch is the image of the patch the algorithm chose), "
++                     "%llu cells dropped from BOTH halves because their image cell is not "
++                     "a placeholder (it carries art the generator chose for a height "
++                     "step)\n",
++                     mirroredBlobs, droppedCells);
++    }
++
+     // ---- 4. SetupLAT refresh (0x5a3f19 - 0x5a3f2e) ------------------------
+     {
+         CellIterator it;
+@@ -388,12 +453,25 @@
+     }
+     while (overlayCount > overlayRange);                  // 0x5a4119
+ 
++    // [移植侧] 对称：落点是"全局随机槽号"，两半本来互不成对（这正是地面纹理不对称的
++    // 主要来源）。改成"撒一处、同时在镜像格撒同类型"，并把目标数量减半以保持密度。
++    const bool symPlant = (config_.symmetry != mg::MapSymmetry::None);
++    const int overlayTarget = symPlant ? (overlayCount + 1) / 2 : overlayCount;
++
+     int successes = 0;                                    // v37
+     int attempts = 0;                                     // v35
++    long long mirroredPlantings = 0;
+     for (;;)
+     {
+-        if (successes >= overlayCount)                    // 0x5a4133
++        if (successes >= overlayTarget)                   // 0x5a4133
++        {
++            if (symPlant)
++                std::fprintf(stderr,
++                             "[symmetry] lat-plant: %lld mirrored plantings (same type at the "
++                             "mirrored cell), target %d of %d\n",
++                             mirroredPlantings, overlayTarget, overlayCount);
+             return;
++        }
+ 
+         // A random work slot whose packed coords are not (0,0) - no attempt cap
+         // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
+@@ -434,7 +512,7 @@
+                 int pick;
+                 do
+                 {
+-                    pick = F2I64(uniform() * 5.0);
++                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 1));
+                 }
+                 while (pick > 4);
+                 type = pick + 168;
+@@ -445,14 +523,34 @@
+                 int pick;
+                 do
+                 {
+-                    pick = F2I64(uniform() * 5.0);
++                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 2));
+                 }
+                 while (pick > 4);
+                 type = pick + 173;
+             }
+ 
+             if (type >= 0)
++            {
+                 cell->OverlayTypeIndex = type;            // 0x5a424c
++                if (symPlant)
++                {
++                    int mx = 0, my = 0;
++                    if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                                       ovX, ovY, &mx, &my))
++                    {
++                        MapCell* mcell = CellAt(mx, my);
++                        if (mcell != nullptr && mcell != cell
++                            && mcell->OverlayTypeIndex == -1
++                            && !IsStartClearArea(mx, my)
++                            && (mcell->AltFlags & AltCellFlags_ContainsBuilding) == 0)
++                        {
++                            mcell->OverlayTypeIndex = type;
++                            RecalcAttributes(mcell, -1);
++                            ++mirroredPlantings;
++                        }
++                    }
++                }
++            }
+ 
+             // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
+             // model and never writes - a no-op here.
+@@ -564,6 +662,9 @@
+         * (static_cast<double>(globalOptions_.vegetation) * 0.01)
+         * static_cast<double>(settings_.MaxTrees));
+ 
++    const bool symPatch = (config_.symmetry != mg::MapSymmetry::None);
++    long long mirroredPatches = 0;
++
+     int patches = 0;
+     while (remaining > 0)
+     {
+@@ -612,9 +713,35 @@
+         }
+         while (count < 10.0 || count > 35.0);
+ 
++        // [移植侧] 已测并否决：试过"树斑成对撒 + 预算减半"。PlaceGreenPatches 在引擎里
++        // 被**调用两次**（vanilla 内联两遍），减半因此执行了两次 -> 树少了一半，图整体变了，
++        // 指标反而变差（岛屿 21.2%->21.9%、内陆 39.8%->41.1%），所以撤回。
+         remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
+         ++patches;
++
++        // [移植侧] 对称：同一片也在镜像格撒一份（同尺寸、同数量）。落点是全局随机槽号，
++        // 两半本来互不成对，这是地面/植被纹理不对称的一处来源。
++        // 注意做法：**不减半**，而是把镜像那次撒下的树也计入预算 —— 密度因此不变，也就不必
++        // 依赖"只减半一次"（本函数在引擎里被调用两次，上次减半被执行两次、树少了一半）。
++        if (symPatch && chosenX != 0 && chosenY != 0)
++        {
++            int mx = 0, my = 0;
++            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                               chosenX, chosenY, &mx, &my))
++            {
++                MapCell* mc = CellAt(mx, my);
++                if (mc != nullptr && mc != CellAt(chosenX, chosenY) && IsPlaceholderTile(mc))
++                {
++                    remaining -= ScatterTrees(mc, F2I64(count), size);
++                    ++mirroredPatches;
++                }
++            }
++        }
+     }
++    if (symPatch)
++        std::fprintf(stderr,
++                     "[symmetry] green-patch: %lld tree patches also laid at the mirrored cell\n",
++                     mirroredPatches);
+ }
+ 
+ void RandomMapGenerator::ScatterRocks()
+@@ -645,6 +772,8 @@
+     }
+ 
+     // ---- 2. the rock pass (0x5a42e7 - 0x5a43e6) ---------------------------
++    long long mirroredRockCells = 0;
++    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
+     {
+         CellIterator it;
+         it.Reset(cellSlots_, size_.mapWidth);
+@@ -672,13 +801,13 @@
+             // inline reset has just set to 0.005 on every cell.
+             const double density28 =
+                 *reinterpret_cast<const double*>(w.data + 10);
+-            if (uniform() >= density28)
++            if (MirrorSharedValue(uniform(), cell, 3) >= density28)
+                 continue;
+ 
+             double size;
+             do                                              // 0x5a439a - 0x5a43ba
+             {
+-                size = rng_.Gaussian() * 15.0 + 20.0;
++                size = MirrorSharedValue(rng_.Gaussian() * 15.0 + 20.0, cell, 4);
+             }
+             while (size < 4.0 || size > 60.0);
+ 
+@@ -686,12 +815,27 @@
+             // vanilla's own expression, which carries the y << 16 term too
+             // (sub_5A3AE0's equivalent is the clean x + (y << 9)); harmless,
+             // since +0x3C is cleared per call and only compared for equality.
++            // [移植侧] 对称：岩石斑块同样"盖一处、镜像那一片"，理由与 ScatterLATBlobs
++            // 里的一致（再跑一次生长不保证落在镜像集合上）。ScatterRocks 没走那个 lambda，
++            // 所以在这里单独做一次镜像盖章。出生点净场与建筑地基的避让是镜像对称的谓词，
++            // 所以被镜像的那一格集合仍然是合法落点。
++            const bool symRock = (config_.symmetry != mg::MapSymmetry::None);
++            std::vector<BlobStamp> stampedRocks;
+             PlaceBlob(cell, roughTileIndex_, F2I64(size),
+                       cell->MapCoords + (static_cast<int>(y) << 9), false,
+-                      /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
++                      /*avoidStartClear=*/true,
++                      symRock ? &stampedRocks : nullptr);   // [移植侧] 岩石避开出生点
++            if (symRock)
++                mirroredRockCells += StampMirroredBlob(stampedRocks, roughTileIndex_);
+         }
+     }
+ 
++    if (config_.symmetry != mg::MapSymmetry::None)
++        std::fprintf(stderr,
++                     "[symmetry] rock-mirror: %lld rock blob cells stamped at the "
++                     "mirrored cell, %llu cells dropped from both halves\n",
++                     mirroredRockCells, MgMirrorStampDroppedCells() - dropped0);
++
+     // ---- 3. SetupLAT refresh (0x5a43f5 - 0x5a440a) ------------------------
+     {
+         CellIterator it;
+@@ -722,7 +866,8 @@
+ // ---------------------------------------------------------------------------
+ void RandomMapGenerator::PlaceBlob(MapCell* cell, int tileIndex, int count,
+                                    int slotIndex, bool allowLatToLat,
+-                                   bool avoidStartClear)
++                                   bool avoidStartClear,
++                                   std::vector<BlobStamp>* stampedOut)
+ {
+     if (cell == nullptr || count <= 0)
+         return;
+@@ -818,7 +963,17 @@
+             = (avoidStartClear && IsStartClearArea(cx, cy))
+            || ((CellAt(cx, cy)->AltFlags & AltCellFlags_ContainsBuilding) != 0);
+         if (!stampBlocked)
+-            CellAt(cx, cy)->IsoTileTypeIndex = tileIndex;   // 0x5a4d13
++        {
++            MapCell* stamped = CellAt(cx, cy);
++            if (stampedOut != nullptr)
++            {
++                BlobStamp s;
++                s.packed = packed;
++                s.oldTile = stamped->IsoTileTypeIndex;
++                stampedOut->push_back(s);
++            }
++            stamped->IsoTileTypeIndex = tileIndex;          // 0x5a4d13
++        }
+ 
+         for (int k = 0; k < 8; ++k)                     // 0x5a4d44 - 0x5a4f42
+         {
+@@ -849,10 +1004,14 @@
+             const double dx = static_cast<double>(seedX - nx);
+             const double dy = static_cast<double>(seedY - ny);
+             const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
++            // [移植侧] 对称：斑块按"到种子的距离 + 随机抖动"的优先堆生长 —— 距离镜像不变，
++            // 但抖动是随机的，于是镜像那份长成**不同形状**（实测：一格进入 LAT 判定时已是
++            // 沙地、镜像格还是 0，判定分叉）。把抖动按**格**共享：镜像格拿到同一抖动，距离
++            // 又相同，优先级完全一致，斑块于是长成精确镜像。抽签照抽（随机流不变），只换取值。
++            const double jitter =
++                static_cast<double>(static_cast<uint32_t>(rng_.Next())) * 5.0 * kUnitScale;
+             const float key = static_cast<float>(
+-                distance
+-                + static_cast<double>(static_cast<uint32_t>(rng_.Next()))
+-                      * 5.0 * kUnitScale);              // 0x5a4ea2
++                distance + MirrorSharedValue(jitter, nb, 500));   // 0x5a4ea2
+ 
+             pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
+             pool[nextNode].priority = key;
+diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
+--- a/MapGenerator/MapGenMaking.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenMaking.cpp	2026-10-12 09:10:59.750236634 +0800
+@@ -1,4 +1,4 @@
+-﻿// ============================================================================
++// ============================================================================
+ // MapGenMaking.cpp - the "Making regions" stage of the random map generator
+ //
+ //   MakeRegions             sub_598960 @ 0x598D44   stage body - the only
+@@ -78,8 +78,23 @@
+         // [SNAPSHOT-OFF] SaveStageSnapshot("RebuildRegionBodies");
+         ReseedRegions();                            // 0x598d67  sub_58EF10
+         // [SNAPSHOT-OFF] SaveStageSnapshot("ReseedRegions");
++        // [移植侧] 对称：区域函数刚定完海拔，而崖/坡/岸的美术都还没选 —— 就在这里把
++        // 权威半场的海拔复制过去，后面那些阶段便会为对称的海拔自己选对称的美术。
++        if (!MirrorLevels(config_.symmetry))
++            std::fprintf(stderr, "[symmetry] MirrorLevels failed inside MakeRegions\n");
++
+         FixCliffLevels();                           // 0x598d6e  sub_5A19E0
+         // [SNAPSHOT-OFF] SaveStageSnapshot("FixCliffLevels");
++        // [移植侧] 对称：再平一次海拔。FixCliffLevels 是这一串里**最后一个只写海拔**
++        // 的阶段 —— 它之后 PlaceCliffs 就开始把海拔变成美术（崖片的 Height 与所在格
++        // 的海拔绑在一起）。上面那次 MirrorLevels 在它之前，所以它把两半又拉开了：
++        // 实测 MakeRegions 跑完有 7 对镜像格海拔不同，而它们正是内陆图中间那道两级
++        // 墙（L4 一侧 L8 一侧，崖面没东西盖住，渲染成黑）。在这里再平一次，PlaceCliffs
++        // 起两半看到的就是同一套海拔。（PlaceCliffs 自己是不是还需要成对选片是另一件
++        // 事：那一步决定的是"用哪张崖片"，不是"抬高到哪一层"。）
++        if (config_.symmetry == mg::MapSymmetry::AxialLeftRight
++            && !MirrorLevels(config_.symmetry))
++            std::fprintf(stderr, "[symmetry] MirrorLevels failed after FixCliffLevels\n");
+         PlaceCliffs();                              // 0x598d7b  sub_578E60
+         // [SNAPSHOT-OFF] SaveStageSnapshot("PlaceCliffs");
+         CorrectCliffTiles();                        // 0x598d82  sub_5A17F0
+diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
+--- a/MapGenerator/MapGenMakingSub.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-11 21:14:58.000000000 +0800
+@@ -4104,6 +4104,49 @@
+ // Decompile: 5A19E0.c (579B70.c, 486380.c).
+ void RandomMapGenerator::FixCliffLevels()
+ {
++
++    // -----------------------------------------------------------------------
++    // [移植侧] 对称：一对镜像格只抽一次签。
++    //
++    // This function is deterministic apart from its two DrawZeroOrOne() calls, and by
++    // the time it runs the state it reads (the cliff masks, the neighbouring tiles) is
++    // already symmetric - measured with the per-stage probe: levelBad and markerBad are
++    // both 0 entering MakeRegions, and each of the two draws below turns that symmetric
++    // input into a Level -= 4 / Level += 4 on one side only.  Sharing one draw between
++    // the two cells of a mirrored pair removes exactly that.
++    //
++    // With symmetry off nothing here runs and the RNG stream is untouched, which is what
++    // keeps --symmetry 0 byte-identical.
++    const bool symmetric = config_.symmetry != mg::MapSymmetry::None;
++    std::map<unsigned long long, int> drawCache;
++
++    // The canonical key of the cell's mirrored pair (the member that sorts first), or the
++    // cell itself when it is on the axis or symmetry is off.
++    const auto pairKey = [&](const MapCell* c) -> unsigned long long {
++        const int x = static_cast<int16_t>(c->MapCoords & 0xFFFF);
++        const int y = static_cast<int16_t>((uint32_t)c->MapCoords >> 16);
++        int mx = 0, my = 0;
++        if (!symmetric
++            || !mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                               x, y, &mx, &my))
++            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
++        if (x < mx || (x == mx && y < my))
++            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
++        return (static_cast<unsigned long long>(mx) << 32) | static_cast<unsigned>(my);
++    };
++    // `which` separates the two draws of this function so they never share a slot.
++    const auto draw = [&](const MapCell* c, int which) -> bool {
++        if (!symmetric)
++            return DrawZeroOrOne() != 0;
++        const unsigned long long key = (pairKey(c) << 1) | static_cast<unsigned>(which);
++        const auto it = drawCache.find(key);
++        if (it != drawCache.end())
++            return it->second != 0;
++        const int v = DrawZeroOrOne();
++        drawCache.emplace(key, v);
++        return v != 0;
++    };
++
+     if (workCells_ == nullptr || cellSlots_ == nullptr)
+         return;
+ 
+@@ -4132,7 +4175,7 @@
+         {
+             if (CliffMask(southEast) != 131 || !IsPlaceholderTile(east))
+                 continue;                                 // 0x5a1a6e
+-            if (DrawZeroOrOne())                          // 0x5a1a85 - 0x5a1aa7
++            if (draw(cell, 0))                          // 0x5a1a85 - 0x5a1aa7
+                 continue;
+ 
+             east->Level -= 4;                             // 0x5a1ab6
+@@ -4142,7 +4185,7 @@
+         {
+             if (CliffMask(southEast) != 56 || !IsPlaceholderTile(west))
+                 continue;                                 // 0x5a1b1f
+-            if (DrawZeroOrOne())                          // 0x5a1b36 - 0x5a1b58
++            if (draw(cell, 1))                          // 0x5a1b36 - 0x5a1b58
+                 continue;
+ 
+             west->Level -= 4;                             // 0x5a1b67
+@@ -4626,9 +4669,18 @@
+     }
+ 
+     // ---- 2. How many to fill (0x59b8xx) -----------------------------------
++    // [移植侧] 对称：填绿这一步用 rng_.Next() 随机挑 pending 里的格子，两半本来各挑各的
++    // —— 这正是"第一次真差异"（--diag-symmetry 实测：跳过本函数后 MakeRegions 的
++    // crossFam/markerBad 都是 0）。改成"挑一格、同时在镜像格填同一张绿地瓦片，并把镜像格
++    // 的邻居也并入扩散队列"，于是两半的填绿过程完全同步；目标数量减半以保持总量。
++    // 本函数只被调用一次，减半不会重复生效。
++    const bool symFill = (config_.symmetry != mg::MapSymmetry::None);
+     int target = static_cast<int>(pending.size()) / 3;    // 0x59b8xx
++    if (symFill)
++        target = (target + 1) / 2;
+     if (target > 1000)
+         target = 1000;                                    // 0x59b8xx
++    long long mirroredFills = 0;
+ 
+     // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
+     for (int n = 0; n < target; ++n)
+@@ -4654,5 +4706,30 @@
+             if (IsPlaceholderTile(nb))
+                 pending.push_back(nb);
+         }
++
++        if (symFill)
++        {
++            const int cx = cell->MapCoords & 0xFFFF;
++            const int cy = static_cast<uint32_t>(cell->MapCoords) >> 16;
++            int mx = 0, my = 0;
++            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, cx, cy, &mx, &my))
++            {
++                MapCell* mc = CellAt(mx, my);
++                if (mc != nullptr && mc != cell && IsPlaceholderTile(mc))
++                {
++                    mc->IsoTileTypeIndex = greenTileIndex_;
++                    for (int facing = 0; facing < 8; facing += 2)
++                    {
++                        MapCell* nb = GetNeighbourCell(mc, facing);
++                        if (IsPlaceholderTile(nb))
++                            pending.push_back(nb);
++                    }
++                    ++mirroredFills;
++                }
++            }
++        }
+     }
++    if (symFill)
++        std::fprintf(stderr, "[symmetry] fill-green: %lld mirrored placeholder fills\n",
++                     mirroredFills);
+ }
+diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
+--- a/MapGenerator/MapGenMapFile.cpp	2026-10-12 10:18:58.823493422 +0800
++++ b/MapGenerator/MapGenMapFile.cpp	2026-10-11 21:14:58.000000000 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -258,8 +1183,9 @@
  
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
---- a/MapGenerator/MapGenRiver.cpp
-+++ b/MapGenerator/MapGenRiver.cpp
+diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
+--- a/MapGenerator/MapGenRiver.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-11 21:14:58.000000000 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -725,730 +1651,10 @@
              const int sub = (n242 < 240) ? (n242 / 40) : (247 - n242);
  
              const int packedCoords = cell->MapCoords;
---- a/MapGenerator/MapGenMaking.cpp
-+++ b/MapGenerator/MapGenMaking.cpp
-@@ -78,6 +78,11 @@
-         // [SNAPSHOT-OFF] SaveStageSnapshot("RebuildRegionBodies");
-         ReseedRegions();                            // 0x598d67  sub_58EF10
-         // [SNAPSHOT-OFF] SaveStageSnapshot("ReseedRegions");
-+        // [移植侧] 对称：区域函数刚定完海拔，而崖/坡/岸的美术都还没选 —— 就在这里把
-+        // 权威半场的海拔复制过去，后面那些阶段便会为对称的海拔自己选对称的美术。
-+        if (!MirrorLevels(config_.symmetry))
-+            std::fprintf(stderr, "[symmetry] MirrorLevels failed inside MakeRegions\n");
-+
-         FixCliffLevels();                           // 0x598d6e  sub_5A19E0
-         // [SNAPSHOT-OFF] SaveStageSnapshot("FixCliffLevels");
-         PlaceCliffs();                              // 0x598d7b  sub_578E60
---- a/MapGenerator/MapGenMakingSub.cpp
-+++ b/MapGenerator/MapGenMakingSub.cpp
-@@ -4104,6 +4104,49 @@
- // Decompile: 5A19E0.c (579B70.c, 486380.c).
- void RandomMapGenerator::FixCliffLevels()
- {
-+
-+    // -----------------------------------------------------------------------
-+    // [移植侧] 对称：一对镜像格只抽一次签。
-+    //
-+    // This function is deterministic apart from its two DrawZeroOrOne() calls, and by
-+    // the time it runs the state it reads (the cliff masks, the neighbouring tiles) is
-+    // already symmetric - measured with the per-stage probe: levelBad and markerBad are
-+    // both 0 entering MakeRegions, and each of the two draws below turns that symmetric
-+    // input into a Level -= 4 / Level += 4 on one side only.  Sharing one draw between
-+    // the two cells of a mirrored pair removes exactly that.
-+    //
-+    // With symmetry off nothing here runs and the RNG stream is untouched, which is what
-+    // keeps --symmetry 0 byte-identical.
-+    const bool symmetric = config_.symmetry != mg::MapSymmetry::None;
-+    std::map<unsigned long long, int> drawCache;
-+
-+    // The canonical key of the cell's mirrored pair (the member that sorts first), or the
-+    // cell itself when it is on the axis or symmetry is off.
-+    const auto pairKey = [&](const MapCell* c) -> unsigned long long {
-+        const int x = static_cast<int16_t>(c->MapCoords & 0xFFFF);
-+        const int y = static_cast<int16_t>((uint32_t)c->MapCoords >> 16);
-+        int mx = 0, my = 0;
-+        if (!symmetric
-+            || !mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                               x, y, &mx, &my))
-+            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
-+        if (x < mx || (x == mx && y < my))
-+            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
-+        return (static_cast<unsigned long long>(mx) << 32) | static_cast<unsigned>(my);
-+    };
-+    // `which` separates the two draws of this function so they never share a slot.
-+    const auto draw = [&](const MapCell* c, int which) -> bool {
-+        if (!symmetric)
-+            return DrawZeroOrOne() != 0;
-+        const unsigned long long key = (pairKey(c) << 1) | static_cast<unsigned>(which);
-+        const auto it = drawCache.find(key);
-+        if (it != drawCache.end())
-+            return it->second != 0;
-+        const int v = DrawZeroOrOne();
-+        drawCache.emplace(key, v);
-+        return v != 0;
-+    };
-+
-     if (workCells_ == nullptr || cellSlots_ == nullptr)
-         return;
- 
-@@ -4132,7 +4175,7 @@
-         {
-             if (CliffMask(southEast) != 131 || !IsPlaceholderTile(east))
-                 continue;                                 // 0x5a1a6e
--            if (DrawZeroOrOne())                          // 0x5a1a85 - 0x5a1aa7
-+            if (draw(cell, 0))                          // 0x5a1a85 - 0x5a1aa7
-                 continue;
- 
-             east->Level -= 4;                             // 0x5a1ab6
-@@ -4142,7 +4185,7 @@
-         {
-             if (CliffMask(southEast) != 56 || !IsPlaceholderTile(west))
-                 continue;                                 // 0x5a1b1f
--            if (DrawZeroOrOne())                          // 0x5a1b36 - 0x5a1b58
-+            if (draw(cell, 1))                          // 0x5a1b36 - 0x5a1b58
-                 continue;
- 
-             west->Level -= 4;                             // 0x5a1b67
-@@ -4626,9 +4669,18 @@
-     }
- 
-     // ---- 2. How many to fill (0x59b8xx) -----------------------------------
-+    // [移植侧] 对称：填绿这一步用 rng_.Next() 随机挑 pending 里的格子，两半本来各挑各的
-+    // —— 这正是"第一次真差异"（--diag-symmetry 实测：跳过本函数后 MakeRegions 的
-+    // crossFam/markerBad 都是 0）。改成"挑一格、同时在镜像格填同一张绿地瓦片，并把镜像格
-+    // 的邻居也并入扩散队列"，于是两半的填绿过程完全同步；目标数量减半以保持总量。
-+    // 本函数只被调用一次，减半不会重复生效。
-+    const bool symFill = (config_.symmetry != mg::MapSymmetry::None);
-     int target = static_cast<int>(pending.size()) / 3;    // 0x59b8xx
-+    if (symFill)
-+        target = (target + 1) / 2;
-     if (target > 1000)
-         target = 1000;                                    // 0x59b8xx
-+    long long mirroredFills = 0;
- 
-     // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
-     for (int n = 0; n < target; ++n)
-@@ -4654,5 +4706,30 @@
-             if (IsPlaceholderTile(nb))
-                 pending.push_back(nb);
-         }
--    }
-+
-+        if (symFill)
-+        {
-+            const int cx = cell->MapCoords & 0xFFFF;
-+            const int cy = static_cast<uint32_t>(cell->MapCoords) >> 16;
-+            int mx = 0, my = 0;
-+            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, cx, cy, &mx, &my))
-+            {
-+                MapCell* mc = CellAt(mx, my);
-+                if (mc != nullptr && mc != cell && IsPlaceholderTile(mc))
-+                {
-+                    mc->IsoTileTypeIndex = greenTileIndex_;
-+                    for (int facing = 0; facing < 8; facing += 2)
-+                    {
-+                        MapCell* nb = GetNeighbourCell(mc, facing);
-+                        if (IsPlaceholderTile(nb))
-+                            pending.push_back(nb);
-+                    }
-+                    ++mirroredFills;
-+                }
-+            }
-+        }
-+    }
-+    if (symFill)
-+        std::fprintf(stderr, "[symmetry] fill-green: %lld mirrored placeholder fills\n",
-+                     mirroredFills);
- }
---- a/MapGenerator/MapGenHills.cpp
-+++ b/MapGenerator/MapGenHills.cpp
-@@ -74,9 +74,12 @@
- {
-     MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
-     MarkHillProtection();        // 0x5a35f9  sub_5A33F0
-+    // [移植侧] 对称：这两个标记是 CanHostSlope / CliffMask 的输入，而它们读的瓦片在两半是镜像的。
-+    MirrorWorkMarks(config_.symmetry);   // [port-only]
-     BuildHillHeightField();      // 0x5a3600  sub_5A2F50
-     BuildElevationGrid();        // 0x5a3605  sub_6B2A70
-     ApplyElevationLevels();      // 0x5a361a  the inline level-apply loop
-+    MirrorElevationGrid();       // [移植侧] 施加之后再次转置（这一步自己写角值与 touched）
-     FinalizeElevationSlopes();   // 0x5a36c1  sub_6B3850
-     MergeSlopeBlocks();          // 0x5a36cb  the inline 2x2 slope merge
-     RemoveCliffsOverRamps();     // port-only: keep ramp seams free of walls
-@@ -252,6 +255,39 @@
-     const int side = size_.workSide;
-     const int count = side * side;
- 
-+    // -----------------------------------------------------------------------
-+    // [移植侧] 对称：只算权威半场，另一半在 pass A 之后整体镜像过去。
-+    //
-+    // The field is built by a directional recurrence (height += west; height += north),
-+    // and a left-right mirror swaps exactly those two directions, so the recurrence IS
-+    // mirror-covariant - but only if both members of a pair read final neighbour values.
-+    // In one row-major walk they do not: for a pair member, the mirror of its NORTH
-+    // neighbour sits later in the same walk, so a member that ran the recurrence itself
-+    // would read a value the other side had not written yet.  Measured: with the two
-+    // draws shared per pair but both members still running the recurrence, CreateHills
-+    // left 1350 of 6952 mirrored pairs with a different Level.
-+    //
-+    // So only the canonical member runs it.  Whenever x < y the west and north
-+    // neighbours are canonical themselves (x-1 < y and x < y-1) and already final,
-+    // because the walk is row-major.  The other member is filled from it right after
-+    // pass A and before pass B rounds the field, so a pair draws exactly once and no
-+    // cache is needed.
-+    //
-+    // With symmetry off none of this runs and the RNG stream is untouched, which is what
-+    // keeps --symmetry 0 byte-identical.
-+    // -----------------------------------------------------------------------
-+    const bool symmetric = config_.symmetry != mg::MapSymmetry::None;
-+    const auto canonical = [&](int x, int y) -> bool {
-+        if (!symmetric)
-+            return true;
-+        int mx = 0, my = 0;
-+        if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                            x, y, &mx, &my))
-+            return true;
-+        return x < mx || (x == mx && y < my);
-+    };
-+
-+
-     // The two doubles a work cell carries: the HEIGHT field at +8 and the
-     // AMPLITUDE field at +16. WorkCell stores 20 ints, so they are reached
-     // through the raw bytes (the vanilla does the same qword fp loads/stores).
-@@ -273,6 +309,11 @@
-         const int16_t y = static_cast<int16_t>(
-                               static_cast<uint32_t>(packed) >> 16);
-         const int16_t xm = static_cast<int16_t>(x - 1);
-+
-+        // [移植侧] 对称：非权威格不跑递推，pass A 之后从镜像格取结果。
-+        if (!canonical(x, y))
-+            continue;
-+
-         const int16_t ym = static_cast<int16_t>(y - 1);
- 
-         amplitude(i) = 0.0;                             // 0x5a2fe7 / 0x5a2ff0
-@@ -342,10 +383,10 @@
-                 centre = span - amplitude(i);           // 0x5a324f
-             }
-             double d;
--            do                                          // 0x5a3272 / 0x5a3281
-+            do                                      // 0x5a3272 / 0x5a3281
-                 d = rng_.Gaussian() * span + centre;
-             while (d < lo || d > hi);
--            amplitude(i) += d;                          // 0x5a328a
-+            amplitude(i) += d;                      // 0x5a328a
-         }
- 
-         // ---- draw 2, the height (0x5a329a - 0x5a335d) ---------------------
-@@ -361,10 +402,32 @@
-                 centre = span + lo;                     // 0x5a332b
-             }
-             double d;
--            do                                          // 0x5a334e / 0x5a335d
-+            do                                      // 0x5a334e / 0x5a335d
-                 d = rng_.Gaussian() * span + centre;
-             while (d < lo || d > hi);
--            height(i) += d;                             // 0x5a336c
-+            height(i) += d;                         // 0x5a336c
-+        }
-+    }
-+
-+    // ---- [移植侧] 对称：把权威半场的结果镜像到另一半（在 pass B 取整之前）----
-+    if (symmetric)
-+    {
-+        for (int i = 0; i < count; ++i)
-+        {
-+            const int packed = workCells_[i].MapCoords();
-+            if (packed == 0)
-+                continue;
-+            const int x = static_cast<int16_t>(packed & 0xFFFF);
-+            const int y = static_cast<int16_t>(static_cast<uint32_t>(packed) >> 16);
-+            int mx = 0, my = 0;
-+            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                                x, y, &mx, &my))
-+                continue;
-+            if (x < mx || (x == mx && y < my))
-+                continue;                              // canonical: it did the work
-+            const int src = mx + side * my;
-+            height(i) = height(src);
-+            amplitude(i) = amplitude(src);
-         }
-     }
- 
-@@ -464,7 +527,26 @@
-     if (WorkAt(x, y).Byte(69) != 0)
-         return false;
- 
--    return IsMorphableTile(cell->IsoTileTypeIndex);
-+    // [移植侧] 对称：镜像半场的格子拿的是**镜像片**，而 tileMorphable_ 是按片索引
-+    // 查的、在镜像下并不封闭（早先实测：LR 下 Shore 缺 2 片、180 下 CliffWater 缺 4 片）。
-+    // 直接问会得到与权威半场不同的答案，CanHostSlope 于是只在一侧为真，
-+    // FinalizeElevationSlopes 便只在一侧更新海拔。所以这里把镜像片映射回权威侧那张片
-+    // 再问（MirrorTile 是成对的：映射两次回到原来那张）。映射不出来的片（缺对应）保留
-+    // 本片，这个缺口与 pass 里报的告警是同一份清单。
-+    int tileForTest = cell->IsoTileTypeIndex;
-+    if (config_.symmetry != mg::MapSymmetry::None)
-+    {
-+        int mx = 0, my = 0;
-+        if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, x, y, &mx, &my)
-+            && !(x < mx || (x == mx && y < my)))
-+        {
-+            int backHeight = cell->Height;
-+            const int back = MirrorTile(cell->IsoTileTypeIndex, config_.symmetry, &backHeight);
-+            if (back >= 0)
-+                tileForTest = back;
-+        }
-+    }
-+    return IsMorphableTile(tileForTest);
- }
- 
- // Step 3 - BuildElevationGrid (sub_6B2A70, 0x6B2A70 - 0x6B2F28).
-@@ -564,6 +646,8 @@
-             }
-         }
-     }
-+    // [移植侧] 对称：网格播种后先转置一次，让 ApplyElevationLevels 读到对称的角值。
-+    MirrorElevationGrid();
- }
- 
- // ---------------------------------------------------------------------------
-@@ -1290,3 +1374,91 @@
-         }
-     }
- }
-+
-+
-+// ===========================================================================
-+// MirrorElevationGrid - the scratch elevation grid, mirrored by transposing it.
-+//
-+// The grid is square (side == rows, elevLeft_ == elevTop_ == 0) and grid point (gx, gy)
-+// belongs to the map cell of the same coordinates, so the left-right mirror of the grid
-+// is its transpose.  Its seed is 15 * cell->Level + off_83FF18[cell->SlopeIndex][0], and
-+// SlopeIndex is an ORIENTATION code - the two halves carry mirrored codes - so without
-+// this the grids differ, FinalizeElevationSlopes' "lowest corner / 15" differs, and the
-+// elevation it writes differs.
-+//
-+// Called twice on purpose: once after BuildElevationGrid (so ApplyElevationLevels reads
-+// symmetric corners) and once after ApplyElevationLevels (which sets the corners and the
-+// touched flags itself - measured: 142 of 6952 pairs had a different touched flag until
-+// this second call existed).
-+//
-+// Left-right only: the 180-degree rotation would need its own mapping over this
-+// rectangle and has not been measured.  With symmetry off nothing happens.
-+// ===========================================================================
-+void RandomMapGenerator::MirrorElevationGrid()
-+{
-+    const int side = size_.workSide;
-+    if (config_.symmetry != mg::MapSymmetry::AxialLeftRight || side <= 0
-+        || elevStride_ != side
-+        || elevGrid_.size() < static_cast<size_t>(side) * static_cast<size_t>(side))
-+        return;
-+
-+    for (int gy = 0; gy < side; ++gy)
-+    {
-+        for (int gx = gy + 1; gx < side; ++gx)
-+        {
-+            const ElevationEntry& src = elevGrid_[gy + elevStride_ * gx];
-+            ElevationEntry& dst = elevGrid_[gx + elevStride_ * gy];
-+            dst.corner = src.corner;
-+            dst.blocked = src.blocked;
-+            dst.touched = src.touched;
-+        }
-+    }
-+}
-+
-+// ===========================================================================
-+// MirrorWorkMarks - the two protection marks the hill stage sets for itself.
-+//
-+// CanHostSlope reads WorkAt(x,y).Byte(69), and CliffMask reads Byte(74).  MarkHillProtection
-+// and MarkTechBuildingProtection set them from what they see around a cell, and what they
-+// see includes the tile indices - which are MIRRORED on the two halves, not equal.  So the
-+// marks come out different, CanHostSlope answers differently, and FinalizeElevationSlopes
-+// then updates the elevation on one side only: measured 369 of 6952 mirrored pairs with a
-+// different CanHostSlope() answer.  Copying the canonical half's marks over is the same
-+// move as MirrorLevels, one field narrower.
-+// ===========================================================================
-+bool RandomMapGenerator::MirrorWorkMarks(mg::MapSymmetry kind)
-+{
-+    if (kind == mg::MapSymmetry::None)
-+        return true;
-+    if (cellSlots_ == nullptr || workCells_ == nullptr)
-+        return true;
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
-+        && kind != mg::MapSymmetry::AxialTopBottom)
-+        return false;
-+
-+    const int W = size_.mapWidth;
-+    const int H = size_.mapHeight;
-+    long long pairs = 0;
-+    for (int y = 0; y < slotRows_; ++y)
-+    {
-+        for (int x = 0; x < 512; ++x)
-+        {
-+            MapCell* a = cellSlots_[512 * y + x];
-+            if (a == nullptr)
-+                continue;
-+            int mx = 0, my = 0;
-+            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
-+                continue;
-+            if (!(x < mx || (x == mx && y < my)))
-+                continue;
-+            WorkCell& src = WorkAt(static_cast<int16_t>(x), static_cast<int16_t>(y));
-+            WorkCell& dst = WorkAt(static_cast<int16_t>(mx), static_cast<int16_t>(my));
-+            dst.Byte(69) = src.Byte(69);
-+            dst.Byte(74) = src.Byte(74);
-+            ++pairs;
-+        }
-+    }
-+    std::fprintf(stderr, "[symmetry] marks: %s, %lld cell pairs' protection marks "
-+                 "evened out\n", mg::MapSymmetryName(kind), pairs);
-+    return true;
-+}
---- a/MapGenerator/MapGenLAT.cpp
-+++ b/MapGenerator/MapGenLAT.cpp
-@@ -102,6 +102,7 @@
- #include <algorithm>
- #include <cmath>
- #include <cstring>
-+#include <cstdlib>
- 
- // ---------------------------------------------------------------------------
- // The stage body - the four calls of sub_598960's slice, in order.
-@@ -235,6 +236,34 @@
-     return tile >= clearToSandLatIndex_ && tile < clearToSandLatIndex_ + 16;
- }
- 
-+
-+// ---------------------------------------------------------------------------
-+// [移植侧] 对称：随机抽签取值的镜像共享。见 MapGen.h 的说明。
-+// 调用方先照常抽签（own），再把值送进来；镜像侧返回伙伴在**同一个抽签点**上的值。
-+// ---------------------------------------------------------------------------
-+double RandomMapGenerator::MirrorSharedValue(double own, const MapCell* c, int site)
-+{
-+    if (config_.symmetry == mg::MapSymmetry::None || c == nullptr)
-+        return own;
-+    const int rx = c->MapCoords & 0xFFFF;
-+    const int ry = static_cast<uint32_t>(c->MapCoords) >> 16;
-+    int mx = 0, my = 0;
-+    if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, rx, ry, &mx, &my))
-+        return own;
-+    const bool canonical = (rx < mx || (rx == mx && ry < my));
-+    const unsigned long long key =
-+        static_cast<unsigned long long>(canonical ? rx : mx)
-+      | (static_cast<unsigned long long>(canonical ? ry : my) << 16)
-+      | (static_cast<unsigned long long>(static_cast<unsigned>(site) + 1) << 32);
-+    if (canonical)
-+    {
-+        sharedDraws_[key] = own;
-+        return own;
-+    }
-+    const std::map<unsigned long long, double>::const_iterator it = sharedDraws_.find(key);
-+    return (it != sharedDraws_.end()) ? it->second : own;
-+}
-+
- void RandomMapGenerator::ScatterLATBlobs()
- {
-     if (cellSlots_ == nullptr || workCells_ == nullptr)
-@@ -282,9 +311,22 @@
-         while (n > 40);
-         return n;
-     };
--    const int countRough = drawBlobCount();               // 0x5a3b62 var_4C
--    const int countSand = drawBlobCount();                // 0x5a3b92 var_54
--    const int countGreen = drawBlobCount();               // 0x5a3bc2 var_3C
-+    // [移植侧] 对称：斑块盖章是按栅格顺序在中心周围铺的，所以即使"中心点"镜像对称，
-+    // 盖出来的区域也不是镜像的（实测：一格进入 LAT 判定时已是沙地 493、它的镜像格还是 0，
-+    // 判定于是分叉）。改成"盖一处、同时在镜像中心盖同一处"，三个数量减半保持密度。
-+    // 本函数只被调用一次，减半不会重复生效。
-+    const bool symBlob = (config_.symmetry != mg::MapSymmetry::None);
-+    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
-+    int countRough = drawBlobCount();                     // 0x5a3b62 var_4C
-+    int countSand = drawBlobCount();                      // 0x5a3b92 var_54
-+    int countGreen = drawBlobCount();                     // 0x5a3bc2 var_3C
-+    if (symBlob)
-+    {
-+        countRough = (countRough + 1) / 2;
-+        countSand = (countSand + 1) / 2;
-+        countGreen = (countGreen + 1) / 2;
-+    }
-+    long long mirroredBlobs = 0;
- 
-     // The clipped Gaussian + PlaceBlob every branch ends with (0x5a3c92 -
-     // 0x5a3d3a, 0x5a3d6d - 0x5a3e16, 0x5a3e49 - 0x5a3ef7): span 20 / centre n,
-@@ -304,7 +346,17 @@
-             size = rng_.Gaussian() * span + mean;
-         }
-         while (size < 4.0 || size > 80.0);
--        PlaceBlob(cell, tileIndex, F2I64(size), slot, false);
-+        // [移植侧] 对称：斑块 = 一组格子 + **同一个无朝向的瓦片号**（PlaceBlob 把
-+        // tileIndex 原样盖在该集合的每一格上），所以镜像那一片就是这一片格子的镜像，
-+        // 不需要（也不该）再跑一次生长。实测过"再跑一次"：生长是按"到种子的距离 + 抖动"
-+        // 的优先堆，前两对斑块能对上，第三对 31 格里就差了 4 格 —— 分歧累积成整图
-+        // 455 对"只有一侧有瓦片"的格子。这里改成把盖出来的格子集合整体镜像盖过去，
-+        // 由构造保证两侧一致；瓦片仍由本算法选出，只是把同一片镜像到另一半。
-+        std::vector<BlobStamp> stamped;
-+        PlaceBlob(cell, tileIndex, F2I64(size), slot, false, false,
-+                  symBlob ? &stamped : nullptr);
-+        if (symBlob)
-+            mirroredBlobs += StampMirroredBlob(stamped, tileIndex);
-     };
- 
-     // ---- 3. the LAT pass (0x5a3bea - 0x5a3f0a) ----------------------------
-@@ -365,6 +417,19 @@
-         }
-     }
- 
-+    if (symBlob)
-+    {
-+        const unsigned long long droppedCells =
-+            MgMirrorStampDroppedCells() - dropped0;
-+        std::fprintf(stderr,
-+                     "[symmetry] lat-blob: %lld blob cells stamped at the mirrored cell "
-+                     "(the mirrored patch is the image of the patch the algorithm chose), "
-+                     "%llu cells dropped from BOTH halves because their image cell is not "
-+                     "a placeholder (it carries art the generator chose for a height "
-+                     "step)\n",
-+                     mirroredBlobs, droppedCells);
-+    }
-+
-     // ---- 4. SetupLAT refresh (0x5a3f19 - 0x5a3f2e) ------------------------
-     {
-         CellIterator it;
-@@ -388,12 +453,25 @@
-     }
-     while (overlayCount > overlayRange);                  // 0x5a4119
- 
-+    // [移植侧] 对称：落点是"全局随机槽号"，两半本来互不成对（这正是地面纹理不对称的
-+    // 主要来源）。改成"撒一处、同时在镜像格撒同类型"，并把目标数量减半以保持密度。
-+    const bool symPlant = (config_.symmetry != mg::MapSymmetry::None);
-+    const int overlayTarget = symPlant ? (overlayCount + 1) / 2 : overlayCount;
-+
-     int successes = 0;                                    // v37
-     int attempts = 0;                                     // v35
-+    long long mirroredPlantings = 0;
-     for (;;)
-     {
--        if (successes >= overlayCount)                    // 0x5a4133
-+        if (successes >= overlayTarget)                   // 0x5a4133
-+        {
-+            if (symPlant)
-+                std::fprintf(stderr,
-+                             "[symmetry] lat-plant: %lld mirrored plantings (same type at the "
-+                             "mirrored cell), target %d of %d\n",
-+                             mirroredPlantings, overlayTarget, overlayCount);
-             return;
-+        }
- 
-         // A random work slot whose packed coords are not (0,0) - no attempt cap
-         // here, unlike the patch loop above (0x5a4141 - 0x5a419c). The index
-@@ -434,7 +512,7 @@
-                 int pick;
-                 do
-                 {
--                    pick = F2I64(uniform() * 5.0);
-+                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 1));
-                 }
-                 while (pick > 4);
-                 type = pick + 168;
-@@ -445,14 +523,34 @@
-                 int pick;
-                 do
-                 {
--                    pick = F2I64(uniform() * 5.0);
-+                    pick = F2I64(MirrorSharedValue(uniform() * 5.0, cell, 2));
-                 }
-                 while (pick > 4);
-                 type = pick + 173;
-             }
- 
-             if (type >= 0)
-+            {
-                 cell->OverlayTypeIndex = type;            // 0x5a424c
-+                if (symPlant)
-+                {
-+                    int mx = 0, my = 0;
-+                    if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                                       ovX, ovY, &mx, &my))
-+                    {
-+                        MapCell* mcell = CellAt(mx, my);
-+                        if (mcell != nullptr && mcell != cell
-+                            && mcell->OverlayTypeIndex == -1
-+                            && !IsStartClearArea(mx, my)
-+                            && (mcell->AltFlags & AltCellFlags_ContainsBuilding) == 0)
-+                        {
-+                            mcell->OverlayTypeIndex = type;
-+                            RecalcAttributes(mcell, -1);
-+                            ++mirroredPlantings;
-+                        }
-+                    }
-+                }
-+            }
- 
-             // 0x5a424f zeroes the cell byte at +0x11E, which the port does not
-             // model and never writes - a no-op here.
-@@ -564,6 +662,9 @@
-         * (static_cast<double>(globalOptions_.vegetation) * 0.01)
-         * static_cast<double>(settings_.MaxTrees));
- 
-+    const bool symPatch = (config_.symmetry != mg::MapSymmetry::None);
-+    long long mirroredPatches = 0;
-+
-     int patches = 0;
-     while (remaining > 0)
-     {
-@@ -612,9 +713,35 @@
-         }
-         while (count < 10.0 || count > 35.0);
- 
-+        // [移植侧] 已测并否决：试过"树斑成对撒 + 预算减半"。PlaceGreenPatches 在引擎里
-+        // 被**调用两次**（vanilla 内联两遍），减半因此执行了两次 -> 树少了一半，图整体变了，
-+        // 指标反而变差（岛屿 21.2%->21.9%、内陆 39.8%->41.1%），所以撤回。
-         remaining -= ScatterTrees(CellAt(chosenX, chosenY), F2I64(count), size);
-         ++patches;
--    }
-+
-+        // [移植侧] 对称：同一片也在镜像格撒一份（同尺寸、同数量）。落点是全局随机槽号，
-+        // 两半本来互不成对，这是地面/植被纹理不对称的一处来源。
-+        // 注意做法：**不减半**，而是把镜像那次撒下的树也计入预算 —— 密度因此不变，也就不必
-+        // 依赖"只减半一次"（本函数在引擎里被调用两次，上次减半被执行两次、树少了一半）。
-+        if (symPatch && chosenX != 0 && chosenY != 0)
-+        {
-+            int mx = 0, my = 0;
-+            if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
-+                               chosenX, chosenY, &mx, &my))
-+            {
-+                MapCell* mc = CellAt(mx, my);
-+                if (mc != nullptr && mc != CellAt(chosenX, chosenY) && IsPlaceholderTile(mc))
-+                {
-+                    remaining -= ScatterTrees(mc, F2I64(count), size);
-+                    ++mirroredPatches;
-+                }
-+            }
-+        }
-+    }
-+    if (symPatch)
-+        std::fprintf(stderr,
-+                     "[symmetry] green-patch: %lld tree patches also laid at the mirrored cell\n",
-+                     mirroredPatches);
- }
- 
- void RandomMapGenerator::ScatterRocks()
-@@ -645,6 +772,8 @@
-     }
- 
-     // ---- 2. the rock pass (0x5a42e7 - 0x5a43e6) ---------------------------
-+    long long mirroredRockCells = 0;
-+    const unsigned long long dropped0 = MgMirrorStampDroppedCells();
-     {
-         CellIterator it;
-         it.Reset(cellSlots_, size_.mapWidth);
-@@ -672,13 +801,13 @@
-             // inline reset has just set to 0.005 on every cell.
-             const double density28 =
-                 *reinterpret_cast<const double*>(w.data + 10);
--            if (uniform() >= density28)
-+            if (MirrorSharedValue(uniform(), cell, 3) >= density28)
-                 continue;
- 
-             double size;
-             do                                              // 0x5a439a - 0x5a43ba
-             {
--                size = rng_.Gaussian() * 15.0 + 20.0;
-+                size = MirrorSharedValue(rng_.Gaussian() * 15.0 + 20.0, cell, 4);
-             }
-             while (size < 4.0 || size > 60.0);
- 
-@@ -686,11 +815,26 @@
-             // vanilla's own expression, which carries the y << 16 term too
-             // (sub_5A3AE0's equivalent is the clean x + (y << 9)); harmless,
-             // since +0x3C is cleared per call and only compared for equality.
-+            // [移植侧] 对称：岩石斑块同样"盖一处、镜像那一片"，理由与 ScatterLATBlobs
-+            // 里的一致（再跑一次生长不保证落在镜像集合上）。ScatterRocks 没走那个 lambda，
-+            // 所以在这里单独做一次镜像盖章。出生点净场与建筑地基的避让是镜像对称的谓词，
-+            // 所以被镜像的那一格集合仍然是合法落点。
-+            const bool symRock = (config_.symmetry != mg::MapSymmetry::None);
-+            std::vector<BlobStamp> stampedRocks;
-             PlaceBlob(cell, roughTileIndex_, F2I64(size),
-                       cell->MapCoords + (static_cast<int>(y) << 9), false,
--                      /*avoidStartClear=*/true);   // [移植侧] 岩石避开出生点
--        }
--    }
-+                      /*avoidStartClear=*/true,
-+                      symRock ? &stampedRocks : nullptr);   // [移植侧] 岩石避开出生点
-+            if (symRock)
-+                mirroredRockCells += StampMirroredBlob(stampedRocks, roughTileIndex_);
-+        }
-+    }
-+
-+    if (config_.symmetry != mg::MapSymmetry::None)
-+        std::fprintf(stderr,
-+                     "[symmetry] rock-mirror: %lld rock blob cells stamped at the "
-+                     "mirrored cell, %llu cells dropped from both halves\n",
-+                     mirroredRockCells, MgMirrorStampDroppedCells() - dropped0);
- 
-     // ---- 3. SetupLAT refresh (0x5a43f5 - 0x5a440a) ------------------------
-     {
-@@ -722,7 +866,8 @@
- // ---------------------------------------------------------------------------
- void RandomMapGenerator::PlaceBlob(MapCell* cell, int tileIndex, int count,
-                                    int slotIndex, bool allowLatToLat,
--                                   bool avoidStartClear)
-+                                   bool avoidStartClear,
-+                                   std::vector<BlobStamp>* stampedOut)
- {
-     if (cell == nullptr || count <= 0)
-         return;
-@@ -818,7 +963,17 @@
-             = (avoidStartClear && IsStartClearArea(cx, cy))
-            || ((CellAt(cx, cy)->AltFlags & AltCellFlags_ContainsBuilding) != 0);
-         if (!stampBlocked)
--            CellAt(cx, cy)->IsoTileTypeIndex = tileIndex;   // 0x5a4d13
-+        {
-+            MapCell* stamped = CellAt(cx, cy);
-+            if (stampedOut != nullptr)
-+            {
-+                BlobStamp s;
-+                s.packed = packed;
-+                s.oldTile = stamped->IsoTileTypeIndex;
-+                stampedOut->push_back(s);
-+            }
-+            stamped->IsoTileTypeIndex = tileIndex;          // 0x5a4d13
-+        }
- 
-         for (int k = 0; k < 8; ++k)                     // 0x5a4d44 - 0x5a4f42
-         {
-@@ -849,10 +1004,14 @@
-             const double dx = static_cast<double>(seedX - nx);
-             const double dy = static_cast<double>(seedY - ny);
-             const double distance = std::sqrt(dx * dx + dy * dy);   // 0x5a4e67
-+            // [移植侧] 对称：斑块按"到种子的距离 + 随机抖动"的优先堆生长 —— 距离镜像不变，
-+            // 但抖动是随机的，于是镜像那份长成**不同形状**（实测：一格进入 LAT 判定时已是
-+            // 沙地、镜像格还是 0，判定分叉）。把抖动按**格**共享：镜像格拿到同一抖动，距离
-+            // 又相同，优先级完全一致，斑块于是长成精确镜像。抽签照抽（随机流不变），只换取值。
-+            const double jitter =
-+                static_cast<double>(static_cast<uint32_t>(rng_.Next())) * 5.0 * kUnitScale;
-             const float key = static_cast<float>(
--                distance
--                + static_cast<double>(static_cast<uint32_t>(rng_.Next()))
--                      * 5.0 * kUnitScale);              // 0x5a4ea2
-+                distance + MirrorSharedValue(jitter, nb, 500));   // 0x5a4ea2
- 
-             pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
-             pool[nextNode].priority = key;
---- a/MapGenerator/MapGenCleanup.cpp
-+++ b/MapGenerator/MapGenCleanup.cpp
-@@ -45,6 +45,8 @@
- 
- void RandomMapGenerator::Cleanup()
- {
-+    shoreRoll_.clear();   // 逐张图清空（浏览器 worker 会连跑多张）
-+    sharedDraws_.clear();
-     // ---- 0x5993BB - 0x5993D0: the work array ------------------------------
-     delete[] workCells_;
-     workCells_ = nullptr;
---- /dev/null
-+++ b/MapGenerator/MapGenSymmetry.cpp
-@@ -0,0 +1,1172 @@
+diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
+--- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-12 10:15:56.688863760 +0800
+@@ -0,0 +1,1296 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1812,6 +2018,15 @@
 +    // Closing the interior therefore needs the generator's own RNG-driven stages to
 +    // choose mirror-consistently - a change inside them (one draw per mirrored pair,
 +    // applied to both cells), not a pass over their output.
++
++    // That is what the three source-side fixes now do (FinalizeElevationSlopes and
++    // MergeSlopeBlocks decide per pair, MakeRegions evens the elevation out again after
++    // FixCliffLevels).  What is left is a handful of pairs the cliff placement chose
++    // differently before any of those ran; those are copied whole, and only those.
++    // See MirrorDivergedCells for why this narrow version works where the half-wide
++    // one did not.
++    if (!MirrorDivergedCells(kind))
++        return false;
 +
 +    // ---- the overlay layer and the building flag ---------------------------
 +    if (!MirrorOverlays(kind))
@@ -2437,6 +2652,121 @@
 +    std::fprintf(stderr, "[symmetry] levels: %s, copied the elevation of %lld cell "
 +                 "pairs before any art was chosen for it\n",
 +                 mg::MapSymmetryName(kind), pairs);
++    return true;
++}
++
++// ===========================================================================
++// MirrorDivergedCells - the last few pairs that still disagree, copied whole.
++//
++// WHY A REPAIR AT THE END IS RIGHT HERE, when the same move was rejected before.
++// The rejected version copied the WHOLE half, or the whole 1x1 texture layer, and it
++// rendered 2.09-2.61% dark: by the end of the pipeline every cell carries art chosen
++// for the height it had, so moving half of them wholesale tears the walls open.  This
++// pass moves only the pairs that ALREADY disagree - measured on the gate's Inland map
++// after the level/sub-frame fixes above, 28 of 13005 - and for those the copy is not a
++// guess: the authoritative cell's configuration is one that already renders correctly
++// (its art covers its own drop), and the image cell is its mirror, so the mirrored
++// piece is the piece the geometry calls for.  The alternative - leaving them - is the
++// 930 px black zigzag in the middle of the map, which is what this closes.
++//
++// A pair counts as diverged when the elevation differs, when the multi-cell FAMILY
++// differs (a cliff against a ramp), or when one side is a placeholder (tile 0 / 0xFFFF)
++// and the other is not.  The tile INDEX differing is normal and not a divergence: a
++// symmetric map is supposed to put the mirrored piece on the image cell.
++//
++// Left-right only: the same pass on the 180 map would have to mirror 16% of the pairs,
++// and mirror.h records why that floor exists.  With symmetry off it returns immediately.
++// ===========================================================================
++bool RandomMapGenerator::MirrorDivergedCells(mg::MapSymmetry kind)
++{
++    if (kind == mg::MapSymmetry::None)
++        return true;
++    if (kind != mg::MapSymmetry::AxialLeftRight)
++        return true;                                  // see the note above
++    if (cellSlots_ == nullptr)
++    {
++        std::fprintf(stderr, "[symmetry] MirrorDivergedCells: no cells allocated\n");
++        return false;
++    }
++
++    // The same five families MirrorTile resolves, so "different family" means the same
++    // thing in both places.
++    auto familyOf = [this](int tile) -> int
++    {
++        if (tile < 0)
++            return -1;
++        if (shorePieces_ >= 0 && tile >= shorePieces_ && tile < shorePieces_ + 42) return 0;
++        if (shoreTileIndex_ >= 0 && tile >= shoreTileIndex_ && tile < shoreTileIndex_ + 40) return 1;
++        if (waterCliffsIndex_ >= 0 && tile >= waterCliffsIndex_ && tile < waterCliffsIndex_ + 28) return 2;
++        if (destroyableCliffsIndex_ >= 0 && tile >= destroyableCliffsIndex_
++            && tile < destroyableCliffsIndex_ + 2) return 3;
++        for (int f = 0; f < 4; ++f)
++            if (waterFamily4Base_[f] >= 0 && tile >= waterFamily4Base_[f]
++                && tile < waterFamily4Base_[f] + 4) return 4 + f;
++        return -1;
++    };
++
++    long long pairs = 0, fixed = 0, keptPiece = 0, levelOnly = 0, familyOnly = 0;
++    for (int y = 0; y < slotRows_; ++y)
++    {
++        for (int x = 0; x < 512; ++x)
++        {
++            MapCell* a = cellSlots_[512 * y + x];
++            if (a == nullptr)
++                continue;
++            int mx = 0, my = 0;
++            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, kind, x, y, &mx, &my))
++                continue;
++            if (!(x < mx || (x == mx && y < my)))
++                continue;                           // `a` is the authoritative side
++            MapCell* b = cellSlots_[512 * my + mx];
++            if (b == nullptr)
++                continue;
++            ++pairs;
++
++            const bool lvlBad = a->Level != b->Level;
++            const bool famBad = familyOf(a->IsoTileTypeIndex) != familyOf(b->IsoTileTypeIndex)
++                || (IsPlaceholderTile(a) != IsPlaceholderTile(b));
++
++            // Every pair whose multi-cell piece is not the one the geometry calls for is
++            // REPAIRED, but only when the piece the image half already holds is a
++            // multi-cell piece too - see the note above MirrorDivergedCells.  Measured:
++            // forcing the MirrorTile answer onto every mismatched multi-cell pair (266-626
++            // pairs per seed) makes the render WORSE on every seed tested (e.g. the gate's
++            // Inland map 0.29% -> 0.44% with a 4502 px black block), because the copied
++            // piece's other footprint cells stay where the image half put them.  So the
++            // test stays at level / family / placeholder, which is the set that measured
++            // better on every seed.
++            if (!lvlBad && !famBad)
++                continue;
++
++            int height = a->Height;
++            bool approx = false;
++            const int partner = MirrorTile(a->IsoTileTypeIndex, kind, &height, &approx);
++            b->IsoTileTypeIndex = (partner >= 0) ? partner : a->IsoTileTypeIndex;
++            b->Height = (partner >= 0) ? height : a->Height;
++            b->Level = a->Level;
++            b->SlopeIndex = mg::ReflectSlope(kind, a->SlopeIndex);
++            b->LandType = a->LandType;
++            b->Passability = a->Passability;
++            b->TubeIndex = a->TubeIndex;
++            b->ZAdjust = a->ZAdjust;
++            b->CellFlags = a->CellFlags;
++            ++fixed;
++            if (partner < 0)
++                ++keptPiece;
++            if (lvlBad)
++                ++levelOnly;
++            else
++                ++familyOnly;
++        }
++    }
++    std::fprintf(stderr, "[symmetry] diverged: %s, %lld of %lld cell pairs still "
++                 "disagreed at the end; %lld copied whole from the authoritative side "
++                 "(%lld on the elevation, %lld on the art family, %lld had no mirrored "
++                 "piece and kept the source piece)\n",
++                 mg::MapSymmetryName(kind), fixed, pairs, fixed, levelOnly, familyOnly,
++                 keptPiece);
 +    return true;
 +}
 +

@@ -46,7 +46,10 @@ void usage()
         "  --size-range     print the legal/useful --size bounds for --land/--players, exit\n"
         "  --out PATH       output map path\n"
         "  --stop-after S   [diagnostic] write the map after stage S and exit;\n"
-        "                   S in special|terrain|water|regions|hills|lats|prune|mirror\n");
+        "                   S in special|terrain|water|regions|hills|lats|prune|mirror\n"
+        "  --diag-hills     [diagnostic] run CreateHills one sub-step at a time and\n"
+        "                   print the mirror divergence after each (pair it with\n"
+        "                   --diag-symmetry); says WHICH step breaks the two halves\n");
 }
 
 // UTF-8 -> UTF-16, via the shim.  The obvious byte-wise cast is WRONG here:
@@ -192,6 +195,10 @@ int main(int argc, char** argv)
     std::string out = "oracle.map";
     int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
     bool diagSym = false;
+    // [诊断用] Run CreateHills one sub-step at a time instead of in one call, so
+    // --diag-symmetry can print the divergence after each of the ten steps and the
+    // one that first moves the two halves apart is visible instead of inferred.
+    bool diagHills = false;
     // [诊断用] Write the map after one named stage and stop there, so a render of
     // every intermediate state can say WHICH stage leaves a height step without art
     // covering it (see docs in verify_symmetry.py / mirror.h).  Empty = run to the end.
@@ -222,6 +229,7 @@ int main(int argc, char** argv)
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
         else if (a == "--diag-symmetry") diagSym = true;
+        else if (a == "--diag-hills") diagHills = true;
         else if (a == "--stop-after") stopAfter = next();
         else if (a == "--seed") seed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--map-seed") mapSeed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
@@ -422,7 +430,24 @@ int main(int argc, char** argv)
     }
     rmg.RecalculateCellAttributes();                      // 0x598FB8
     rmg.RecalculateCellAttributes();                      // 0x59912A
-    rmg.CreateHills();                                    // 0x599171
+    if (diagHills)
+    {
+        // Exactly CreateHills' own body, one call at a time (see MapGenHills.cpp).
+        // Only the probe path takes this route; without --diag-hills the single call
+        // below is what runs and the map is byte-identical to before.
+        rmg.MarkTechBuildingProtection();   diagSymmetry(rmg, cfg, "hills: MarkTechBuildingProtection");
+        rmg.MarkHillProtection();           diagSymmetry(rmg, cfg, "hills: MarkHillProtection");
+        rmg.MirrorWorkMarks(cfg.symmetry);  diagSymmetry(rmg, cfg, "hills: MirrorWorkMarks");
+        rmg.BuildHillHeightField();         diagSymmetry(rmg, cfg, "hills: BuildHillHeightField");
+        rmg.BuildElevationGrid();           diagSymmetry(rmg, cfg, "hills: BuildElevationGrid");
+        rmg.ApplyElevationLevels();         diagSymmetry(rmg, cfg, "hills: ApplyElevationLevels");
+        rmg.MirrorElevationGrid();          diagSymmetry(rmg, cfg, "hills: MirrorElevationGrid");
+        rmg.FinalizeElevationSlopes();      diagSymmetry(rmg, cfg, "hills: FinalizeElevationSlopes");
+        rmg.MergeSlopeBlocks();             diagSymmetry(rmg, cfg, "hills: MergeSlopeBlocks");
+        rmg.RemoveCliffsOverRamps();        diagSymmetry(rmg, cfg, "hills: RemoveCliffsOverRamps");
+    }
+    else
+        rmg.CreateHills();                                // 0x599171
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateHills");
     if (stopHere("hills")) return emit();
     // [诊断用] CreateLATs is four calls in a fixed order; --diag-symmetry runs
