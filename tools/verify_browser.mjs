@@ -119,8 +119,10 @@ try {
 
   // The 对称 select is a PRODUCT decision, not "everything the engine can do".
   //
-  // The page offers exactly three values: 0 (off), 2 (180-degree central symmetry)
-  // and ? (随机 - rolled at generate time).
+  // The page offers exactly three values: 0 (off), 1 (left-right axial symmetry) and
+  // ? (随机 - rolled at generate time).  The engine also implements 180 and top-bottom
+  // and verify_symmetry.py keeps testing all three; the page exposes the one the user
+  // asked for.
   // The engine still implements left-right (1) and top-bottom (3) - mirror.h declares
   // the max, and the CLI/API accept them - but the page deliberately exposes one
   // optional kind, and it must be the one that actually works: the option has to be
@@ -139,10 +141,10 @@ try {
     };
   });
   const declaredMax = declaredSymmetryMax();
-  check('the page offers exactly 无 / 180° / 随机 for 对称, all enabled',
-        sym !== null && sym.values.join(',') === '0,2,?'
+  check('the page offers exactly 无 / 左右轴对称 / 随机 for 对称, all enabled',
+        sym !== null && sym.values.join(',') === '0,1,?'
           && sym.disabled.every((d) => d === false) && sym.value === '0'
-          && declaredMax !== null && declaredMax >= 2,
+          && declaredMax !== null && declaredMax >= 1,
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
               + `selected ${sym.value} (mirror.h declares 0..${declaredMax})`
             : 'no #symmetry select');
@@ -425,66 +427,47 @@ try {
   // The 对称 select has to reach the ENGINE through the worker, not merely exist.
   // The same rectangle is generated again with only the symmetry changed, so the two
   // maps are directly comparable, and the [Waypoints] section is the smallest part of
-  // the file that proves the rotation applied.
+  // the file that proves the mirror applied.
   //
-  // The page's one optional kind is 180 (value 2), so the mapping to check is the one
-  // engine/src/mirror.h uses for it - a PURE 180-degree rotation of the cell grid,
-  // (x, y) -> (Wp + Hp - x, Wp + Hp - y), written out here independently.  The old
-  // form of this check swapped the two packed fields, which is left-right, not 180;
-  // it would pass for the wrong kind.
+  // The page's one optional kind is 左右轴对称 (value 1), whose cell map in
+  // engine/src/mirror.h is the pure swap of the two cell coordinates.
   const readBlob = () => page.evaluate(async () => {
     if (!window.__mapBlob) return null;
     return Array.from(new Uint8Array(await window.__mapBlob.arrayBuffer()));
   });
   const plain = await readBlob();
-  await page.select('#symmetry', '2');
+  await page.select('#symmetry', '1');
   await page.evaluate(() => { window.__mapBlob = null; });
   await page.click('#go');
   await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
-  const rotatedBytes = await readBlob();
+  const mirroredBytes = await readBlob();
 
   const textOf = (bytes) => (bytes ? new TextDecoder('latin1').decode(Buffer.from(bytes)) : '');
-  const header = (bytes) => {
-    const t = textOf(bytes);
-    const w = Number((t.match(/^Width=(\d+)/m) || [])[1]);
-    const h = Number((t.match(/^Height=(\d+)/m) || [])[1]);
-    return { w, h };
-  };
   const waypoints = (bytes) => {
     const section = (textOf(bytes).split('[Waypoints]')[1] || '').split('\n\n')[0];
     return section.split('\n').filter((l) => l.includes('='))
       .map((l) => l.split('=').map((n) => Number(n)));
   };
   const wa = waypoints(plain);
-  const wb = waypoints(rotatedBytes);
-  // The writer stores start points as X + 1000*Y (MapGenMapFile.cpp:1092).
-  const { w: Wp, h: Hp } = header(rotatedBytes);
-  const rotate = (packed) => {
-    const x = packed % 1000, y = Math.floor(packed / 1000);
-    return (Wp + Hp - x) + 1000 * (Wp + Hp - y);
-  };
-  // What the symmetric map must show is NOT "each waypoint equals the rotation of the
+  const wb = waypoints(mirroredBytes);
+  // The writer stores start points as X + 1000*Y (MapGenMapFile.cpp:1092), and the
+  // left-right cell map is the PURE SWAP (engine/src/mirror.h:566, and the same
+  // formula is written out independently in tools/verify_symmetry.py's mirror_cell).
+  const mirror = (packed) => (packed % 1000) * 1000 + Math.floor(packed / 1000);
+  // What the symmetric map must show is NOT "each waypoint equals the mirror of the
   // plain map's own".  A pairwise swap produces exactly that, and a swap is not a
   // symmetric map: it preserves whether a pair agrees.  The property is that the
-  // symmetric map's own start points come in rotated pairs, with the count preserved
-  // (a 2-player map has to stay a 2-player map).
-  //
-  // A start point whose image falls outside the header rectangle is allowed through:
-  // the 180 cell map misses the hidden border band (mirror.h), and a map whose starts
-  // sit there would otherwise fail for the wrong reason.
+  // symmetric map's own start points come in mirror pairs, with the count preserved
+  // (a 2-player map has to stay a 2-player map).  The swap is its own inverse, so the
+  // closed-set test below needs no range exception: every image is inside the map.
   const cells = wb.map(([, v]) => v);
-  const inRange = (packed) => {
-    const x = packed % 1000, y = Math.floor(packed / 1000);
-    return x >= 1 && x <= Wp && y >= 1 && y <= Hp;
-  };
-  const paired = cells.length > 0
-    && cells.every((v) => cells.includes(rotate(v)) || !inRange(rotate(v)));
-  check("the page's 对称 option reaches the engine (180)",
+  const paired = cells.length > 0 && cells.every((v) => cells.includes(mirror(v)));
+  check("the page's 对称 option reaches the engine (左右轴对称)",
         wb.length > 0 && wb.length === wa.length && paired
-          && Buffer.compare(Buffer.from(rotatedBytes || []), Buffer.from(plain || [])) !== 0,
+          && Buffer.compare(Buffer.from(mirroredBytes || []), Buffer.from(plain || [])) !== 0,
         `waypoints ${JSON.stringify(wa)} -> ${JSON.stringify(wb)} ` +
-        `(rotated-paired within the symmetric map: ${paired}, count, differs: ` +
-        `${Buffer.compare(Buffer.from(rotatedBytes || []), Buffer.from(plain || [])) !== 0})`);
+        `(mirror-paired within the symmetric map: ${paired}, count, differs: ` +
+        `${Buffer.compare(Buffer.from(mirroredBytes || []), Buffer.from(plain || [])) !== 0})`);
 
   // ---- 随机 + 自动渲染, end to end -------------------------------------------
   //

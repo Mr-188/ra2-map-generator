@@ -108,24 +108,24 @@ def main() -> int:
             print("  env options  : 0/1/2/3 + 随机 (4 Mountainous not offered: "
                   "byte-identical to 3 Inland)")
 
-    # The 对称 select is one optional kind, by product decision: 180 (value 2).  The
-    # engine still implements left-right (1) and top-bottom (3) - mirror.h declares
-    # them, and mgconsole/mg_generate accept them - so this is a UI contract, not an
-    # engine one.  Pinned because "the page grew a menu again" is exactly the change
-    # that would go unnoticed until someone asked why there are four choices.
+    # The 对称 select is one optional kind, by product decision: left-right (value 1).
+    # The engine also implements rotational 180 (2) and top-bottom (3) - mirror.h
+    # declares them, mgconsole/mg_generate accept them, and tools/verify_symmetry.py
+    # tests all three - so this is a UI contract, not an engine one.  Pinned because
+    # "the page grew a menu again" is exactly the change that would go unnoticed.
     sym_block = re.search(r'<select id="symmetry".*?</select>', page, re.S)
     if sym_block is None:
         failures.append("index.html has no #symmetry select")
     else:
         values = re.findall(r'<option value="([^"]*)"', sym_block.group(0))
-        if values != ["0", "2", "?"]:
+        if values != ["0", "1", "?"]:
             failures.append(
                 f"the #symmetry select offers {values}; it must be exactly 0 (off) and "
-                "2 (180° 中心对称) - the page exposes a single optional kind by product "
-                "decision, and 180 is the kind it exposes (plus one '?' = 随机). "
-                "The engine keeps left-right and top-bottom for the CLI/API")
+                "1 (左右轴对称) - the page exposes a single optional kind by product "
+                "decision, and left-right is the kind it exposes (plus one '?' = 随机). "
+                "The engine keeps 180 and top-bottom for the CLI/API")
         else:
-            print("  symmetry     : 0 (无) / 2 (180° 中心对称) / ? (随机) - single "
+            print("  symmetry     : 0 (无) / 1 (左右轴对称) / ? (随机) - single "
                   "optional kind, rollable")
 
     # 地图类型 gets no 随机 entry and no roll: multiplayer (.yrm) is the layout the

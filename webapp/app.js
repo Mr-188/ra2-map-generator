@@ -106,9 +106,9 @@ let rectMaxSum = 495;      // replaced by the engine's MaxRectCellSum() at boot
 // click rolls again, and the values that were used are shown in #rolled instead.
 const RANDOM = '?';
 
-let symmetryMax = 2;       // replaced by the engine's mg_symmetry_max() at boot; the
-                           // page offers 无(0) and 180°(2), so 2 is the value that has
-                           // to stay usable - syncSymmetry() disables anything above
+let symmetryMax = 1;       // replaced by the engine's mg_symmetry_max() at boot; the
+                           // page offers 无(0) and 左右轴对称(1), so 1 is the value that
+                           // has to stay usable - syncSymmetry() disables anything above
                            // what the engine reports
 let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × 宽)
 // The engine's own cell count for one explicit pair, as { w, h, cells }.  w/h are
@@ -260,11 +260,12 @@ function syncSize() {
     : '';
 }
 
-// The page offers 无 / 180° 中心对称 (one optional kind, by product decision; the
-// engine also implements left-right and top-bottom and the CLI/API still take them).
-// Anything above what the engine reports gets disabled rather than offered and then
-// refused - so if 180 were ever not implemented the option would grey out instead of
-// producing a map it cannot make.
+// The page offers 无 / 左右轴对称 (one optional kind, by product decision; the engine
+// also implements 180 and top-bottom and the CLI/API still take them, and
+// tools/verify_symmetry.py keeps testing all three).  Anything above what the engine
+// reports gets disabled rather than offered and then refused - so if left-right were
+// ever not implemented the option would grey out instead of producing a map it cannot
+// make.
 function syncSymmetry() {
   const sel = el('symmetry');
   for (const opt of sel.options) {
@@ -868,8 +869,8 @@ goBtn.addEventListener('click', () => {
     // 0/0 tells the engine to use `size`; anything else is an explicit rectangle.
     width: rect.w,
     height: rect.h,
-    // 0 = none, 2 = 180° central symmetry (the page's single optional kind).  The
-    // engine also implements left-right (1) and top-bottom (3) for the CLI/API;
+    // 0 = none, 1 = left-right axial symmetry (the page's single optional kind).  The
+    // engine also implements 180 (2) and top-bottom (3) for the CLI/API;
     // syncSymmetry() disables anything above what the engine reports.
     symmetry: Number(roll.chosen.symmetry) || 0,
     outPath,

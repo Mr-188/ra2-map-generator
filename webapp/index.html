@@ -644,17 +644,17 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="symmetry">对称</label>
-          <!-- One optional kind, by product decision: 180-degree central symmetry.
-               The engine still implements left-right (1) and top-bottom (3) - mirror.h
-               declares them and mgconsole/--symmetry and mg_generate accept them - but
-               the page deliberately exposes a single switch, so the choice is "off" or
-               "the map is rotated 180 degrees", not a menu of four.  app.js still
-               disables any value above the engine's mg_symmetry_max(), so if 180 were
-               ever not implemented the option would grey out instead of lying. -->
+          <!-- One optional kind, by product decision: LEFT-RIGHT axial symmetry (1).
+               The engine also implements rotational 180 (2) and top-bottom (3) - mirror.h
+               declares them, mgconsole --symmetry and mg_generate take them, and
+               tools/verify_symmetry.py keeps testing all three - but the page exposes
+               the one the user asked for, plus 随机.  app.js still disables any value
+               above the engine's mg_symmetry_max(), so if 1 were ever not implemented
+               the option would grey out instead of lying. -->
           <select id="symmetry"
-                  title="180° 中心对称：整张图绕中心旋转 180°（地图自身与它的旋转逐格一致）。">
+                  title="左右轴对称：沿竖直中轴把两半对折重合（地图自身与它的镜像逐格一致）。">
             <option value="0" selected>无</option>
-            <option value="2">180° 中心对称</option>
+            <option value="1">左右轴对称</option>
             <option value="?">随机</option>
           </select>
         </div>
