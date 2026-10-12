@@ -426,12 +426,22 @@ a.dl svg { width: 12px; height: 12px; }
       <div class="grid">
 
         <div class="cell"><label for="land">环境</label>
-          <select id="land">
+          <!-- 山地(value 4) deliberately not listed: in this engine it is the SAME map
+               as 内陆(3).  Every land-type branch treats 3 and 4 together
+               (MapGenMaking.cpp:65, MapGenRegion.cpp:91, MapGen.cpp:1702, ...), and the
+               one place that looks land-type-shaped - the option tables in
+               MapGenStartpoint.cpp:684-700, whose rows 3 and 4 do differ - is indexed by
+               the ROLLED option n3 (RandomRanged(1,4) -> 1..3, MapGenStartpoint.cpp:670),
+               so row 4 is unreachable and row 3 is shared by both.  Measured: --land 3
+               and --land 4 are byte-identical over seeds, sizes and symmetry kinds.
+               The engine still accepts 4 (CLI/API alias), the page just does not offer a
+               second name for the same map. -->
+          <select id="land"
+                  title="内陆与山地在本引擎里是同一张图，所以只列内陆（引擎仍接受 --land 4 作为别名）。">
             <option value="0">群岛</option>
             <option value="1" selected>大岛屿</option>
             <option value="2">大岛屿群</option>
             <option value="3">内陆</option>
-            <option value="4">山地</option>
           </select>
         </div>
 

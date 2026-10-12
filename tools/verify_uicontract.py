@@ -76,6 +76,36 @@ def main() -> int:
                         "script and cannot use one")
     print("  worker mode  : classic, no static imports")
 
+    # The page's 环境 select must not offer the same map twice.
+    #
+    # Mountainous (value 4) is deliberately NOT listed: every land-type branch in the
+    # engine treats 3 and 4 together (MapGenMaking.cpp:65, MapGenRegion.cpp:91,
+    # MapGen.cpp:1702, MapGenStartpoint.cpp:2240-2241, ...), and the one table that
+    # looks land-type-shaped - the option ranges in MapGenStartpoint.cpp:684-700, whose
+    # rows 3 and 4 DO differ - is indexed by the ROLLED option n3
+    # (RandomRanged(1,4) -> 1..3, MapGenStartpoint.cpp:670), so row 4 is unreachable and
+    # row 3 is shared by both.  Measured: --land 3 and --land 4 are byte-identical over
+    # seeds, sizes and symmetry kinds.
+    #
+    # Two names for one map is what a page must not offer, so this pins the list.  The
+    # engine API keeps accepting 4 as an alias (mgconsole --land 4, mg_generate(4)); that
+    # is a compatibility decision, not a second environment.
+    page = (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+    land_block = re.search(r'<select id="land".*?</select>', page, re.S)
+    if land_block is None:
+        failures.append("index.html has no #land select")
+    else:
+        values = re.findall(r'<option value="(\d+)"', land_block.group(0))
+        if values != ["0", "1", "2", "3"]:
+            failures.append(
+                f"the #land select offers {values}; it must be exactly 0..3. "
+                "4 (Mountainous) is the same map as 3 - every land-type branch treats "
+                "them together and the option tables are indexed by the rolled n3, not "
+                "by the land type - so offering it is a second name for one map")
+        else:
+            print("  env options  : 0/1/2/3 (4 Mountainous not offered: byte-identical "
+                  "to 3 Inland)")
+
     print()
     if failures:
         print(f"FAILED {len(failures)} checks")

@@ -64,7 +64,9 @@ let booted = false;
 //                                [0,25] lies entirely below where it binds
 //   TeamContinent 5/5
 //   Inland        5/5  (rivers and lakes scale with it)
-//   Mountainous   5/5  (and byte-identical to Inland)
+//   Mountainous   5/5  (and byte-identical to Inland - see the note on the
+//                       #land select in index.html: the engine accepts 4, the
+//                       page does not offer it)
 //
 // So the page sends -1, which the engine reads as "use the rolled global value"
 // -- exactly what the original does on every terrain.  The knob is absent
@@ -88,10 +90,12 @@ const WATER_FROM_GLOBAL_ROLL = -1;
 //   sizeMax[land][players - 2]    the last value that changes the map size
 //   sizeLimit[land][players - 2]  the last value the writer will not truncate
 //
-// For 内陆/山地 the two are equal (no clamp, so the slider keeps growing until
+// For 内陆 the two are equal (no clamp, so the slider keeps growing until
 // the overlay grid stops it); for the other three sizeMax is 4 and sizeLimit is
 // the grid bound, so anything past sizeMax is legal but redundant -- which is
-// why the slider's max is sizeMax and the note explains the cap.
+// why the slider's max is sizeMax and the note explains the cap.  The tables are
+// still filled for all five engine land types (the API keeps accepting 4); the
+// page just no longer offers 山地 as a second name for 内陆.
 let sizeMax = null;
 let sizeLimit = null;
 let sizeStep = 0.1;        // replaced by the engine's kSizeSliderStep at boot
@@ -195,11 +199,11 @@ function syncSize() {
   // Only the three clamped land types need the explanation, and the way to tell
   // them apart needs no land-type knowledge in the page: a clamped map stops
   // growing while the overlay grid is still far away, so its legal bound is
-  // hundreds of steps above its useful one.  On Inland/Mountainous the two differ
-  // only by the last quantisation step (0.2 at most).  Comparing on that gap is
-  // why this text is not shown on a map that does have head-room.
+  // hundreds of steps above its useful one.  On Inland the two differ only by the
+  // last quantisation step (0.2 at most).  Comparing on that gap is why this text
+  // is not shown on a map that does have head-room.
   sizeNote.textContent = (legal - useful) > 1
-    ? '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆与山地没有这个上限。'
+    ? '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆没有这个上限。'
     : '';
 }
 

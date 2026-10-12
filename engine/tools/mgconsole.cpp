@@ -28,6 +28,10 @@ void usage()
     std::fprintf(stderr,
         "usage: mgconsole --root <extract dir> [options]\n"
         "  --land 0..4      Archipelago/Continent/TeamContinent/Inland/Mountainous\n"
+        "                   (4 Mountainous is BYTE-IDENTICAL to 3 Inland here: every\n"
+        "                   land-type branch treats them together and the option tables\n"
+        "                   are indexed by the rolled n3 - see MapGenStartpoint.cpp:670.\n"
+        "                   The page therefore offers 内陆 only; 4 stays as an alias.)\n"
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
