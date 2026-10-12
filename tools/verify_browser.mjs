@@ -16,6 +16,27 @@ import puppeteer from 'puppeteer-core';
 
 const ROOT = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
 
+// The symmetry kinds the engine DECLARES (engine/src/mirror.h), read rather than
+// hard-coded: the page's <select> must offer exactly 0..max with none disabled, and
+// a hard-coded list goes stale the moment a kind ships (measured: top-bottom landed
+// in the header and in the page's options while this file still expected
+// "0,1,2", so the suite went red over a feature that worked).
+function declaredSymmetryMax() {
+  try {
+    // ROOT is the repository root: new URL('.') ends in a slash, so dirname drops 'tools/'.
+    const header = fs.readFileSync(path.join(ROOT, 'engine', 'src', 'mirror.h'), 'utf8');
+    const enumBody = header.split('enum class MapSymmetry')[1]?.split('};')[0] ?? '';
+    const values = {};
+    for (const m of enumBody.matchAll(/(\w+)\s*=\s*(\d+)/g)) values[m[1]] = Number(m[2]);
+    const impl = header.match(
+      /kMapSymmetryImplementedMax\s*=\s*static_cast<int>\(\s*MapSymmetry::(\w+)\s*\)/);
+    if (!impl || values[impl[1]] === undefined) return null;
+    return values[impl[1]];
+  } catch {
+    return null;
+  }
+}
+
 function parseArgs(argv) {
   const out = { url: 'http://127.0.0.1:8017/', timeout: 300000 };
   for (let i = 2; i < argv.length; i += 2) out[argv[i].replace(/^--/, '')] = argv[i + 1];
@@ -97,10 +118,10 @@ try {
   check('worker is classic', workers.length > 0, workers.join(','));
 
   // The 对称 select must be driven by the engine's own answer: the ready message
-  // carries mg_symmetry_max() (= 2: left-right and 180 degrees both apply now), so
-  // all three options have to end up usable.  This is the point of the plumbing:
-  // the page must not offer a kind the generator then refuses, and must not hide
-  // one it can do.
+  // carries mg_symmetry_max(), so the page has to end up offering exactly the kinds
+  // 0..max with none of them disabled.  This is the point of the plumbing: the page
+  // must not offer a kind the generator then refuses, and must not hide one it can
+  // do.  "max" comes from mirror.h, not from this file - see declaredSymmetryMax.
   const sym = await page.evaluate(() => {
     const s = document.getElementById('symmetry');
     if (!s) return null;
@@ -110,11 +131,15 @@ try {
       value: s.value,
     };
   });
+  const wantedMax = declaredSymmetryMax();
+  const wanted = wantedMax === null ? null
+    : Array.from({ length: wantedMax + 1 }, (_, i) => String(i)).join(',');
   check('the page offers exactly the symmetry the engine implements',
-        sym !== null && sym.values.join(',') === '0,1,2'
+        sym !== null && wanted !== null && sym.values.join(',') === wanted
           && sym.disabled.every((d) => d === false) && sym.value === '0',
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
-              + `selected ${sym.value}` : 'no #symmetry select');
+              + `selected ${sym.value} (mirror.h declares 0..${wantedMax})`
+            : 'no #symmetry select');
 
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
   // ignores it and the FileList stays empty.  Instead fetch the archives over

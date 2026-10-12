@@ -289,11 +289,32 @@ const rectCells = Module.cwrap('mg_rect_cells', 'number', ['number', 'number']);
 // ---- 7c. the symmetry parameter -------------------------------------------
 //
 // The page's 对称 select reaches the engine through here, so this is where the
-// plumbing is pinned: the export the page sizes its options from, the two values
-// it offers, and the refusal of anything past them.
+// plumbing is pinned: the export the page sizes its options from, the values it
+// offers, and the refusal of anything past them.
+//
+// The expected maximum is READ OFF the engine's declaration (engine/src/mirror.h)
+// instead of being hard-coded.  What this check is FOR is "the header declares X,
+// the wasm entry exposes X, and X+1 is refused" - and a hard-coded number stops
+// being that the moment a new kind ships.  Measured: the top-bottom kind landed in
+// the header and in the page's <select>, while this line still said 2, and the
+// suite went red over a feature that worked.
+function declaredSymmetryMax() {
+  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const header = fs.readFileSync(path.join(root, 'engine', 'src', 'mirror.h'), 'utf8');
+  const enumBody = header.split('enum class MapSymmetry')[1]?.split('};')[0] ?? '';
+  const values = {};
+  for (const m of enumBody.matchAll(/(\w+)\s*=\s*(\d+)/g)) values[m[1]] = Number(m[2]);
+  const impl = header.match(
+    /kMapSymmetryImplementedMax\s*=\s*static_cast<int>\(\s*MapSymmetry::(\w+)\s*\)/);
+  if (!impl || values[impl[1]] === undefined) return null;
+  return values[impl[1]];
+}
+
+const declaredMax = declaredSymmetryMax();
 const symmetryMax = Module.cwrap('mg_symmetry_max', 'number', [])();
-check('mg_symmetry_max reports the implemented kinds', symmetryMax === 2,
-      `max=${symmetryMax}`);
+check('mg_symmetry_max reports the implemented kinds',
+      declaredMax !== null && symmetryMax === declaredMax,
+      `mirror.h declares ${declaredMax}, mg_symmetry_max reports ${symmetryMax}`);
 {
   const symPath = '/mg/sym.yrm';
   const rcSym = api.generate(args.land, args.theater, args.time, args.size, args.players,
@@ -330,11 +351,14 @@ check('mg_symmetry_max reports the implemented kinds', symmetryMax === 2,
         rcRot === 0 ? `md5=${md5(readOut(rotPath)).slice(0, 16)}` : 'no output');
 
   // A kind past the implemented range must be REFUSED, not silently ignored - the
-  // page disables it, but the engine is the one that has to be sure.
+  // page disables it, but the engine is the one that has to be sure.  "Past the
+  // range" is declaredMax + 1, so this keeps testing one step beyond whatever the
+  // header offers today.
   const rcBad = api.generate(args.land, args.theater, args.time, args.size, args.players,
-                             1, -1, args.seed >>> 0, 0, 1, 0, 0, 3, '/mg/bad.yrm');
+                             1, -1, args.seed >>> 0, 0, 1, 0, 0,
+                             (declaredMax ?? 0) + 1, '/mg/bad.yrm');
   check('a symmetry past the implemented range is refused', rcBad !== 0,
-        `rc=${rcBad} ${api.error()}`);
+        `symmetry=${(declaredMax ?? 0) + 1} rc=${rcBad} ${api.error()}`);
 }
 
 // ---- 8. the render half, through the same flattening the worker does -----
