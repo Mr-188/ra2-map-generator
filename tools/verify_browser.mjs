@@ -311,8 +311,9 @@ try {
     () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
     { timeout: 180000 }).catch(() => {});
   const cacheAfterPick = await page.$eval('#cache-note', (e) => e.textContent.trim());
-  check('picking a folder alone fills the cache (no generate needed)',
-        /已缓存素材/.test(cacheAfterPick), cacheAfterPick);
+  check('picking a folder alone fills the cache for BOTH theatres (no generate needed)',
+        /已缓存素材/.test(cacheAfterPick) && /温和/.test(cacheAfterPick)
+          && /雪地/.test(cacheAfterPick), cacheAfterPick);
 
   console.log('  generate');
   await page.click('#go');
@@ -569,6 +570,12 @@ try {
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForReady();
+  // The cache lookup is a worker round trip: wait for the section to say it found one
+  // rather than reading the note the instant the page is ready (it would read
+  // "尚未缓存" and the assertion below would fail for a timing reason).
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 60000 }).catch(() => {});
   await installCapture();
   await setFixed();
   const afterReload = await page.evaluate(() => ({
@@ -586,6 +593,23 @@ try {
           && afterReload.picked === '',
         `note="${afterReload.note}" go=${afterReload.goEnabled} picked="${afterReload.picked}" `
           + `same=${same} (${withDir?.length}B vs ${fromCache?.length}B)`);
+
+  // The reason the cache holds BOTH theatres: 随机 in the 剧场 row (or a manual switch)
+  // must not send the user back to the folder picker.  Nothing is injected anywhere in
+  // this block - the cache written from the single pick above is the only asset source.
+  await page.select('#theater', '1');
+  await installCapture();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const snowBytes = await readBlob();
+  const snowNote = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  check('the cache covers 雪地 as well: switch the theatre, still no directory',
+        !!snowBytes && snowBytes.length > 0
+          && Buffer.compare(Buffer.from(snowBytes), Buffer.from(fromCache || [])) !== 0
+          && /温和/.test(snowNote) && /雪地/.test(snowNote),
+        `${snowBytes?.length}B, differs from 温和: `
+          + `${Buffer.compare(Buffer.from(snowBytes || []), Buffer.from(fromCache || [])) !== 0}, `
+          + `note="${snowNote.slice(0, 60)}…"`);
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);

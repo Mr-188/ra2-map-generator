@@ -120,14 +120,16 @@ let autoRender = false;    // the 设置 drawer's 自动渲染地图 switch (per
 // theatre -> cached-extraction manifest ({files, bytes, savedAt}) from the worker.
 // A cache hit means the page can generate (and render) with NO game directory and
 // no permission prompt; see the OPFS section in worker.js.
-const cacheInfo = {};
+const cacheInfo = { manifest: null };
 let cacheRestorePending = false;
 // 'idle' | 'running' | 'ok' | 'failed' | 'unsupported' - what to say about the
 // browser-side cache in the 游戏目录 section.
 let cacheState = 'idle';
 let cacheFailReason = '';
 let extractInFlight = false;   // an extraction (which also fills the cache) is running
-let extractedTheater = null;   // the theatre the worker's tree currently holds
+// The theatres the worker's tree currently holds (mg_extract accumulates, and a folder
+// pick asks for all of them).
+const extractedTheaters = new Set();
 const SETTINGS_KEY = 'ra2mg.settings';
 const rolledEl = el('rolled');
 
@@ -335,25 +337,29 @@ worker.addEventListener('message', async (event) => {
       refreshGoButton();
       break;
     case 'cache-info': {
-      if (msg.theater === currentTheater()) delete cacheInfo.__pending;
-      cacheInfo[msg.theater] = msg.manifest || null;
-      if (msg.theater === currentTheater()) renderCacheNote();
+      delete cacheInfo.__pending;
+      cacheInfo.manifest = msg.manifest || null;
+      renderCacheNote();
       break;
     }
     case 'cache-saved': {
       cacheState = 'ok';
-      cacheInfo[msg.theater] = { files: msg.files, bytes: msg.bytes, savedAt: msg.savedAt };
-      if (msg.theater === currentTheater()) renderCacheNote();
-      mark(`cache: 素材已缓存（${fmtBytes(msg.bytes)}），下次打开不再需要游戏目录`);
+      cacheInfo.manifest = { version: msg.version, files: msg.files, bytes: msg.bytes,
+                             savedAt: msg.savedAt, theaters: msg.theaters };
+      renderCacheNote();
+      mark(`cache: 素材已缓存（${theaterNames(msg.theaters)} · ${fmtBytes(msg.bytes)}），`
+           + '下次打开不再需要游戏目录');
       break;
     }
     case 'cache-miss': {
-      cacheInfo[msg.theater] = null;
-      if (msg.theater === currentTheater()) renderCacheNote();
+      const uncovered = !!(msg.detail && msg.detail.uncovered);
+      if (!uncovered) cacheInfo.manifest = null;     // nothing usable: really a miss
+      renderCacheNote();
       break;
     }
     case 'cache-cleared': {
-      for (const k of Object.keys(cacheInfo)) if (k !== '__pending') delete cacheInfo[k];
+      cacheInfo.manifest = null;
+      extractedTheaters.clear();
       renderCacheNote();
       setStatus(msg.ok ? '已清除浏览器缓存。' : '清除缓存失败（可能本来就没有）。', msg.ok ? 'ok' : '');
       break;
@@ -365,13 +371,19 @@ worker.addEventListener('message', async (event) => {
     case 'progress':
       setStatus(PROGRESS[msg.stage] || '处理中……');
       break;
-    case 'assets-ready':
+    case 'assets-ready': {
       extractInFlight = false;
-      extractedTheater = (typeof msg.theater === 'number') ? msg.theater : null;
+      extractedTheaters.clear();
+      for (const th of (msg.theaters || [msg.theater])) {
+        if (typeof th === 'number') extractedTheaters.add(th);
+      }
       if (cacheState === 'running') cacheState = 'idle';
       renderCacheNote();
-      setStatus(msg.fromCache ? '素材已从浏览器缓存恢复。' : '素材已就绪（正在写缓存）。');
+      setStatus(msg.fromCache
+        ? `素材已从浏览器缓存恢复（${theaterNames(msg.theaters)}）。`
+        : '素材已就绪（正在写缓存）。');
       break;
+    }
     case 'cache-unavailable':
       cacheState = 'unsupported';
       renderCacheNote();
@@ -610,15 +622,31 @@ function fmtBytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 function currentTheater() { return Number(el('theater').value); }
-function cachedNow() { return cacheInfo[currentTheater()] || null; }
-// What the generate button needs: either the picked archives (this visit) or the
-// cached extraction (any visit after the first).
-function hasAssets() { return archives !== null || !!cachedNow(); }
+// ONE cache holding the whole extracted tree (both theatres - see worker.js).  With a
+// per-theatre cache, 随机 in the 剧场 row could roll a theatre that was not cached yet
+// and make the user pick the folder again; a folder pick now extracts both.
+function cacheManifestNow() { return cacheInfo.manifest || null; }
+function coversTheater(theater) {
+  const man = cacheManifestNow();
+  if (!man) return false;
+  if (!Array.isArray(man.theaters)) return true;      // a manifest from before v2
+  return man.theaters.includes(theater);
+}
+function theaterNames(list) {
+  return (list || []).map((n) => (n === 1 ? '雪地' : '温和')).join(' + ') || '未知';
+}
+// What the generate button needs: either the picked archives (this visit) or a cache
+// that covers the theatre the current selection names.
+function hasAssets() {
+  if (archives !== null) return true;
+  const t = currentTheater();
+  return Number.isFinite(t) ? coversTheater(t) : !!cacheManifestNow();
+}
 function refreshGoButton() { if (booted) goBtn.disabled = !hasAssets(); }
 function renderCacheNote() {
-  const man = cachedNow();
+  const man = cacheManifestNow();
   const name = el('theater').selectedOptions[0]?.textContent || `theater ${currentTheater()}`;
-  const pending = cacheInfo.__pending ? `（正在查看${cacheInfo.__pending}的缓存……）` : '';
+  const pending = cacheInfo.__pending ? '（正在查看缓存……）' : '';
   if (cacheState === 'unsupported') {
     cacheEl.textContent = '这个浏览器不支持本地缓存（OPFS）：每次打开都要重新选一次游戏目录。'
       + '用「选择目录并记住」可以少一步，但浏览器的读取权限不保证跨重启保留。';
@@ -627,7 +655,8 @@ function renderCacheNote() {
     return;
   }
   if (cacheState === 'running') {
-    cacheEl.textContent = `正在提取${name}的素材并写入浏览器缓存……（约十几秒，完成后以后不用再选目录）`;
+    cacheEl.textContent = '正在提取素材（温和 + 雪地）并写入浏览器缓存……'
+      + '（十几到几十秒，完成后以后不用再选目录，剧场随便换）';
     cacheClearBtn.hidden = !man;
     refreshGoButton();
     return;
@@ -641,9 +670,11 @@ function renderCacheNote() {
   }
   if (man) {
     cacheEl.textContent =
-      `已缓存素材：${name} · ${man.files} 个文件 / ${fmtBytes(man.bytes)} · `
+      `已缓存素材：${theaterNames(man.theaters)} · ${man.files} 个文件 / ${fmtBytes(man.bytes)} · `
       + `${new Date(man.savedAt).toLocaleString()}`
-      + `——本次生成和渲染直接用缓存，不需要游戏目录，也不会要权限。`;
+      + `——本次生成和渲染直接用缓存，不需要游戏目录，也不会要权限，剧场也能随便换。`
+      + (coversTheater(currentTheater()) ? ''
+         : `（注意：缓存里没有${name}的素材，选一次游戏目录即可补上。）`);
     cacheClearBtn.hidden = false;
     // The remember block is about the File System Access handle, which is now the
     // fallback rather than the normal path - say so instead of "刷新后不用重选",
@@ -653,13 +684,13 @@ function renderCacheNote() {
     }
   } else {
     cacheEl.textContent =
-      `尚未缓存${name}的素材：选一次游戏目录，之后开页面就不用再选了${pending}。`;
+      `尚未缓存素材：选一次游戏目录（温和 + 雪地一起缓存），之后开页面就不用再选了${pending}。`;
     cacheClearBtn.hidden = true;
   }
   refreshGoButton();
 }
 function askCacheInfo(theater) {
-  cacheInfo.__pending = theater;
+  cacheInfo.__pending = true;
   worker.postMessage({ type: 'cache-info', theater });
 }
 
@@ -852,9 +883,10 @@ goBtn.addEventListener('click', () => {
   // 剧场 row the two differ, and the cache lookup has to follow the map being made.
   // (They read `params`, so they cannot sit above this line - doing that threw
   // "Cannot access 'params' before initialization" on every click.)
-  const fromCache = !archives && !!cacheInfo[params.theater];
-  // If picking the folder already extracted this theatre, do not do it again.
-  const needExtract = !!archives && extractedTheater !== params.theater;
+  const fromCache = !archives && coversTheater(params.theater);
+  // If the tree already holds this theatre (a folder pick extracts both), do not
+  // extract again.
+  const needExtract = !!archives && !extractedTheaters.has(params.theater);
 
   // The worker prepares the asset tree, then reports assets-ready; generation is
   // kicked off from here so the two stages stay individually reportable.
@@ -883,7 +915,8 @@ goBtn.addEventListener('click', () => {
     // No directory this visit AND nothing cached for the theatre that was rolled:
     // generating now would run the engine on an empty tree.
     worker.removeEventListener('message', onceReady);
-    showError('这个剧场的素材还没有缓存，也没有选择游戏目录：请选一次游戏目录（之后就会缓存）。');
+    showError('这个剧场的素材还没有缓存，也没有选择游戏目录：请选一次游戏目录'
+              + '（会把温和与雪地一起缓存，之后剧场随便换）。');
     goBtn.disabled = false;
   }
 });
@@ -895,20 +928,18 @@ function startExtract() {
   // The theatre select can be on 随机: then there is no theatre to pre-extract, and
   // the generate path extracts the rolled one (and caches it) instead.
   if (!Number.isFinite(theater)) return;
-  if (!archives || extractInFlight || extractedTheater === theater) return;
+  if (!archives || extractInFlight) return;
+  if (extractedTheaters.has(0) && extractedTheaters.has(1)) return;
   extractInFlight = true;
   cacheState = 'running';
   renderCacheNote();
-  setStatus('正在提取素材（完成后写入缓存，以后打开就不用再选目录了）……');
-  worker.postMessage({ type: 'assets', files: archives, theater });
+  setStatus('正在提取素材（温和 + 雪地，完成后写入缓存，以后打开就不用再选目录了）……');
+  // `all: true` = extract every theatre in one pass, so the cache covers the roll too.
+  worker.postMessage({ type: 'assets', files: archives, theater, all: true });
 }
 
 // ---- cache controls --------------------------------------------------------
-el('theater').addEventListener('change', () => {
-  renderCacheNote();
-  if (booted) askCacheInfo(currentTheater());
-  else renderCacheNote();
-});
+el('theater').addEventListener('change', renderCacheNote);
 cacheClearBtn.addEventListener('click', () => {
   cacheClearBtn.disabled = true;
   worker.postMessage({ type: 'cache-clear' });

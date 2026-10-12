@@ -115,7 +115,18 @@ function collectAssets() {
 // rehydrated from OPFS on boot.  No directory, no permission, no click.  The cache is
 // per theatre (the tiles and the theatre INI differ) and can be cleared.
 const CACHE_DIR = 'ra2-rmg-assets';
-const CACHE_VERSION = 1;
+// v2: ONE cache for the whole extracted tree, covering every theatre that was
+// extracted into it (temperate AND snow), instead of one file per theatre.  A per
+// theatre cache meant "roll the theatre and you may have to pick the folder again",
+// which is exactly the freedom 随机 in the 剧场 row is supposed to give.  v1 files are
+// removed on the next save.
+const CACHE_VERSION = 2;
+const CACHE_BIN = 'assets.bin';
+const CACHE_JSON = 'assets.json';
+// The theatres whose assets have been extracted into the CURRENT MEMFS tree.  The
+// tree accumulates (mg_extract only adds), so this is a union, and the manifest
+// records it: the page needs to know whether the map it is about to make is covered.
+const extractedTheaters = new Set();
 const CACHE_ENC = new TextEncoder();
 const CACHE_DEC = new TextDecoder();
 
@@ -130,13 +141,13 @@ async function opfsCacheDir(create) {
   }
 }
 
-async function cacheManifest(theater) {
+async function cacheManifest() {
   const dir = await opfsCacheDir(false);
   if (!dir) return null;
   try {
-    const fh = await dir.getFileHandle(`theater-${theater}.json`);
+    const fh = await dir.getFileHandle(CACHE_JSON);
     const man = JSON.parse(await (await fh.getFile()).text());
-    if (!man || man.version !== CACHE_VERSION || man.theater !== theater) return null;
+    if (!man || man.version !== CACHE_VERSION) return null;      // an older layout
     return man;
   } catch (err) {
     return null;
@@ -162,7 +173,7 @@ function extractedEntries() {
 
 // One packed blob + a small manifest, rather than ~970 OPFS entries: a single read
 // on restore, and no per-entry bookkeeping to get wrong.
-async function saveAssetCache(theater) {
+async function saveAssetCache(theaters) {
   const dir = await opfsCacheDir(true);
   if (!dir) {
     self.postMessage({ type: 'cache-unavailable' });
@@ -180,28 +191,39 @@ async function saveAssetCache(theater) {
     parts.push(head, name, e.bytes);
     bytes += e.bytes.length;
   }
-  const man = { version: CACHE_VERSION, theater, files: entries.length, bytes,
+  const man = { version: CACHE_VERSION, files: entries.length, bytes,
                 savedAt: Date.now(),
+                theaters: [...extractedTheaters].sort(),
                 sums: entries.map((e) => [e.path, checksum(e.bytes)]) };
-  const bin = await dir.getFileHandle(`theater-${theater}.bin`, { create: true });
+  const bin = await dir.getFileHandle(CACHE_BIN, { create: true });
   const bw = await bin.createWritable();
   await bw.write(new Blob(parts));
   await bw.close();
-  const js = await dir.getFileHandle(`theater-${theater}.json`, { create: true });
+  const js = await dir.getFileHandle(CACHE_JSON, { create: true });
   const jw = await js.createWritable();
   await jw.write(JSON.stringify(man));
   await jw.close();
+  // Drop the per-theatre files of the old layout; leaving them would waste ~20 MB and
+  // invite a future reader to use them.
+  for (const old of ['theater-0.bin', 'theater-0.json', 'theater-1.bin', 'theater-1.json']) {
+    try { await dir.removeEntry(old); } catch (err) { /* not there */ }
+  }
   return man;
 }
 
 async function restoreAssetCache(theater) {
-  const man = await cacheManifest(theater);
+  const man = await cacheManifest();
   if (!man) return null;
+  // The cache is one tree; say which theatres it holds so the page can tell a covered
+  // roll from an uncovered one instead of generating on a tree that lacks the theatre.
+  if (Array.isArray(man.theaters) && !man.theaters.includes(theater)) {
+    return { uncovered: true, theater, theaters: man.theaters };
+  }
   const dir = await opfsCacheDir(false);
   if (!dir) return null;
   let buf;
   try {
-    const fh = await dir.getFileHandle(`theater-${theater}.bin`);
+    const fh = await dir.getFileHandle(CACHE_BIN);
     buf = new Uint8Array(await (await fh.getFile()).arrayBuffer());
   } catch (err) {
     return null;
@@ -235,7 +257,8 @@ async function restoreAssetCache(theater) {
   if (failed > 0 || n !== man.files) {
     return { incomplete: true, files: n, expected: man.files, failed };
   }
-  return { files: n, bytes: man.bytes, savedAt: man.savedAt, expected: man.files, failed };
+  return { files: n, bytes: man.bytes, savedAt: man.savedAt, expected: man.files,
+           failed, theaters: man.theaters || [theater] };
 }
 
 async function clearAssetCache() {
@@ -369,15 +392,23 @@ self.onmessage = async (event) => {
       }
       engine.setRoot('/mg');
       self.postMessage({ type: 'progress', stage: 'extracting' });
-      const rc = engine.extract(msg.theater | 0);
-      if (rc !== 0) {
-        fail(`extraction failed: ${engine.error()}`);
-        return;
+      // A folder pick asks for ALL theatres (`all`): one extraction pass covers the
+      // whole product, so 随机 in the 剧场 row can never land on "not cached yet".
+      // mg_extract only adds files, so the tree accumulates and one cache holds both.
+      const want = msg.all ? [0, 1] : [msg.theater | 0];
+      for (const theater of want) {
+        const rc = engine.extract(theater);
+        if (rc !== 0) {
+          fail(`extraction failed: ${engine.error()}`);
+          return;
+        }
+        extractedTheaters.add(theater);
       }
-      self.postMessage({ type: 'assets-ready', theater: msg.theater | 0 });
-      // Written after the ready message so the first generation never waits for
-      // 13 MB of storage: a failed cache write costs nothing but the next visit.
-      saveAssetCache(msg.theater | 0)
+      self.postMessage({ type: 'assets-ready', theater: msg.theater | 0,
+                         theaters: [...extractedTheaters].sort() });
+      // Written after the ready message so the first generation never waits for the
+      // cache write: a failed one costs nothing but the next visit.
+      saveAssetCache([...extractedTheaters].sort())
         .then((man) => { if (man) self.postMessage({ type: 'cache-saved', ...man }); })
         .catch((err) => {
           // Silently skipping the cache would look exactly like "the cache never
@@ -412,9 +443,8 @@ self.onmessage = async (event) => {
       return;
     }
     if (msg.type === 'cache-info') {
-      const theater = msg.theater | 0;
-      const man = await cacheManifest(theater);
-      self.postMessage({ type: 'cache-info', theater, manifest: man });
+      const man = await cacheManifest();
+      self.postMessage({ type: 'cache-info', theater: msg.theater | 0, manifest: man });
       return;
     }
     if (msg.type === 'assets-from-cache') {
@@ -423,11 +453,17 @@ self.onmessage = async (event) => {
       engine.setRoot('/mg');
       self.postMessage({ type: 'progress', stage: 'extracting' });
       const got = await restoreAssetCache(theater);
+      if (got && !got.incomplete && !got.uncovered) {
+        // The tree now holds exactly what the cache held, so remember that.
+        extractedTheaters.clear();
+        for (const th of (got.theaters || [theater])) extractedTheaters.add(th);
+      }
       if (!got || got.incomplete) {
         self.postMessage({ type: 'cache-miss', theater, detail: got || null });
         return;
       }
-      self.postMessage({ type: 'assets-ready', theater, fromCache: true, ...got });
+      self.postMessage({ type: 'assets-ready', theater, fromCache: true,
+                         theaters: [...extractedTheaters].sort(), ...got });
       return;
     }
     if (msg.type === 'cache-clear') {
