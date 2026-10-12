@@ -100,7 +100,10 @@ let sizeMax = null;
 let sizeLimit = null;
 let sizeStep = 0.1;        // replaced by the engine's kSizeSliderStep at boot
 let rectMaxSum = 495;      // replaced by the engine's MaxRectCellSum() at boot
-let symmetryMax = 1;       // replaced by the engine's mg_symmetry_max() at boot
+let symmetryMax = 2;       // replaced by the engine's mg_symmetry_max() at boot; the
+                           // page offers 无(0) and 180°(2), so 2 is the value that has
+                           // to stay usable - syncSymmetry() disables anything above
+                           // what the engine reports
 let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × 宽)
 // The engine's own cell count for one explicit pair, as { w, h, cells }.  w/h are
 // carried so a reply that arrives after the inputs changed can be recognised as
@@ -207,9 +210,11 @@ function syncSize() {
     : '';
 }
 
-// The page offers 无 / 左右轴对称.  Anything above what the engine reports gets
-// disabled rather than offered and then refused: engine/src/mirror.h derives and
-// tests the 180-degree mapping, but the pass does not apply it yet.
+// The page offers 无 / 180° 中心对称 (one optional kind, by product decision; the
+// engine also implements left-right and top-bottom and the CLI/API still take them).
+// Anything above what the engine reports gets disabled rather than offered and then
+// refused - so if 180 were ever not implemented the option would grey out instead of
+// producing a map it cannot make.
 function syncSymmetry() {
   const sel = el('symmetry');
   for (const opt of sel.options) {

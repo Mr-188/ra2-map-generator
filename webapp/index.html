@@ -511,8 +511,8 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="seed">全局种子 · 0 = 随机</label>
-          <input id="seed" type="number" value="1" min="0"
-                 title="0 = 每次随机；填一个数字即可复现同一张地图">
+          <input id="seed" type="number" value="0" min="0"
+                 title="0 = 每次随机（引擎用时钟取种子）；填一个数字即可复现同一张地图">
         </div>
 
         <div class="cell"><label for="map-seed">地形种子 · 0 = 原版</label>
@@ -521,12 +521,17 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="symmetry">对称</label>
+          <!-- One optional kind, by product decision: 180-degree central symmetry.
+               The engine still implements left-right (1) and top-bottom (3) - mirror.h
+               declares them and mgconsole/--symmetry and mg_generate accept them - but
+               the page deliberately exposes a single switch, so the choice is "off" or
+               "the map is rotated 180 degrees", not a menu of four.  app.js still
+               disables any value above the engine's mg_symmetry_max(), so if 180 were
+               ever not implemented the option would grey out instead of lying. -->
           <select id="symmetry"
-                  title="左右轴对称：沿两轴对调镜像。180°：绕中心旋转 180°。上下轴对称：沿上下翻转（海岸用"岛屿做法"，见 engine/src/mirror.h）。">
+                  title="180° 中心对称：整张图绕中心旋转 180°（地图自身与它的旋转逐格一致）。">
             <option value="0" selected>无</option>
-            <option value="1">左右轴对称</option>
             <option value="2">180° 中心对称</option>
-            <option value="3">上下轴对称</option>
           </select>
         </div>
 

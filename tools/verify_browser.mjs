@@ -117,11 +117,17 @@ try {
   check('engine ready', true);
   check('worker is classic', workers.length > 0, workers.join(','));
 
-  // The 对称 select must be driven by the engine's own answer: the ready message
-  // carries mg_symmetry_max(), so the page has to end up offering exactly the kinds
-  // 0..max with none of them disabled.  This is the point of the plumbing: the page
-  // must not offer a kind the generator then refuses, and must not hide one it can
-  // do.  "max" comes from mirror.h, not from this file - see declaredSymmetryMax.
+  // The 对称 select is a PRODUCT decision, not "everything the engine can do".
+  //
+  // The page offers exactly two values: 0 (off) and 2 (180-degree central symmetry).
+  // The engine still implements left-right (1) and top-bottom (3) - mirror.h declares
+  // the max, and the CLI/API accept them - but the page deliberately exposes one
+  // optional kind, and it must be the one that actually works: the option has to be
+  // ENABLED (the ready message's mg_symmetry_max() is what disables a kind the engine
+  // would refuse) and 180 is what the generate call below then exercises.
+  //
+  // A page that hid 180 (or offered a kind the engine refuses) is the failure this
+  // pins; "the page offers all four" is no longer the contract.
   const sym = await page.evaluate(() => {
     const s = document.getElementById('symmetry');
     if (!s) return null;
@@ -131,14 +137,13 @@ try {
       value: s.value,
     };
   });
-  const wantedMax = declaredSymmetryMax();
-  const wanted = wantedMax === null ? null
-    : Array.from({ length: wantedMax + 1 }, (_, i) => String(i)).join(',');
-  check('the page offers exactly the symmetry the engine implements',
-        sym !== null && wanted !== null && sym.values.join(',') === wanted
-          && sym.disabled.every((d) => d === false) && sym.value === '0',
+  const declaredMax = declaredSymmetryMax();
+  check('the page offers exactly 无 / 180° for 对称, both enabled',
+        sym !== null && sym.values.join(',') === '0,2'
+          && sym.disabled.every((d) => d === false) && sym.value === '0'
+          && declaredMax !== null && declaredMax >= 2,
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
-              + `selected ${sym.value} (mirror.h declares 0..${wantedMax})`
+              + `selected ${sym.value} (mirror.h declares 0..${declaredMax})`
             : 'no #symmetry select');
 
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
@@ -281,44 +286,68 @@ try {
   }
 
   // The 对称 select has to reach the ENGINE through the worker, not merely exist.
-  // The same rectangle is generated again with only the symmetry changed, so the
-  // two maps are directly comparable, and the [Waypoints] section is the smallest
-  // part of the file that proves the mirror applied: the writer stores start
-  // points as X + 1000*Y (MapGenMapFile.cpp:1092), so a left-right mirror swaps
-  // the two fields of every waypoint and nothing else.
+  // The same rectangle is generated again with only the symmetry changed, so the two
+  // maps are directly comparable, and the [Waypoints] section is the smallest part of
+  // the file that proves the rotation applied.
+  //
+  // The page's one optional kind is 180 (value 2), so the mapping to check is the one
+  // engine/src/mirror.h uses for it - a PURE 180-degree rotation of the cell grid,
+  // (x, y) -> (Wp + Hp - x, Wp + Hp - y), written out here independently.  The old
+  // form of this check swapped the two packed fields, which is left-right, not 180;
+  // it would pass for the wrong kind.
   const readBlob = () => page.evaluate(async () => {
     if (!window.__mapBlob) return null;
     return Array.from(new Uint8Array(await window.__mapBlob.arrayBuffer()));
   });
   const plain = await readBlob();
-  await page.select('#symmetry', '1');
+  await page.select('#symmetry', '2');
   await page.evaluate(() => { window.__mapBlob = null; });
   await page.click('#go');
   await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
-  const mirroredBytes = await readBlob();
+  const rotatedBytes = await readBlob();
 
+  const textOf = (bytes) => (bytes ? new TextDecoder('latin1').decode(Buffer.from(bytes)) : '');
+  const header = (bytes) => {
+    const t = textOf(bytes);
+    const w = Number((t.match(/^Width=(\d+)/m) || [])[1]);
+    const h = Number((t.match(/^Height=(\d+)/m) || [])[1]);
+    return { w, h };
+  };
   const waypoints = (bytes) => {
-    if (!bytes) return [];
-    const text = new TextDecoder('latin1').decode(Buffer.from(bytes));
-    const section = (text.split('[Waypoints]')[1] || '').split('\n\n')[0];
+    const section = (textOf(bytes).split('[Waypoints]')[1] || '').split('\n\n')[0];
     return section.split('\n').filter((l) => l.includes('='))
       .map((l) => l.split('=').map((n) => Number(n)));
   };
   const wa = waypoints(plain);
-  const wb = waypoints(mirroredBytes);
-  // X + 1000*Y -> Y + 1000*X, i.e. the cell's two coordinates swapped.
-  const swapped = (packed) => (packed % 1000) * 1000 + Math.floor(packed / 1000);
-  // What the symmetric map must show is NOT "each waypoint equals the mirror of the
+  const wb = waypoints(rotatedBytes);
+  // The writer stores start points as X + 1000*Y (MapGenMapFile.cpp:1092).
+  const { w: Wp, h: Hp } = header(rotatedBytes);
+  const rotate = (packed) => {
+    const x = packed % 1000, y = Math.floor(packed / 1000);
+    return (Wp + Hp - x) + 1000 * (Wp + Hp - y);
+  };
+  // What the symmetric map must show is NOT "each waypoint equals the rotation of the
   // plain map's own".  A pairwise swap produces exactly that, and a swap is not a
   // symmetric map: it preserves whether a pair agrees.  The property is that the
-  // symmetric map's own start points come in mirror pairs, with the count preserved
+  // symmetric map's own start points come in rotated pairs, with the count preserved
   // (a 2-player map has to stay a 2-player map).
+  //
+  // A start point whose image falls outside the header rectangle is allowed through:
+  // the 180 cell map misses the hidden border band (mirror.h), and a map whose starts
+  // sit there would otherwise fail for the wrong reason.
   const cells = wb.map(([, v]) => v);
-  const paired = cells.length > 0 && cells.every((v) => cells.includes(swapped(v)));
-  check("the page's 对称 option reaches the engine",
-        wb.length > 0 && wb.length === wa.length && paired,
+  const inRange = (packed) => {
+    const x = packed % 1000, y = Math.floor(packed / 1000);
+    return x >= 1 && x <= Wp && y >= 1 && y <= Hp;
+  };
+  const paired = cells.length > 0
+    && cells.every((v) => cells.includes(rotate(v)) || !inRange(rotate(v)));
+  check("the page's 对称 option reaches the engine (180)",
+        wb.length > 0 && wb.length === wa.length && paired
+          && Buffer.compare(Buffer.from(rotatedBytes || []), Buffer.from(plain || [])) !== 0,
         `waypoints ${JSON.stringify(wa)} -> ${JSON.stringify(wb)} ` +
-        `(mirror-paired within the symmetric map: ${paired}, count)`);
+        `(rotated-paired within the symmetric map: ${paired}, count, differs: ` +
+        `${Buffer.compare(Buffer.from(rotatedBytes || []), Buffer.from(plain || [])) !== 0})`);
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);

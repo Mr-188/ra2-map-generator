@@ -106,6 +106,41 @@ def main() -> int:
             print("  env options  : 0/1/2/3 (4 Mountainous not offered: byte-identical "
                   "to 3 Inland)")
 
+    # The 对称 select is one optional kind, by product decision: 180 (value 2).  The
+    # engine still implements left-right (1) and top-bottom (3) - mirror.h declares
+    # them, and mgconsole/mg_generate accept them - so this is a UI contract, not an
+    # engine one.  Pinned because "the page grew a menu again" is exactly the change
+    # that would go unnoticed until someone asked why there are four choices.
+    sym_block = re.search(r'<select id="symmetry".*?</select>', page, re.S)
+    if sym_block is None:
+        failures.append("index.html has no #symmetry select")
+    else:
+        values = re.findall(r'<option value="(\d+)"', sym_block.group(0))
+        if values != ["0", "2"]:
+            failures.append(
+                f"the #symmetry select offers {values}; it must be exactly 0 (off) and "
+                "2 (180° 中心对称) - the page exposes a single optional kind by product "
+                "decision, and 180 is the kind it exposes. The engine keeps left-right "
+                "and top-bottom for the CLI/API")
+        else:
+            print("  symmetry     : 0 (无) / 2 (180° 中心对称) - single optional kind")
+
+    # The seed fields' defaults are product decisions too: the global seed defaults to
+    # 0, which the engine reads as "roll it from the clock" (wasm_entry.cpp:282), i.e.
+    # a fresh map per click exactly like the retail dialog; the terrain seed default 0
+    # is the vanilla constant.  Pinned so a stray edit cannot silently make every map
+    # reproducible (or every map the same).
+    seed_defaults = {}
+    for field in ("seed", "map-seed"):
+        m = re.search(r'<input id="' + field + r'"[^>]*value="(\d+)"', page)
+        seed_defaults[field] = m.group(1) if m else None
+    if seed_defaults["seed"] != "0" or seed_defaults["map-seed"] != "0":
+        failures.append(
+            f"seed defaults are {seed_defaults}; both must default to 0 "
+            "(global seed 0 = roll from the clock, terrain seed 0 = the vanilla seed)")
+    else:
+        print("  seed defaults: 全局种子 0 (随机) / 地形种子 0 (原版)")
+
     print()
     if failures:
         print(f"FAILED {len(failures)} checks")
