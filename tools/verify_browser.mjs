@@ -119,7 +119,8 @@ try {
 
   // The 对称 select is a PRODUCT decision, not "everything the engine can do".
   //
-  // The page offers exactly two values: 0 (off) and 2 (180-degree central symmetry).
+  // The page offers exactly three values: 0 (off), 2 (180-degree central symmetry)
+  // and ? (随机 - rolled at generate time).
   // The engine still implements left-right (1) and top-bottom (3) - mirror.h declares
   // the max, and the CLI/API accept them - but the page deliberately exposes one
   // optional kind, and it must be the one that actually works: the option has to be
@@ -138,13 +139,65 @@ try {
     };
   });
   const declaredMax = declaredSymmetryMax();
-  check('the page offers exactly 无 / 180° for 对称, both enabled',
-        sym !== null && sym.values.join(',') === '0,2'
+  check('the page offers exactly 无 / 180° / 随机 for 对称, all enabled',
+        sym !== null && sym.values.join(',') === '0,2,?'
           && sym.disabled.every((d) => d === false) && sym.value === '0'
           && declaredMax !== null && declaredMax >= 2,
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
               + `selected ${sym.value} (mirror.h declares 0..${declaredMax})`
             : 'no #symmetry select');
+
+  // ---- the 随机 entries, 全随机, and the 设置 drawer ---------------------------
+  //
+  // Every parameter the generator takes can be left to a roll, one at a time or all
+  // at once, and the rolled values are printed rather than written back (app.js), so
+  // what is checked here is the state the user sees.  Done BEFORE the archives are
+  // injected, because the drawer's switch is persisted and this reloads the page to
+  // prove it; the switch is turned back off afterwards so the rest of the suite -
+  // which clicks 渲染预览 by hand - runs exactly as it did before.
+  const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry', 'kind'];
+  const noRandom = await page.evaluate((ids) => ids.filter((id) =>
+    ![...document.getElementById(id).options].some((o) => o.value === '?')), ROLL_IDS);
+  check('every parameter offers 随机', noRandom.length === 0, `missing on ${noRandom.join(', ')}`);
+
+  await page.click('#roll-all');
+  const rollAll = await page.evaluate((ids) => ({
+    values: ids.map((id) => document.getElementById(id).value),
+    mode: [...document.querySelectorAll('#size-mode button')]
+      .find((b) => b.classList.contains('on'))?.dataset.mode,
+    seed: document.getElementById('seed').value,
+    mapSeed: document.getElementById('map-seed').value,
+  }), ROLL_IDS);
+  check('全随机 sets every parameter to 随机 and both seeds to 0',
+        rollAll.values.every((v) => v === '?') && rollAll.mode === 'random'
+          && rollAll.seed === '0' && rollAll.mapSeed === '0',
+        JSON.stringify(rollAll));
+
+  await page.click('#settings-open');
+  const drawer = await page.waitForFunction(
+    () => !document.getElementById('settings').hidden
+          && !document.getElementById('settings-backdrop').hidden, { timeout: 5000 })
+    .then(() => true).catch(() => false);
+  await page.click('#auto-render');
+  await page.click('#settings-close');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+  const persisted = await page.evaluate(() => ({
+    checked: document.getElementById('auto-render').checked,
+    stored: (() => {
+      try { return JSON.parse(localStorage.getItem('ra2mg.settings') || '{}').autoRender; }
+      catch { return null; }
+    })(),
+  }));
+  check('设置 drawer opens and 自动渲染地图 survives a reload',
+        drawer && persisted.checked === true && persisted.stored === true,
+        `drawer=${drawer} ${JSON.stringify(persisted)}`);
+  // Back off again: the auto-render path gets its own end-to-end check at the end.
+  await page.click('#settings-open');
+  await page.click('#auto-render');
+  await page.click('#settings-close');
 
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
   // ignores it and the FileList stays empty.  Instead fetch the archives over
@@ -348,6 +401,36 @@ try {
         `waypoints ${JSON.stringify(wa)} -> ${JSON.stringify(wb)} ` +
         `(rotated-paired within the symmetric map: ${paired}, count, differs: ` +
         `${Buffer.compare(Buffer.from(rotatedBytes || []), Buffer.from(plain || [])) !== 0})`);
+
+  // ---- 随机 + 自动渲染, end to end -------------------------------------------
+  //
+  // Two features that only mean something if they reach the engine, so this drives
+  // both at once: every parameter is left on 随机 (全随机), and 自动渲染地图 is turned
+  // on, so a single #go click has to roll the parameters, generate a map from them,
+  // print what it rolled, and then render WITHOUT 渲染预览 being clicked.
+  console.log('  random   all parameters to 随机, 自动渲染 on, one click');
+  await page.click('#settings-open');
+  await page.click('#auto-render');                 // back ON
+  await page.click('#settings-close');
+  await page.click('#roll-all');
+  await page.evaluate(() => { window.__mapBlob = null; document.getElementById('rolled').textContent = ''; });
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const rollNote = await page.$eval('#rolled', (e) => e.textContent.trim());
+  const autoImg = await page.waitForFunction(
+    () => {
+      const p = document.getElementById('preview');
+      if (p && p.style.display !== 'none'
+          && document.getElementById('preview-img')?.naturalWidth > 0) return 'ok';
+      const err = document.getElementById('error')?.textContent || '';
+      return err ? 'error:' + err : false;
+    },
+    { timeout: args.timeout, polling: 1000 }).then((h) => h.jsonValue()).catch((e) => 'timeout:' + e.message);
+  check('随机 rolls every parameter and prints what it used',
+        /本次随机/.test(rollNote) && /环境=/.test(rollNote) && /地图大小=/.test(rollNote),
+        `#rolled = "${rollNote}"`);
+  check('自动渲染地图 renders by itself after a generation',
+        autoImg === 'ok', String(autoImg));
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);

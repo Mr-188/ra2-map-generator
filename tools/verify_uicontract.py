@@ -95,16 +95,18 @@ def main() -> int:
     if land_block is None:
         failures.append("index.html has no #land select")
     else:
-        values = re.findall(r'<option value="(\d+)"', land_block.group(0))
-        if values != ["0", "1", "2", "3"]:
+        values = re.findall(r'<option value="([^"]*)"', land_block.group(0))
+        # The concrete environments, then exactly one 随机 entry ('?') - the roll.
+        if values != ["0", "1", "2", "3", "?"]:
             failures.append(
                 f"the #land select offers {values}; it must be exactly 0..3. "
                 "4 (Mountainous) is the same map as 3 - every land-type branch treats "
                 "them together and the option tables are indexed by the rolled n3, not "
-                "by the land type - so offering it is a second name for one map")
+                "by the land type - so offering it is a second name for one map. "
+                "The list is the four environments plus one '?' (随机)")
         else:
-            print("  env options  : 0/1/2/3 (4 Mountainous not offered: byte-identical "
-                  "to 3 Inland)")
+            print("  env options  : 0/1/2/3 + 随机 (4 Mountainous not offered: "
+                  "byte-identical to 3 Inland)")
 
     # The 对称 select is one optional kind, by product decision: 180 (value 2).  The
     # engine still implements left-right (1) and top-bottom (3) - mirror.h declares
@@ -115,15 +117,16 @@ def main() -> int:
     if sym_block is None:
         failures.append("index.html has no #symmetry select")
     else:
-        values = re.findall(r'<option value="(\d+)"', sym_block.group(0))
-        if values != ["0", "2"]:
+        values = re.findall(r'<option value="([^"]*)"', sym_block.group(0))
+        if values != ["0", "2", "?"]:
             failures.append(
                 f"the #symmetry select offers {values}; it must be exactly 0 (off) and "
                 "2 (180° 中心对称) - the page exposes a single optional kind by product "
-                "decision, and 180 is the kind it exposes. The engine keeps left-right "
-                "and top-bottom for the CLI/API")
+                "decision, and 180 is the kind it exposes (plus one '?' = 随机). "
+                "The engine keeps left-right and top-bottom for the CLI/API")
         else:
-            print("  symmetry     : 0 (无) / 2 (180° 中心对称) - single optional kind")
+            print("  symmetry     : 0 (无) / 2 (180° 中心对称) / ? (随机) - single "
+                  "optional kind, rollable")
 
     # The seed fields' defaults are product decisions too: the global seed defaults to
     # 0, which the engine reads as "roll it from the clock" (wasm_entry.cpp:282), i.e.

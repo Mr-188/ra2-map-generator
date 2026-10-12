@@ -376,6 +376,73 @@ a.dl svg { width: 12px; height: 12px; }
 }
 #picked:empty { display: none; }
 
+/* ---- small controls: 全随机, the settings gear, the drawer ------------------ */
+
+/* Screen-reader-only text (the gear button still needs an accessible name). */
+.sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.minibtn {
+  /* .sec-h is a flex row, so this is a flex item: no float, just a small gap after
+     the 02 / 03 marker (which is already pushed right by margin-left:auto). */
+  align-self: center; margin-left: 12px; padding: 4px 10px;
+  border: 1px solid var(--rule-2); border-radius: 2px; background: transparent;
+  color: var(--ink-2); font: 400 12px/1 var(--mono); letter-spacing: .08em;
+  text-transform: none; cursor: pointer;
+  transition: background .15s linear, border-color .15s linear, color .15s linear;
+}
+.minibtn:hover { border-color: var(--amber); color: var(--amber-2); }
+.minibtn:active { background: var(--well); }
+
+.gearbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; margin-left: 12px;
+  border: 1px solid var(--rule-2); border-radius: 2px; background: transparent;
+  color: var(--ink-2); cursor: pointer;
+  transition: background .15s linear, border-color .15s linear, color .15s linear;
+}
+.gearbtn svg { width: 16px; height: 16px; display: block; }
+.gearbtn:hover { border-color: var(--amber); color: var(--amber-2); }
+/* .bar-r spans carry a left rule; the button is not one of them. */
+.bar-r .gearbtn { border-left: 1px solid var(--rule-2); }
+
+#settings-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+}
+#settings {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 92vw);
+  z-index: 41; background: var(--panel); border-left: 1px solid var(--rule-2);
+  box-shadow: -18px 0 40px rgba(0,0,0,.5); overflow-y: auto;
+}
+#settings[hidden], #settings-backdrop[hidden] { display: none; }
+.set-h {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--rule);
+}
+.set-h h2 {
+  margin: 0; font: 400 15px/1 var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-2);
+}
+.set-h .gearbtn { margin-left: 0; }
+.set-body { padding: 16px; }
+.set-row {
+  display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
+  padding: 12px 0; border-bottom: 1px solid var(--rule); cursor: pointer;
+}
+.set-label { font: 400 14px/1.5 var(--sans); color: var(--ink); }
+.set-note {
+  display: block; margin-top: 6px; font: 400 12px/1.7 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+#settings-note { margin: 14px 0 0; }
+#auto-render { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: var(--amber); }
+
+/* What the 随机 entries rolled for this run (empty when nothing was rolled). */
+#rolled:empty { display: none; }
+#rolled { color: var(--amber-2); }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -398,8 +465,38 @@ a.dl svg { width: 12px; height: 12px; }
   <div class="bar-r">
     <span>运行位置 <b>本机浏览器</b></span>
     <span>素材上传 <b>无</b></span>
+    <button type="button" id="settings-open" class="gearbtn" aria-haspopup="dialog"
+            aria-controls="settings" title="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"></circle>
+        <path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"></path>
+      </svg>
+      <span class="sr">设置</span>
+    </button>
   </div>
 </header>
+
+<!-- ======================= settings drawer ======================= -->
+<!-- A right-hand drawer rather than more rows in the form: these are preferences,
+     not generation parameters, and mixing them would make 生成参数 lie about what
+     the engine receives. -->
+<div id="settings-backdrop" hidden></div>
+<aside id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-h" hidden>
+  <div class="set-h">
+    <h2 id="settings-h">设置</h2>
+    <button type="button" id="settings-close" class="gearbtn" title="关闭">✕</button>
+  </div>
+  <div class="set-body">
+    <label class="set-row" for="auto-render">
+      <span class="set-label">自动渲染地图
+        <span class="set-note">生成完成后自动开始渲染预览（渲染器首次要下载约 15 MB，随后很快）。关掉的话就还是手动点「渲染预览」。</span>
+      </span>
+      <input id="auto-render" type="checkbox">
+    </label>
+    <p class="set-note" id="settings-note"></p>
+  </div>
+</aside>
 
 <div class="wrap">
 
@@ -434,7 +531,13 @@ a.dl svg { width: 12px; height: 12px; }
     </section>
 
     <section class="sec">
-      <h2 class="sec-h">生成参数<span class="sec-n">02 / 03</span></h2>
+      <h2 class="sec-h">生成参数<span class="sec-n">02 / 03</span>
+        <!-- Every parameter above offers 随机, and this sets all of them to it at
+             once.  The seeds already have the engine's own "random" spelling (0), so
+             this writes 0 into them rather than adding a second way to say it. -->
+        <button type="button" id="roll-all" class="minibtn"
+                title="把所有参数都设为随机（全局/地形种子设为 0）；生成时逐个抽定，并把抽到的值显示出来">全随机</button>
+      </h2>
       <div class="grid">
 
         <div class="cell"><label for="land">环境</label>
@@ -454,6 +557,7 @@ a.dl svg { width: 12px; height: 12px; }
             <option value="1" selected>大岛屿</option>
             <option value="2">大岛屿群</option>
             <option value="3">内陆</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -463,6 +567,7 @@ a.dl svg { width: 12px; height: 12px; }
             <option value="1">下午</option>
             <option value="2">黄昏</option>
             <option value="3">夜晚</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -470,6 +575,7 @@ a.dl svg { width: 12px; height: 12px; }
           <select id="theater">
             <option value="0" selected>温带</option>
             <option value="1">雪地</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -477,6 +583,8 @@ a.dl svg { width: 12px; height: 12px; }
           <div class="seg" id="size-mode" role="group" aria-label="尺寸模式">
             <button type="button" data-mode="square" class="on">正方形</button>
             <button type="button" data-mode="rect">长 × 宽</button>
+            <button type="button" data-mode="random"
+                    title="每次生成时在合法范围内随机取一个大小（按当前环境的尺寸上限）">随机</button>
           </div>
           <!-- min/max/step are all replaced by app.js from the engine's
                SizeSliderRange as soon as the worker reports ready; these are just
@@ -498,6 +606,7 @@ a.dl svg { width: 12px; height: 12px; }
           <select id="players">
             <option>2</option><option>3</option><option>4</option>
             <option>5</option><option>6</option><option>7</option><option>8</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -507,6 +616,7 @@ a.dl svg { width: 12px; height: 12px; }
             <option value="1" selected>中</option>
             <option value="2">高</option>
             <option value="3">极高</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -532,6 +642,7 @@ a.dl svg { width: 12px; height: 12px; }
                   title="180° 中心对称：整张图绕中心旋转 180°（地图自身与它的旋转逐格一致）。">
             <option value="0" selected>无</option>
             <option value="2">180° 中心对称</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -539,6 +650,7 @@ a.dl svg { width: 12px; height: 12px; }
           <select id="kind">
             <option value="0" selected>多人 .yrm</option>
             <option value="1">单人 .map</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -559,6 +671,12 @@ a.dl svg { width: 12px; height: 12px; }
       <button id="go" class="btn primary" disabled>
         <span>生成地图</span><span class="k">RUN</span>
       </button>
+
+      <!-- What the 随机 entries actually rolled for THIS run.  It is shown rather
+           than written back into the controls for two reasons: the controls stay on
+           随机 (so the next click rolls again), and the values are still readable
+           when the user wants to reproduce exactly this map by typing them in. -->
+      <p id="rolled" class="readout"></p>
 
       <p id="status" class="readout" role="status" aria-live="polite"></p>
       <p id="error" class="err" role="alert"></p>

@@ -100,6 +100,12 @@ let sizeMax = null;
 let sizeLimit = null;
 let sizeStep = 0.1;        // replaced by the engine's kSizeSliderStep at boot
 let rectMaxSum = 495;      // replaced by the engine's MaxRectCellSum() at boot
+// The sentinel every <select> uses for "roll this one at generate time".  It is a
+// string so it can never collide with a numeric option, and it is deliberately not
+// written back into the control after a roll: the control stays on 随机 so the next
+// click rolls again, and the values that were used are shown in #rolled instead.
+const RANDOM = '?';
+
 let symmetryMax = 2;       // replaced by the engine's mg_symmetry_max() at boot; the
                            // page offers 无(0) and 180°(2), so 2 is the value that has
                            // to stay usable - syncSymmetry() disables anything above
@@ -109,6 +115,10 @@ let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × �
 // carried so a reply that arrives after the inputs changed can be recognised as
 // stale instead of being shown as if it described the current map.
 let rectCells = null;
+
+let autoRender = false;    // the 设置 drawer's 自动渲染地图 switch (persisted)
+const SETTINGS_KEY = 'ra2mg.settings';
+const rolledEl = el('rolled');
 
 const sizeInput = el('size');
 const sizeOut = el('size-out');
@@ -154,12 +164,27 @@ function showRectSize(w, h) {
     + `方图的边长上限约 247，所以这种长宽比能做出方图做不到的尺寸。`;
 }
 
+// The widest useful size any (land, players) pair allows.  Only used while a 随机
+// entry is selected, so the slider's bounds cover whatever the roll may pick.
+function maxUseful() {
+  if (!sizeMax) return Number(sizeInput.max);
+  let best = 0;
+  for (const row of sizeMax) {
+    if (!Array.isArray(row)) continue;
+    for (const v of row) if (Number.isFinite(v) && v > best) best = v;
+  }
+  return best || Number(sizeInput.max);
+}
+
 function setSizeMode(mode) {
   sizeMode = mode;
   for (const b of sizeModeBox.querySelectorAll('button')) {
     b.classList.toggle('on', b.dataset.mode === mode);
   }
-  sizeInput.hidden = (mode !== 'square');
+  // 'random' keeps the slider visible (it shows the range the roll draws from) but
+  // disabled, so it cannot look like the value that will be used.
+  sizeInput.hidden = (mode === 'rect');
+  sizeInput.disabled = (mode === 'random');
   rectPair.hidden = (mode !== 'rect');
   syncSize();
 }
@@ -168,6 +193,9 @@ function syncSize() {
   const land = Number(el('land').value);
   const players = Number(el('players').value);
   const idx = Math.max(0, Math.min(6, players - 2));
+  // 随机 means the engine table cannot be indexed yet.  The slider then spans every
+  // land/player combination the roll could pick, so no rolled value can fall off it.
+  const unknown = !Number.isFinite(land) || !Number.isFinite(players);
 
   if (sizeMode === 'rect') {
     const { w, h } = clampedRect();
@@ -185,12 +213,21 @@ function syncSize() {
   }
 
   if (!sizeMax) {                    // engine table not here yet (still booting)
-    sizeOut.value = fmtSize(sizeInput.value);
+    if (sizeMode === 'random') {
+    sizeOut.value = '随机';
+    sizeNote.textContent =
+      `地图大小：每次生成时在 0..${fmtSize(useful)} 之间随机取一个（步长 ${sizeStep}，`
+      + `按抽到的环境与玩家数决定上限）。`;
+    return;
+  }
+  sizeOut.value = fmtSize(sizeInput.value);
     return;
   }
 
-  const useful = sizeMax[land] ? sizeMax[land][idx] : Number(sizeInput.max);
-  const legal = sizeLimit && sizeLimit[land] ? sizeLimit[land][idx] : useful;
+  const useful = unknown ? maxUseful()
+    : (sizeMax[land] ? sizeMax[land][idx] : Number(sizeInput.max));
+  const legal = unknown ? useful
+    : (sizeLimit && sizeLimit[land] ? sizeLimit[land][idx] : useful);
 
   // Ceiling and step are both the engine's, so the slider cannot offer a value
   // the generator refuses, nor a position that changes nothing.
@@ -316,6 +353,10 @@ worker.addEventListener('message', async (event) => {
       // step rather than something that happens behind the user's back.
       renderBtn.disabled = false;
       renderBtn.textContent = '渲染预览';
+      if (autoRender) {
+        mark('settings: 自动渲染地图已开启，生成完成后直接开始渲染');
+        startRender();
+      }
       break;
     }
     case 'preview': {
@@ -548,6 +589,70 @@ pickRememberBtn.addEventListener('click', async () => {
 
 refreshRemember();
 
+// ---- 随机: one roll per 随机 control, at generate time ----------------------
+//
+// The controls stay on 随机 (so the next click rolls again); what was rolled is
+// printed in #rolled so the run can be reproduced by typing the values back in.
+//
+// Order matters: 地图大小 draws from the engine's own table for the (land, players)
+// pair the roll just picked, so land and players are rolled first.
+const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry', 'kind'];
+const ROLL_LABEL = { land: '环境', time: '时间', theater: '剧场', players: '玩家数',
+                     ore: '矿量', symmetry: '对称', kind: '地图类型' };
+
+function concreteOptions(id) {
+  return [...el(id).options]
+    .filter((o) => o.value !== RANDOM && !o.disabled)
+    .map((o) => o.value);
+}
+
+function pickOne(list) { return list[Math.floor(Math.random() * list.length)]; }
+
+function labelOf(id, value) {
+  const o = [...el(id).options].find((x) => x.value === value);
+  return o ? o.textContent.trim() : String(value);
+}
+
+// A size inside the range the engine reports for this (land, players): the roll
+// cannot ask for a map the size slider itself could not reach.
+function pickSize(land, players) {
+  const idx = Math.max(0, Math.min(6, players - 2));
+  const useful = (sizeMax && sizeMax[land] && Number.isFinite(sizeMax[land][idx]))
+    ? sizeMax[land][idx] : maxUseful();
+  const steps = Math.max(1, Math.round(useful / sizeStep));
+  return Math.min(useful, Math.round(Math.random() * steps) * sizeStep);
+}
+
+function rollParams() {
+  const chosen = {};
+  const notes = [];
+  for (const id of ROLL_IDS) {
+    const raw = el(id).value;
+    const value = raw === RANDOM ? pickOne(concreteOptions(id)) : raw;
+    chosen[id] = value;
+    if (raw === RANDOM) notes.push(`${ROLL_LABEL[id]}=${labelOf(id, value)}`);
+  }
+  let size = null;
+  if (sizeMode === 'random') {
+    size = pickSize(Number(chosen.land), Number(chosen.players));
+    notes.push(`地图大小=${fmtSize(size)}`);
+  }
+  return { chosen, size, notes };
+}
+
+// 全随机: every parameter to 随机 at once.  The seeds already have the engine's own
+// spelling for it (0 = roll from the clock / the vanilla constant), so they get 0
+// rather than a second way to say 随机.
+el('roll-all').addEventListener('click', () => {
+  for (const id of ROLL_IDS) el(id).value = RANDOM;
+  setSizeMode('random');
+  el('seed').value = '0';
+  el('map-seed').value = '0';
+  syncSize();
+  syncSymmetry();
+  setStatus('全部参数已设为随机：每次点「生成地图」都会重新抽一套，抽到的值会显示在按钮下面。');
+});
+
 goBtn.addEventListener('click', () => {
   if (!archives) return;
   goBtn.disabled = true;
@@ -556,28 +661,34 @@ goBtn.addEventListener('click', () => {
   resultEl.style.display = 'none';
   setStatus('正在准备……');
 
-  const single = el('kind').value === '1';
+  // Everything the user left on 随机 is decided HERE, once per click, and reported
+  // in #rolled (the controls themselves stay on 随机, so the next click rolls again).
+  const roll = rollParams();
+  const single = roll.chosen.kind === '1';
   const outPath = `/mg/out.${single ? 'map' : 'yrm'}`;
+  const rect = (roll.size === null && sizeMode === 'rect') ? clampedRect() : { w: 0, h: 0 };
   const params = {
-    land: Number(el('land').value),
-    theater: Number(el('theater').value),
-    time: Number(el('time').value),
-    size: Number(el('size').value),
-    players: Number(el('players').value),
-    ore: Number(el('ore').value),
+    land: Number(roll.chosen.land),
+    theater: Number(roll.chosen.theater),
+    time: Number(roll.chosen.time),
+    // A rolled size wins over the slider; the slider is disabled in 随机 mode.
+    size: roll.size !== null ? roll.size : Number(el('size').value),
+    players: Number(roll.chosen.players),
+    ore: Number(roll.chosen.ore),
     water: WATER_FROM_GLOBAL_ROLL,
     seed: Number(el('seed').value) >>> 0,
     mapSeed: Number(el('map-seed').value) >>> 0,
     single,
     // 0/0 tells the engine to use `size`; anything else is an explicit rectangle.
-    width: sizeMode === 'rect' ? clampedRect().w : 0,
-    height: sizeMode === 'rect' ? clampedRect().h : 0,
-    // 0 = none, 1 = left-right.  180 degrees is derived and tested in
-    // engine/src/mirror.h but the pass does not apply it yet, so the page does
-    // not offer it; syncSymmetry() disables anything above what the engine says.
-    symmetry: Number(el('symmetry').value) || 0,
+    width: rect.w,
+    height: rect.h,
+    // 0 = none, 2 = 180° central symmetry (the page's single optional kind).  The
+    // engine also implements left-right (1) and top-bottom (3) for the CLI/API;
+    // syncSymmetry() disables anything above what the engine reports.
+    symmetry: Number(roll.chosen.symmetry) || 0,
     outPath,
   };
+  rolledEl.textContent = roll.notes.length ? `本次随机：${roll.notes.join(' · ')}` : '';
 
   worker.postMessage({ type: 'assets', files: archives, theater: params.theater });
   // The worker extracts, then reports assets-ready; generation is kicked off
@@ -594,10 +705,51 @@ goBtn.addEventListener('click', () => {
 worker.postMessage({ type: 'boot' });
 setStatus('正在加载引擎……');
 
-renderBtn.addEventListener('click', () => {
+function startRender() {
   renderBtn.disabled = true;
   errorEl.textContent = '';
   mark('renderer: asking the worker for the extracted assets');
   setStatus('正在准备渲染……');
   worker.postMessage({ type: 'collect' });
+}
+renderBtn.addEventListener('click', startRender);
+
+// ---- 设置 drawer: 自动渲染地图 ---------------------------------------------
+// A preference, not a generation parameter, so it lives in its own drawer and is
+// remembered (localStorage).  With it on, a finished generation starts the render
+// itself; the renderer's first run downloads ~15 MB, which is why the switch says so.
+const autoRenderEl = el('auto-render');
+const settingsEl = el('settings');
+const backdropEl = el('settings-backdrop');
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; }
+}
+function saveSettings(patch) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...loadSettings(), ...patch })); }
+  catch { /* private mode / storage disabled: the switch still works this session */ }
+}
+function openSettings(open) {
+  settingsEl.hidden = !open;
+  backdropEl.hidden = !open;
+  if (open) el('settings-close').focus();
+}
+function renderSettingsNote() {
+  el('settings-note').textContent = autoRender
+    ? '已开启：每次生成完成后会自动开始渲染预览。'
+    : '已关闭：生成后需要手动点「渲染预览」。';
+}
+autoRender = !!loadSettings().autoRender;
+autoRenderEl.checked = autoRender;
+renderSettingsNote();
+autoRenderEl.addEventListener('change', () => {
+  autoRender = autoRenderEl.checked;
+  saveSettings({ autoRender });
+  renderSettingsNote();
+});
+el('settings-open').addEventListener('click', () => openSettings(true));
+el('settings-close').addEventListener('click', () => openSettings(false));
+backdropEl.addEventListener('click', () => openSettings(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsEl.hidden) openSettings(false);
 });
