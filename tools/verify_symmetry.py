@@ -219,6 +219,24 @@ THEATER_INI = ASSETS / "x64" / "Release" / "temperatmd.ini"
 GEN_PARAMS = ["--land", "1", "--theater", "0", "--size", "1", "--players", "2",
               "--seed", "20260913"]
 
+# The land types and theatres the matrix check below walks.  The theatres are the
+# product's whole list: the page's <select> has exactly 温带/雪地, and the engine
+# maps any value other than 1 to temperate (MapGenRecalc.cpp:429: `(theater == 1)
+# ? snowmd.ini : temperatmd.ini`).  Raise this if a third theatre is ever ported -
+# the point of the check is that the list here matches the product's.
+SNOW_ASSETS = ROOT / "build" / "snow_assets"
+THEATERS = ((0, ASSETS, "temperate", THEATER_INI),
+            (1, SNOW_ASSETS, "snow", SNOW_ASSETS / "x64" / "Release" / "snowmd.ini"))
+# (land, name, kinds it is judged on).  Lands 0 and 2 take both kinds because
+# nothing else in this file generates them at all; 1, 3 and 4 take left-right
+# only, because the suites above already judge them on both.
+MATRIX_LANDS = ((0, "Archipelago", (1, 2)),
+                (1, "Continent", (1,)),
+                (2, "TeamContinent", (1, 2)),
+                (3, "Inland", (1,)),
+                (4, "Mountainous", (1,)))
+MATRIX_PARAMS = ["--size", "1", "--players", "2", "--seed", "20260913"]
+
 # The bound the whole-map interior comparison uses (see interior_stats and the
 # Inland / Mountainous block below).  Measured on GEN_PARAMS with this file's own
 # --score mode: 2.3% for Inland and for Mountainous, 0.7% for Continent, 0.1%
@@ -1720,6 +1738,137 @@ def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
     return 0
 
 
+def check_land_theater_matrix(failures: list[str]) -> int:
+    """Every land type x every theatre the product offers, judged.
+
+        lands 0..4 (the page's five options) x theatres 0/1 (temperate/snow)
+
+    The suites above judge one land type per KIND plus Inland/Mountainous, all of
+    them on TEMPERATE.  Two holes were left open, and a real bug went through both:
+
+      * land 0 (Archipelago) and land 2 (TeamContinent) were only PRINTED by
+        --score and never required.  Measured: the Archipelago + left-right map
+        had ZERO shore cells - the islands grew and then had no coast at all,
+        water against grass, no beach - while every judged case stayed green.
+      * the SNOW theatre was never generated here at all (every case hard-codes
+        --theater 0), even though the page offers it and it carries the same
+        residue as temperate (measured: the same 900 px ramp hole on seed 555).
+
+    What this requires of each (land, theatre, kind):
+      * the shoreline (water vs land) and the shore ring are symmetric;
+      * the shore ring does not DISAPPEAR under symmetry: at least half of the
+        plain map's shore cells have to survive (the archipelago bug took
+        872 -> 0 out of 872);
+      * the elevation is symmetric - left-right only, because 180 has a floor of
+        its own (mirror.h) and this suite does not ask it to beat that;
+      * the render is no darker than the plain map's and its height steps stay
+        covered (render_cleanliness, which renders both maps).
+    """
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        print("  matrix  (no build/engine/mgconsole or build/oracle_assets; skipped)")
+        return 0
+    sys.path.insert(0, str(ROOT))
+    from maptools.map_ini import parse_map_size
+    from maptools.tileset_names import classify_kind, load_tileset_ini
+
+    checks = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for theater, root, tname, ini_path in THEATERS:
+            if not root.is_dir() or not ini_path.is_file():
+                print(f"  matrix  ({tname}: no asset tree at {root}; skipped)")
+                continue
+            ini = load_tileset_ini(str(ini_path))
+            for land, lname, kinds in MATRIX_LANDS:
+                maps: dict[int, Path] = {}
+
+                def generate(sym: int) -> Path | None:
+                    if sym in maps:
+                        return maps[sym]
+                    out = tmp_path / f"{tname}_{lname}_{sym}.yrm"
+                    proc = subprocess.run(
+                        [str(MGCONSOLE), "--root", str(root), "--land", str(land),
+                         "--theater", str(theater), *MATRIX_PARAMS,
+                         "--symmetry", str(sym), "--out", str(out)],
+                        capture_output=True, text=True, timeout=900)
+                    if not out.is_file():
+                        failures.append(
+                            f"{tname}/{lname} sym {sym}: the generator produced no map "
+                            f"(rc={proc.returncode}): {proc.stderr.strip()[-160:]}")
+                        return None
+                    maps[sym] = out
+                    return out
+
+                plain = generate(0)
+                if plain is None:
+                    continue
+                plain_cells = cells_of(sections_of(plain))
+                plain_shores = sum(1 for t in plain_cells.values()
+                                   if classify_kind(ini, t.tile_index) == "shore")
+                for kind, kind_name in ((1, "left-right"), (2, "rotational-180")):
+                    if kind not in kinds:
+                        continue
+                    m = generate(kind)
+                    if m is None:
+                        continue
+                    sections = sections_of(m)
+                    S = cells_of(sections)
+                    Wp, Hp = parse_map_size(sections)
+                    if kind == 1:
+                        mirrored_at = lambda x, y: (y, x)          # noqa: E731
+                    else:
+                        mirrored_at = lambda x, y: rot180_cell(Wp, Hp, x, y)  # noqa: E731
+                    pairs = bad_water = bad_shore = bad_level = 0
+                    for c, t in S.items():
+                        o = S.get(mirrored_at(*c))
+                        if o is None:
+                            continue
+                        pairs += 1
+                        ka = classify_kind(ini, t.tile_index)
+                        kb = classify_kind(ini, o.tile_index)
+                        if (ka == "water") != (kb == "water"):
+                            bad_water += 1
+                        if (ka == "shore") != (kb == "shore"):
+                            bad_shore += 1
+                        if kind == 1 and t.z != o.z:
+                            bad_level += 1
+                    checks += 1
+                    if pairs == 0:
+                        failures.append(f"{tname}/{lname} {kind_name}: no mirrored cell "
+                                        "pairs at all; the map is not a diamond")
+                        continue
+                    if bad_water:
+                        failures.append(
+                            f"{tname}/{lname} {kind_name}: the water/land outline is not "
+                            f"symmetric on {bad_water} of {pairs} pairs")
+                    if bad_shore:
+                        failures.append(
+                            f"{tname}/{lname} {kind_name}: the shore ring is not symmetric "
+                            f"on {bad_shore} of {pairs} pairs")
+                    if bad_level:
+                        failures.append(
+                            f"{tname}/{lname} {kind_name}: the elevation is not symmetric on "
+                            f"{bad_level} of {pairs} pairs")
+                    sym_shores = sum(1 for t in S.values()
+                                     if classify_kind(ini, t.tile_index) == "shore")
+                    checks += 1
+                    if plain_shores and sym_shores < plain_shores // 2:
+                        failures.append(
+                            f"{tname}/{lname} {kind_name}: the shore ring collapsed under "
+                            f"symmetry - {sym_shores} shore cells against the plain map's "
+                            f"{plain_shores}. The islands grow and then have no coast: "
+                            "water against grass, no beach (this is the Archipelago bug "
+                            "of 2026-10-12: MapGenShape mirrored the shape but not the "
+                            "island owner marks, FloodFill rejected a cell, and "
+                            "SmoothWaterBody skipped both shore passes)")
+                    checks += render_cleanliness(failures, plain, m, tmp_path,
+                                                 f"{tname}-{lname}-{kind_name}")
+                    print(f"  matrix  {tname:<9}{lname:<16}{kind_name:<16}"
+                          f"pairs {pairs:>6}  water {bad_water}  shore {bad_shore}  "
+                          f"level {bad_level}  shores {sym_shores}/{plain_shores}")
+    return checks
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -1746,6 +1895,9 @@ def main() -> int:
     generation_checks = check_generation(failures)
     tb_checks = check_top_bottom(failures)
 
+    print("  matrix  every land type x every theatre the product offers")
+    matrix_checks = check_land_theater_matrix(failures)
+
     print()
     if failures:
         print(f"FAILED {len(failures)} check(s)")
@@ -1755,8 +1907,10 @@ def main() -> int:
     print(f"OK -- the mirror mapping holds on {cells_checked} cells, the reflections "
           f"the product offers are closed ({closure_checks} closure checks), the 180 "
           f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
-          f"and a symmetric map decodes back symmetric ({generation_checks} generation "
-          f"checks, {tb_checks} of them top-bottom)")
+          f"a symmetric map decodes back symmetric ({generation_checks} generation "
+          f"checks, {tb_checks} of them top-bottom), and every land x theatre pair the "
+          f"product offers holds its shape, its coast and its elevation "
+          f"({matrix_checks} matrix checks)")
     return 0
 
 
