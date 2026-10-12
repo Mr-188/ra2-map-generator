@@ -512,6 +512,19 @@ a.dl svg { width: 12px; height: 12px; }
       </label>
       <p id="picked" class="hint"></p>
 
+      <!-- The extracted tree, cached in the browser's own storage.  This is what makes
+           the SECOND visit need no directory at all: the File System Access permission
+           does not survive a browser restart and re-requesting it needs a user gesture,
+           but the ~13 MB of extracted tiles/INIs do, so they are kept and rehydrated
+           without asking anyone.  Shown always (the state is useful even when empty);
+           the clear button only appears once something is cached. -->
+      <p id="cache-note" class="hint"></p>
+      <div class="btn-row">
+        <button type="button" class="btn ghost" id="cache-clear" hidden>
+          <span>清除浏览器缓存</span><span class="k">CACHE</span>
+        </button>
+      </div>
+
       <!-- Progressive enhancement, hidden unless the browser exposes the File
            System Access API.  The <input webkitdirectory> above keeps working
            everywhere (tools/verify_browser.mjs drives exactly that path); this

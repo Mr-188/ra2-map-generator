@@ -78,6 +78,14 @@ function assetDirs() {
   return dirs;
 }
 
+/** FNV-1a over a byte array: what the diagnostics compare trees by.  Sizes alone
+ *  are not enough - a packing bug can keep every size identical. */
+function checksum(bytes) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; ++i) { h ^= bytes[i]; h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+
 /** Every regular file under the extracted tree, as { name, bytes }. */
 function collectAssets() {
   const out = [];
@@ -93,6 +101,150 @@ function collectAssets() {
     }
   }
   return out;
+}
+
+// ---- the extracted tree, cached in the browser's own storage (OPFS) --------
+//
+// Re-reading the player's ~470 MB of archives on every visit is not just slow: the
+// File System Access permission does not survive a browser restart, so the page has
+// to ask again ("继续使用 RA2MD") every time, and that prompt cannot be skipped --
+// requestPermission() must run inside a user gesture.
+//
+// The extracted tree is only ~13 MB / ~970 files, so the second visit does not need
+// the game directory at all: after the first extraction the tree is written here and
+// rehydrated from OPFS on boot.  No directory, no permission, no click.  The cache is
+// per theatre (the tiles and the theatre INI differ) and can be cleared.
+const CACHE_DIR = 'ra2-rmg-assets';
+const CACHE_VERSION = 1;
+const CACHE_ENC = new TextEncoder();
+const CACHE_DEC = new TextDecoder();
+
+async function opfsCacheDir(create) {
+  if (typeof navigator === 'undefined' || !navigator.storage
+      || typeof navigator.storage.getDirectory !== 'function') return null;
+  try {
+    const root = await navigator.storage.getDirectory();
+    return await root.getDirectoryHandle(CACHE_DIR, { create: !!create });
+  } catch (err) {
+    return null;                       // no OPFS / storage disabled: manual path only
+  }
+}
+
+async function cacheManifest(theater) {
+  const dir = await opfsCacheDir(false);
+  if (!dir) return null;
+  try {
+    const fh = await dir.getFileHandle(`theater-${theater}.json`);
+    const man = JSON.parse(await (await fh.getFile()).text());
+    if (!man || man.version !== CACHE_VERSION || man.theater !== theater) return null;
+    return man;
+  } catch (err) {
+    return null;
+  }
+}
+
+// { path, name, bytes } for every file under the extracted tree.
+function extractedEntries() {
+  const out = [];
+  for (const dir of assetDirs()) {
+    let names;
+    try { names = Module.FS.readdir(dir); } catch (err) { continue; }
+    for (const name of names) {
+      const p = `${dir}/${name}`;
+      try {
+        if (!Module.FS.isFile(Module.FS.stat(p).mode)) continue;
+        out.push({ path: p, name, bytes: Module.FS.readFile(p) });
+      } catch (err) { /* skip */ }
+    }
+  }
+  return out;
+}
+
+// One packed blob + a small manifest, rather than ~970 OPFS entries: a single read
+// on restore, and no per-entry bookkeeping to get wrong.
+async function saveAssetCache(theater) {
+  const dir = await opfsCacheDir(true);
+  if (!dir) return null;
+  const entries = extractedEntries();
+  if (!entries.length) return null;
+  let bytes = 0;
+  const parts = [];
+  for (const e of entries) {
+    const name = CACHE_ENC.encode(e.path);
+    const head = new Uint8Array(6);
+    new DataView(head.buffer).setUint16(0, name.length, true);
+    new DataView(head.buffer).setUint32(2, e.bytes.length, true);
+    parts.push(head, name, e.bytes);
+    bytes += e.bytes.length;
+  }
+  const man = { version: CACHE_VERSION, theater, files: entries.length, bytes,
+                savedAt: Date.now(),
+                sums: entries.map((e) => [e.path, checksum(e.bytes)]) };
+  const bin = await dir.getFileHandle(`theater-${theater}.bin`, { create: true });
+  const bw = await bin.createWritable();
+  await bw.write(new Blob(parts));
+  await bw.close();
+  const js = await dir.getFileHandle(`theater-${theater}.json`, { create: true });
+  const jw = await js.createWritable();
+  await jw.write(JSON.stringify(man));
+  await jw.close();
+  return man;
+}
+
+async function restoreAssetCache(theater) {
+  const man = await cacheManifest(theater);
+  if (!man) return null;
+  const dir = await opfsCacheDir(false);
+  if (!dir) return null;
+  let buf;
+  try {
+    const fh = await dir.getFileHandle(`theater-${theater}.bin`);
+    buf = new Uint8Array(await (await fh.getFile()).arrayBuffer());
+  } catch (err) {
+    return null;
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const sums = new Map(man.sums || []);      // absent in a manifest from an older build
+  let off = 0, n = 0, failed = 0;
+  // Layout, matching saveAssetCache exactly: [nameLen u16][dataLen u32][name][data].
+  // Reading the two lengths on either side of the name (as this used to) consumes the
+  // file's own bytes as the length, and the tree comes out with one bogus file in it.
+  while (off + 6 <= buf.length && n + failed < man.files) {
+    const nameLen = dv.getUint16(off, true); off += 2;
+    const len = dv.getUint32(off, true); off += 4;
+    const path = CACHE_DEC.decode(buf.subarray(off, off + nameLen)); off += nameLen;
+    const data = buf.subarray(off, off + len); off += len;
+    const slash = path.lastIndexOf('/');
+    try {
+      if (slash > 0) Module.FS.mkdirTree(path.slice(0, slash));
+      Module.FS.writeFile(path, data);
+      // A file that lands with the right length but the wrong bytes is exactly the
+      // failure a length check cannot see (this caught a pack/unpack mismatch during
+      // development), and the generator would then run on a silently wrong INI.
+      if (sums.size && sums.get(path) !== checksum(data)) { ++failed; continue; }
+      ++n;
+    } catch (err) { ++failed; }
+  }
+  // A partial tree is worse than no tree: the generator walks it and a missing INI
+  // sends the engine into an unbounded fallback search (measured: "Maximum call stack
+  // size exceeded" from mg_engine.wasm).  So anything short of a complete restore is
+  // reported as a miss and the page asks for the directory again.
+  if (failed > 0 || n !== man.files) {
+    return { incomplete: true, files: n, expected: man.files, failed };
+  }
+  return { files: n, bytes: man.bytes, savedAt: man.savedAt, expected: man.files, failed };
+}
+
+async function clearAssetCache() {
+  if (typeof navigator === 'undefined' || !navigator.storage
+      || typeof navigator.storage.getDirectory !== 'function') return false;
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(CACHE_DIR, { recursive: true });
+    return true;
+  } catch (err) {
+    return false;                      // nothing cached is not an error
+  }
 }
 
 /** Copies a MEMFS file out in two calls: ask for the length, then read it. */
@@ -219,7 +371,12 @@ self.onmessage = async (event) => {
         fail(`extraction failed: ${engine.error()}`);
         return;
       }
-      self.postMessage({ type: 'assets-ready' });
+      self.postMessage({ type: 'assets-ready', theater: msg.theater | 0 });
+      // Written after the ready message so the first generation never waits for
+      // 13 MB of storage: a failed cache write costs nothing but the next visit.
+      saveAssetCache(msg.theater | 0)
+        .then((man) => { if (man) self.postMessage({ type: 'cache-saved', ...man }); })
+        .catch(() => { /* the directory path still works; no cache this time */ });
       return;
     }
     if (msg.type === 'generate') {
@@ -244,6 +401,29 @@ self.onmessage = async (event) => {
       self.postMessage(
         { type: 'map', bytes, name: (p.outPath || 'out.map').split('/').pop() },
         [bytes.buffer]);
+      return;
+    }
+    if (msg.type === 'cache-info') {
+      const theater = msg.theater | 0;
+      const man = await cacheManifest(theater);
+      self.postMessage({ type: 'cache-info', theater, manifest: man });
+      return;
+    }
+    if (msg.type === 'assets-from-cache') {
+      const theater = msg.theater | 0;
+      files.clear();
+      engine.setRoot('/mg');
+      self.postMessage({ type: 'progress', stage: 'extracting' });
+      const got = await restoreAssetCache(theater);
+      if (!got || got.incomplete) {
+        self.postMessage({ type: 'cache-miss', theater, detail: got || null });
+        return;
+      }
+      self.postMessage({ type: 'assets-ready', theater, fromCache: true, ...got });
+      return;
+    }
+    if (msg.type === 'cache-clear') {
+      self.postMessage({ type: 'cache-cleared', ok: await clearAssetCache() });
       return;
     }
     if (msg.type === 'collect') {

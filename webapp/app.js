@@ -117,6 +117,11 @@ let sizeMode = 'square';   // 'square' (the slider) or 'rect' (explicit 长 × �
 let rectCells = null;
 
 let autoRender = false;    // the 设置 drawer's 自动渲染地图 switch (persisted)
+// theatre -> cached-extraction manifest ({files, bytes, savedAt}) from the worker.
+// A cache hit means the page can generate (and render) with NO game directory and
+// no permission prompt; see the OPFS section in worker.js.
+const cacheInfo = {};
+let cacheRestorePending = false;
 const SETTINGS_KEY = 'ra2mg.settings';
 const rolledEl = el('rolled');
 
@@ -320,8 +325,32 @@ worker.addEventListener('message', async (event) => {
       if (typeof msg.symmetryMax === 'number') { symmetryMax = msg.symmetryMax; syncSymmetry(); }
       syncSize();
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
-      if (archives) goBtn.disabled = false;
+      askCacheInfo(currentTheater());
+      refreshGoButton();
       break;
+    case 'cache-info': {
+      if (msg.theater === currentTheater()) delete cacheInfo.__pending;
+      cacheInfo[msg.theater] = msg.manifest || null;
+      if (msg.theater === currentTheater()) renderCacheNote();
+      break;
+    }
+    case 'cache-saved': {
+      cacheInfo[msg.theater] = { files: msg.files, bytes: msg.bytes, savedAt: msg.savedAt };
+      if (msg.theater === currentTheater()) renderCacheNote();
+      mark(`cache: 素材已缓存（${fmtBytes(msg.bytes)}），下次打开不再需要游戏目录`);
+      break;
+    }
+    case 'cache-miss': {
+      cacheInfo[msg.theater] = null;
+      if (msg.theater === currentTheater()) renderCacheNote();
+      break;
+    }
+    case 'cache-cleared': {
+      for (const k of Object.keys(cacheInfo)) if (k !== '__pending') delete cacheInfo[k];
+      renderCacheNote();
+      setStatus(msg.ok ? '已清除浏览器缓存。' : '清除缓存失败（可能本来就没有）。', msg.ok ? 'ok' : '');
+      break;
+    }
     case 'log':
       logEl.textContent += msg.line + '\n';
       logEl.scrollTop = logEl.scrollHeight;
@@ -473,7 +502,7 @@ function applyPicked(byName, label) {
     : `没有在${where}里找到需要的 .mix 文件。`;
 
   archives = missing.length ? null : found.map((n) => ({ name: n, file: byName.get(n) }));
-  goBtn.disabled = !(archives && booted);
+  refreshGoButton();
   resultEl.style.display = 'none';
   errorEl.textContent = '';
 }
@@ -544,6 +573,44 @@ async function useHandle(handle, remember) {
   if (remember) await handlePut(handle);
   applyPicked(files, handle.name);
   await tryAutoRestore();
+}
+
+// ---- the cached extraction (see worker.js) ---------------------------------
+const cacheEl = el('cache-note');
+const cacheClearBtn = el('cache-clear');
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return '?';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+function currentTheater() { return Number(el('theater').value); }
+function cachedNow() { return cacheInfo[currentTheater()] || null; }
+// What the generate button needs: either the picked archives (this visit) or the
+// cached extraction (any visit after the first).
+function hasAssets() { return archives !== null || !!cachedNow(); }
+function refreshGoButton() { if (booted) goBtn.disabled = !hasAssets(); }
+function renderCacheNote() {
+  const man = cachedNow();
+  const name = el('theater').selectedOptions[0]?.textContent || `theater ${currentTheater()}`;
+  const pending = cacheInfo.__pending ? `（正在查看${cacheInfo.__pending}的缓存……）` : '';
+  if (man) {
+    cacheEl.textContent =
+      `已缓存素材：${name} · ${man.files} 个文件 / ${fmtBytes(man.bytes)} · `
+      + `${new Date(man.savedAt).toLocaleString()}`
+      + `——本次生成和渲染直接用缓存，不需要游戏目录，也不会要权限。`;
+    cacheClearBtn.hidden = false;
+  } else {
+    cacheEl.textContent =
+      `尚未缓存${name}的素材：选一次游戏目录，之后开页面就不用再选了${pending}。`;
+    cacheClearBtn.hidden = true;
+  }
+  refreshGoButton();
+}
+function askCacheInfo(theater) {
+  cacheInfo.__pending = theater;
+  worker.postMessage({ type: 'cache-info', theater });
 }
 
 async function refreshRemember() {
@@ -684,7 +751,13 @@ el('roll-all').addEventListener('click', () => {
 });
 
 goBtn.addEventListener('click', () => {
-  if (!archives) return;
+  if (!hasAssets()) {
+    showError('还没有可用的素材：选一次游戏目录（之后会缓存起来），或等缓存就绪。');
+    return;
+  }
+  // The picked directory wins when there is one (the user may have switched games);
+  // otherwise the cached extraction is rehydrated, which needs no permission at all.
+  const fromCache = !archives && !!cachedNow();
   goBtn.disabled = true;
   errorEl.textContent = '';
   logEl.textContent = '';
@@ -720,17 +793,40 @@ goBtn.addEventListener('click', () => {
   };
   rolledEl.textContent = roll.notes.length ? `本次随机：${roll.notes.join(' · ')}` : '';
 
-  worker.postMessage({ type: 'assets', files: archives, theater: params.theater });
-  // The worker extracts, then reports assets-ready; generation is kicked off
-  // from here so the two stages stay individually reportable.
+  // The worker prepares the asset tree, then reports assets-ready; generation is
+  // kicked off from here so the two stages stay individually reportable.
   const onceReady = (event) => {
-    if (event.data && event.data.type === 'assets-ready') {
+    const d = event.data || {};
+    if (d.type === 'assets-ready') {
       worker.removeEventListener('message', onceReady);
       worker.postMessage({ type: 'generate', params });
+    } else if (d.type === 'cache-miss') {
+      worker.removeEventListener('message', onceReady);
+      showError('浏览器缓存已失效（可能被清理或换了浏览器），请重新选择一次游戏目录。');
+      goBtn.disabled = false;
     }
   };
   worker.addEventListener('message', onceReady);
+  if (fromCache) {
+    setStatus('正在从浏览器缓存恢复素材……');
+    worker.postMessage({ type: 'assets-from-cache', theater: params.theater });
+  } else {
+    worker.postMessage({ type: 'assets', files: archives, theater: params.theater });
+  }
 });
+
+// ---- cache controls --------------------------------------------------------
+el('theater').addEventListener('change', () => {
+  renderCacheNote();
+  if (booted) askCacheInfo(currentTheater());
+  else renderCacheNote();
+});
+cacheClearBtn.addEventListener('click', () => {
+  cacheClearBtn.disabled = true;
+  worker.postMessage({ type: 'cache-clear' });
+  setTimeout(() => { cacheClearBtn.disabled = false; }, 1500);
+});
+renderCacheNote();
 
 worker.postMessage({ type: 'boot' });
 setStatus('正在加载引擎……');

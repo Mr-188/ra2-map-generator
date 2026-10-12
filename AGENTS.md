@@ -37,6 +37,12 @@ tools/wasm_entry    浏览器入口
 `ra2.mix`(269 MB) 与 `ra2md.mix`(195 MB) **不进 MEMFS** —— 浏览器里由 Worker 里的
 `FileReaderSync` 按需切片读。
 
+**浏览器侧还有一层缓存**：第一次选完游戏目录、提取完之后，那棵散文件树（约 12 MB）
+会写进浏览器自己的 OPFS（`webapp/worker.js` 的 `CACHE_DIR`）。之后开页面直接把它
+rehydrate 回 MEMFS，**不再需要游戏目录，也不需要文件读取权限**（File System Access
+的授权浏览器不保证跨重启保留，重新申请又必须由用户手势发起，所以那条路每次都要点一下）。
+缓存按剧场分开、可清除，恢复时逐个文件比校验和，对不上就当作失效并请用户重选。
+
 ---
 
 ## 红线

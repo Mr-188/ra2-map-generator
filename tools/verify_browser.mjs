@@ -492,6 +492,78 @@ try {
   check('自动渲染地图 renders by itself after a generation',
         autoImg === 'ok', String(autoImg));
 
+  // ---- the cached extraction: a second visit without the game directory ---------
+  //
+  // The first generation above read the picked archives; the worker also wrote the
+  // extracted tree (~13 MB / ~970 files) into OPFS.  This reloads the page with
+  // NOTHING injected - no directory, no permission, no click - and requires the page
+  // to be able to generate again, from the cache, producing the SAME bytes for the
+  // same parameters.  Byte equality is the point: it proves the rehydrated MEMFS is
+  // the tree the generator had, not merely "some assets that happen to work".
+  console.log('  cache    first with the picked archives, then a reload with none');
+  // Auto-render must be OFF for this section: it would create a second object URL for
+  // the preview image and the blob captured below could be the PNG instead of the map.
+  await page.click('#settings-open');
+  if (await page.$eval('#auto-render', (e) => e.checked)) await page.click('#auto-render');
+  await page.click('#settings-close');
+  const setFixed = () => page.evaluate(() => {
+    document.getElementById('land').value = '1';
+    document.getElementById('time').value = '0';
+    document.getElementById('theater').value = '0';
+    document.getElementById('players').value = '2';
+    document.getElementById('ore').value = '1';
+    document.getElementById('symmetry').value = '0';
+    document.getElementById('kind').value = '0';
+    document.getElementById('seed').value = '20260913';
+    document.getElementById('map-seed').value = '0';
+    document.getElementById('size').value = '1';
+    document.querySelector('#size-mode button[data-mode="square"]').click();
+  });
+  const installCapture = () => page.evaluate(() => {
+    if (!window.__captureWrapped) {
+      window.__captureWrapped = true;
+      const orig = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { window.__mapBlob = blob; return orig(blob); };
+    }
+    window.__mapBlob = null;
+  });
+  const waitForReady = () => page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+
+  await page.evaluate(() => { window.__mapBlob = null; });
+  await setFixed();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const withDir = await readBlob();
+  // The cache write is posted as `cache-saved` once OPFS is done; wait for the note
+  // to say so rather than guessing a delay.
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 120000 }).catch(() => {});
+  const noteWithCache = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  console.log(`  cache    ${noteWithCache}`);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForReady();
+  await installCapture();
+  await setFixed();
+  const afterReload = await page.evaluate(() => ({
+    note: document.getElementById('cache-note').textContent.trim(),
+    goEnabled: !document.getElementById('go').disabled,
+    picked: document.getElementById('picked').textContent.trim(),
+  }));
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const fromCache = await readBlob();
+  const same = withDir && fromCache
+    && Buffer.compare(Buffer.from(withDir), Buffer.from(fromCache)) === 0;
+  check('cached extraction: a reload with no directory generates the same map',
+        /已缓存素材/.test(afterReload.note) && afterReload.goEnabled && same
+          && afterReload.picked === '',
+        `note="${afterReload.note}" go=${afterReload.goEnabled} picked="${afterReload.picked}" `
+          + `same=${same} (${withDir?.length}B vs ${fromCache?.length}B)`);
+
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);
 } catch (err) {
