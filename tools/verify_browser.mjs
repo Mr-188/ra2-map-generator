@@ -199,6 +199,66 @@ try {
   await page.click('#auto-render');
   await page.click('#settings-close');
 
+  // ---- the remembered game directory -----------------------------------------
+  //
+  // The handle (WHICH folder) is remembered in IndexedDB, but the permission to read
+  // it belongs to the browser and often does not survive a restart.  app.js therefore
+  // asks on boot (queryPermission) and reopens the folder silently when the answer is
+  // still "granted"; only a downgraded permission needs the click, because
+  // requestPermission() has to run inside a user gesture.
+  //
+  // Only the second half of that is testable here: minting a real handle needs the
+  // native folder picker and a human, so the "granted" path cannot be driven from a
+  // test.  What IS checked is the robustness the auto-restore path depends on - a
+  // fresh profile shows no restore button, and a stored record that is not a usable
+  // handle (an older browser's entry, or one this page cannot use) must not break boot
+  // nor the manual button.
+  const rememberUi = await page.evaluate(() => ({
+    supported: typeof window.showDirectoryPicker === 'function',
+    blockHidden: document.getElementById('remember').hidden,
+    restoreHidden: document.getElementById('restore').hidden,
+  }));
+  check('remembered directory: fresh profile offers no restore button',
+        !rememberUi.supported
+          || (rememberUi.blockHidden === false && rememberUi.restoreHidden === true),
+        JSON.stringify(rememberUi));
+
+  const wrote = await page.evaluate(() => new Promise((resolve) => {
+    const open = indexedDB.open('ra2-rmg', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('handles');
+    open.onsuccess = () => {
+      const st = open.result.transaction('handles', 'readwrite').objectStore('handles');
+      const req = st.put({ name: 'RA2MD' }, 'gameDir');    // NOT a FileSystemHandle
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    };
+    open.onerror = () => resolve(false);
+  }));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+  const afterStale = await page.evaluate(() => ({
+    restoreHidden: document.getElementById('restore').hidden,
+    note: document.getElementById('remember-note').textContent.trim(),
+    error: document.getElementById('error').textContent.trim(),
+    ready: /就绪/.test(document.getElementById('status').textContent),
+  }));
+  check('a stored record that is not a handle does not break boot',
+        wrote && afterStale.ready && afterStale.error === ''
+          && afterStale.restoreHidden === false,
+        `wrote=${wrote} ${JSON.stringify(afterStale)}`);
+  await page.evaluate(() => new Promise((resolve) => {
+    const open = indexedDB.open('ra2-rmg', 1);
+    open.onsuccess = () => {
+      const st = open.result.transaction('handles', 'readwrite').objectStore('handles');
+      const req = st.delete('gameDir');
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(true);
+    };
+    open.onerror = () => resolve(true);
+  }));
+
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
   // ignores it and the FileList stays empty.  Instead fetch the archives over
   // HTTP and build real File objects in the page, then hand them to the same

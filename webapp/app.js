@@ -543,11 +543,11 @@ async function useHandle(handle, remember) {
   for (const n of NEEDED) files.set(n, await byName.get(n).getFile());
   if (remember) await handlePut(handle);
   applyPicked(files, handle.name);
-  await refreshRemember();
+  await tryAutoRestore();
 }
 
 async function refreshRemember() {
-  if (typeof window.showDirectoryPicker !== 'function') return;   // stays hidden
+  if (typeof window.showDirectoryPicker !== 'function') return null;   // stays hidden
   rememberEl.hidden = false;
   const handle = await handleGet();
   restoreBtn.hidden = !handle;
@@ -556,6 +556,36 @@ async function refreshRemember() {
   rememberNote.textContent = handle
     ? '目录已记住：刷新或下次打开后，点左侧按钮即可继续使用。'
     : '用这个按钮选的目录会被记住，刷新后不用重选。';
+  return handle;
+}
+
+// Restore the remembered directory WITHOUT a click, when the browser still allows it.
+//
+// The handle (which folder) survives in IndexedDB; the PERMISSION to read it is the
+// browser's to decide, and it does not always survive a restart.  When it does - the
+// same session, or a grant the user chose to persist - queryPermission() answers
+// "granted" and there is nothing to ask for, so this reopens the directory silently.
+// When it answers "prompt" the click is unavoidable: requestPermission() must run
+// inside a user gesture, which is the whole point of the rule (a page must not be able
+// to keep reading a disk folder behind the user's back).  So the button stays, and the
+// note now says why instead of pretending the click is our choice.
+async function tryAutoRestore() {
+  const handle = await refreshRemember();
+  if (!handle || typeof handle.queryPermission !== 'function') return;
+  try {
+    const perm = await handle.queryPermission({ mode: 'read' });
+    if (perm !== 'granted') {
+      rememberNote.textContent =
+        '目录已记住：读取权限要你点一下才能恢复（浏览器的安全限制，页面不能自己申请）。';
+      return;
+    }
+    await useHandle(handle, false);
+    restoreBtn.hidden = true;                 // nothing left to restore by hand
+    rememberNote.textContent = '已自动恢复上次的目录。';
+  } catch (err) {
+    // Any failure here (a handle from an older browser, a moved folder) just leaves
+    // the manual button in place; it is the path that has always worked.
+  }
 }
 
 restoreBtn.addEventListener('click', async () => {
