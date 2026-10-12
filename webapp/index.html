@@ -660,10 +660,16 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="kind">地图类型</label>
-          <select id="kind">
+          <!-- No 随机 here, by product decision: multiplayer (.yrm) is the layout you
+               can actually drop into the game and play in Skirmish, single player
+               (.map) is the campaign/editor layout.  A roll that silently produced a
+               .map would hand the user a file the skirmish list does not list, so this
+               stays a deliberate choice and 全随机 leaves it alone.  The two differ
+               only in [Header]/[Basic]/[Houses] and the extension - the terrain is the
+               same map (measured: IsoMapPack5/OverlayPack/Waypoints identical). -->
+          <select id="kind" title="多人 .yrm 是遭遇战用的布局；单人 .map 是关卡/编辑器布局（地形相同，只是文件布局不同）">
             <option value="0" selected>多人 .yrm</option>
             <option value="1">单人 .map</option>
-            <option value="?">随机</option>
           </select>
         </div>
 

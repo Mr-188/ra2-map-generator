@@ -155,10 +155,20 @@ try {
   // injected, because the drawer's switch is persisted and this reloads the page to
   // prove it; the switch is turned back off afterwards so the rest of the suite -
   // which clicks 渲染预览 by hand - runs exactly as it did before.
-  const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry', 'kind'];
+  const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry'];
   const noRandom = await page.evaluate((ids) => ids.filter((id) =>
     ![...document.getElementById(id).options].some((o) => o.value === '?')), ROLL_IDS);
-  check('every parameter offers 随机', noRandom.length === 0, `missing on ${noRandom.join(', ')}`);
+  check('every variable parameter offers 随机', noRandom.length === 0,
+        `missing on ${noRandom.join(', ')}`);
+
+  // 地图类型 carries no 随机 and 全随机 must not touch it: multiplayer (.yrm) is the
+  // layout that shows up in the game's skirmish list, so it is a deliberate choice.
+  const kindUi = await page.evaluate(() => ({
+    values: [...document.getElementById('kind').options].map((o) => o.value),
+    value: document.getElementById('kind').value,
+  }));
+  check('地图类型 offers exactly 多人/单人 and defaults to 多人',
+        kindUi.values.join(',') === '0,1' && kindUi.value === '0', JSON.stringify(kindUi));
 
   await page.click('#roll-all');
   const rollAll = await page.evaluate((ids) => ({
@@ -167,10 +177,12 @@ try {
       .find((b) => b.classList.contains('on'))?.dataset.mode,
     seed: document.getElementById('seed').value,
     mapSeed: document.getElementById('map-seed').value,
+    kind: document.getElementById('kind').value,
   }), ROLL_IDS);
-  check('全随机 sets every parameter to 随机 and both seeds to 0',
+  check('全随机 sets every variable parameter to 随机 and both seeds to 0 (地图类型 untouched)',
         rollAll.values.every((v) => v === '?') && rollAll.mode === 'random'
-          && rollAll.seed === '0' && rollAll.mapSeed === '0',
+          && rollAll.seed === '0' && rollAll.mapSeed === '0'
+          && rollAll.kind === '0',
         JSON.stringify(rollAll));
 
   await page.click('#settings-open');
@@ -290,6 +302,17 @@ try {
     { timeout: 120000 });
   const picked = await page.$eval('#picked', (e) => e.textContent);
   check('archives accepted', /已找到 3\/3/.test(picked), picked.trim());
+
+  // The reported scenario: pick a folder, refresh, and NOT have to pick again.  That
+  // needs the cache to exist from the PICK alone, so the extraction (and the cache
+  // write that follows it) starts when the folder is picked - not on the first
+  // generate, which is how it used to work and why a fresh pick + reload had none.
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 180000 }).catch(() => {});
+  const cacheAfterPick = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  check('picking a folder alone fills the cache (no generate needed)',
+        /已缓存素材/.test(cacheAfterPick), cacheAfterPick);
 
   console.log('  generate');
   await page.click('#go');

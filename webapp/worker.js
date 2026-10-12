@@ -164,7 +164,10 @@ function extractedEntries() {
 // on restore, and no per-entry bookkeeping to get wrong.
 async function saveAssetCache(theater) {
   const dir = await opfsCacheDir(true);
-  if (!dir) return null;
+  if (!dir) {
+    self.postMessage({ type: 'cache-unavailable' });
+    return null;
+  }
   const entries = extractedEntries();
   if (!entries.length) return null;
   let bytes = 0;
@@ -376,7 +379,12 @@ self.onmessage = async (event) => {
       // 13 MB of storage: a failed cache write costs nothing but the next visit.
       saveAssetCache(msg.theater | 0)
         .then((man) => { if (man) self.postMessage({ type: 'cache-saved', ...man }); })
-        .catch(() => { /* the directory path still works; no cache this time */ });
+        .catch((err) => {
+          // Silently skipping the cache would look exactly like "the cache never
+          // works", which is the report this feature exists to answer, so say it.
+          self.postMessage({ type: 'cache-failed',
+                             reason: String((err && err.message) || err) });
+        });
       return;
     }
     if (msg.type === 'generate') {

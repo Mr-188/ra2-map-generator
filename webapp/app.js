@@ -122,6 +122,12 @@ let autoRender = false;    // the 设置 drawer's 自动渲染地图 switch (per
 // no permission prompt; see the OPFS section in worker.js.
 const cacheInfo = {};
 let cacheRestorePending = false;
+// 'idle' | 'running' | 'ok' | 'failed' | 'unsupported' - what to say about the
+// browser-side cache in the 游戏目录 section.
+let cacheState = 'idle';
+let cacheFailReason = '';
+let extractInFlight = false;   // an extraction (which also fills the cache) is running
+let extractedTheater = null;   // the theatre the worker's tree currently holds
 const SETTINGS_KEY = 'ra2mg.settings';
 const rolledEl = el('rolled');
 
@@ -335,6 +341,7 @@ worker.addEventListener('message', async (event) => {
       break;
     }
     case 'cache-saved': {
+      cacheState = 'ok';
       cacheInfo[msg.theater] = { files: msg.files, bytes: msg.bytes, savedAt: msg.savedAt };
       if (msg.theater === currentTheater()) renderCacheNote();
       mark(`cache: 素材已缓存（${fmtBytes(msg.bytes)}），下次打开不再需要游戏目录`);
@@ -359,7 +366,20 @@ worker.addEventListener('message', async (event) => {
       setStatus(PROGRESS[msg.stage] || '处理中……');
       break;
     case 'assets-ready':
-      setStatus('素材已就绪。');
+      extractInFlight = false;
+      extractedTheater = (typeof msg.theater === 'number') ? msg.theater : null;
+      if (cacheState === 'running') cacheState = 'idle';
+      renderCacheNote();
+      setStatus(msg.fromCache ? '素材已从浏览器缓存恢复。' : '素材已就绪（正在写缓存）。');
+      break;
+    case 'cache-unavailable':
+      cacheState = 'unsupported';
+      renderCacheNote();
+      break;
+    case 'cache-failed':
+      cacheState = 'failed';
+      cacheFailReason = msg.reason || '(未知原因)';
+      renderCacheNote();
       break;
     case 'rect-cells':
       // The engine's answer for one 长 × 宽 pair.  Recorded with its pair so a
@@ -503,6 +523,10 @@ function applyPicked(byName, label) {
 
   archives = missing.length ? null : found.map((n) => ({ name: n, file: byName.get(n) }));
   refreshGoButton();
+  // Extract (and cache) as soon as the folder is picked, not on the first generate:
+  // "picked the folder, refreshed, had to pick again" was exactly the report this
+  // answers.  The cache write follows the extraction on its own.
+  if (archives && booted) startExtract();
   resultEl.style.display = 'none';
   errorEl.textContent = '';
 }
@@ -595,6 +619,26 @@ function renderCacheNote() {
   const man = cachedNow();
   const name = el('theater').selectedOptions[0]?.textContent || `theater ${currentTheater()}`;
   const pending = cacheInfo.__pending ? `（正在查看${cacheInfo.__pending}的缓存……）` : '';
+  if (cacheState === 'unsupported') {
+    cacheEl.textContent = '这个浏览器不支持本地缓存（OPFS）：每次打开都要重新选一次游戏目录。'
+      + '用「选择目录并记住」可以少一步，但浏览器的读取权限不保证跨重启保留。';
+    cacheClearBtn.hidden = true;
+    refreshGoButton();
+    return;
+  }
+  if (cacheState === 'running') {
+    cacheEl.textContent = `正在提取${name}的素材并写入浏览器缓存……（约十几秒，完成后以后不用再选目录）`;
+    cacheClearBtn.hidden = !man;
+    refreshGoButton();
+    return;
+  }
+  if (cacheState === 'failed') {
+    cacheEl.textContent = `素材已提取，但写缓存失败：${cacheFailReason}`
+      + '——生成照常能用，只是下次打开还得再选一次目录。';
+    cacheClearBtn.hidden = !man;
+    refreshGoButton();
+    return;
+  }
   if (man) {
     cacheEl.textContent =
       `已缓存素材：${name} · ${man.files} 个文件 / ${fmtBytes(man.bytes)} · `
@@ -699,9 +743,13 @@ refreshRemember();
 //
 // Order matters: 地图大小 draws from the engine's own table for the (land, players)
 // pair the roll just picked, so land and players are rolled first.
-const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry', 'kind'];
+// 地图类型 (多人 .yrm / 单人 .map) is deliberately NOT in this list and carries no
+// 随机 entry: a roll that produced a .map would hand the user a file the skirmish map
+// list does not show.  It stays whatever the user picked (多人 by default), and
+// 全随机 leaves it alone.
+const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry'];
 const ROLL_LABEL = { land: '环境', time: '时间', theater: '剧场', players: '玩家数',
-                     ore: '矿量', symmetry: '对称', kind: '地图类型' };
+                     ore: '矿量', symmetry: '对称' };
 
 function concreteOptions(id) {
   return [...el(id).options]
@@ -753,7 +801,8 @@ el('roll-all').addEventListener('click', () => {
   el('map-seed').value = '0';
   syncSize();
   syncSymmetry();
-  setStatus('全部参数已设为随机：每次点「生成地图」都会重新抽一套，抽到的值会显示在按钮下面。');
+  setStatus('所有可变参数已设为随机（地图类型保持不动）：每次点「生成地图」都会重新抽一套，'
+            + '抽到的值会显示在按钮下面。');
 });
 
 goBtn.addEventListener('click', () => {
@@ -761,9 +810,6 @@ goBtn.addEventListener('click', () => {
     showError('还没有可用的素材：选一次游戏目录（之后会缓存起来），或等缓存就绪。');
     return;
   }
-  // The picked directory wins when there is one (the user may have switched games);
-  // otherwise the cached extraction is rehydrated, which needs no permission at all.
-  const fromCache = !archives && !!cachedNow();
   goBtn.disabled = true;
   errorEl.textContent = '';
   logEl.textContent = '';
@@ -773,7 +819,7 @@ goBtn.addEventListener('click', () => {
   // Everything the user left on 随机 is decided HERE, once per click, and reported
   // in #rolled (the controls themselves stay on 随机, so the next click rolls again).
   const roll = rollParams();
-  const single = roll.chosen.kind === '1';
+  const single = el('kind').value === '1';      // never rolled, see ROLL_IDS
   const outPath = `/mg/out.${single ? 'map' : 'yrm'}`;
   const rect = (roll.size === null && sizeMode === 'rect') ? clampedRect() : { w: 0, h: 0 };
   const params = {
@@ -799,6 +845,17 @@ goBtn.addEventListener('click', () => {
   };
   rolledEl.textContent = roll.notes.length ? `本次随机：${roll.notes.join(' · ')}` : '';
 
+  // The picked directory wins when there is one (the user may have switched games);
+  // otherwise the cached extraction is rehydrated, which needs no permission at all.
+  //
+  // Both decisions use the theatre the ROLL produced, not the select: with 随机 in the
+  // 剧场 row the two differ, and the cache lookup has to follow the map being made.
+  // (They read `params`, so they cannot sit above this line - doing that threw
+  // "Cannot access 'params' before initialization" on every click.)
+  const fromCache = !archives && !!cacheInfo[params.theater];
+  // If picking the folder already extracted this theatre, do not do it again.
+  const needExtract = !!archives && extractedTheater !== params.theater;
+
   // The worker prepares the asset tree, then reports assets-ready; generation is
   // kicked off from here so the two stages stay individually reportable.
   const onceReady = (event) => {
@@ -816,10 +873,35 @@ goBtn.addEventListener('click', () => {
   if (fromCache) {
     setStatus('正在从浏览器缓存恢复素材……');
     worker.postMessage({ type: 'assets-from-cache', theater: params.theater });
-  } else {
+  } else if (needExtract) {
     worker.postMessage({ type: 'assets', files: archives, theater: params.theater });
+  } else if (archives) {
+    // The tree already holds this theatre (picked earlier); straight to generating.
+    worker.removeEventListener('message', onceReady);
+    worker.postMessage({ type: 'generate', params });
+  } else {
+    // No directory this visit AND nothing cached for the theatre that was rolled:
+    // generating now would run the engine on an empty tree.
+    worker.removeEventListener('message', onceReady);
+    showError('这个剧场的素材还没有缓存，也没有选择游戏目录：请选一次游戏目录（之后就会缓存）。');
+    goBtn.disabled = false;
   }
 });
+
+// Extraction + cache write, started by picking a directory.  The generate handler
+// reuses the result: nothing is re-extracted when the tree already holds this theatre.
+function startExtract() {
+  const theater = Number(el('theater').value);
+  // The theatre select can be on 随机: then there is no theatre to pre-extract, and
+  // the generate path extracts the rolled one (and caches it) instead.
+  if (!Number.isFinite(theater)) return;
+  if (!archives || extractInFlight || extractedTheater === theater) return;
+  extractInFlight = true;
+  cacheState = 'running';
+  renderCacheNote();
+  setStatus('正在提取素材（完成后写入缓存，以后打开就不用再选目录了）……');
+  worker.postMessage({ type: 'assets', files: archives, theater });
+}
 
 // ---- cache controls --------------------------------------------------------
 el('theater').addEventListener('change', () => {

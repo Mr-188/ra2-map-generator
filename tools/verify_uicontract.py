@@ -128,6 +128,26 @@ def main() -> int:
             print("  symmetry     : 0 (无) / 2 (180° 中心对称) / ? (随机) - single "
                   "optional kind, rollable")
 
+    # 地图类型 gets no 随机 entry and no roll: multiplayer (.yrm) is the layout the
+    # game's skirmish list shows, single player (.map) is the campaign/editor layout.
+    # The terrain is identical either way (measured: IsoMapPack5 / OverlayPack /
+    # Waypoints byte-equal), so a roll here would only ever hand the user a file in the
+    # layout they did not ask for.
+    kind_block = re.search(r'<select id="kind".*?</select>', page, re.S)
+    if kind_block is None:
+        failures.append("index.html has no #kind select")
+    else:
+        values = re.findall(r'<option value="([^"]*)"', kind_block.group(0))
+        if values != ["0", "1"]:
+            failures.append(
+                f"the #kind select offers {values}; it must be exactly 0 (多人 .yrm) and "
+                "1 (单人 .map), with no 随机 entry - the map type stays the user's "
+                "choice, and 全随机 must not touch it")
+        elif 'value="0" selected' not in kind_block.group(0):
+            failures.append("the #kind select must default to 0 (多人 .yrm)")
+        else:
+            print("  map type     : 0 (多人 .yrm, default) / 1 (单人 .map) - not rollable")
+
     # The seed fields' defaults are product decisions too: the global seed defaults to
     # 0, which the engine reads as "roll it from the clock" (wasm_entry.cpp:282), i.e.
     # a fresh map per click exactly like the retail dialog; the terrain seed default 0
