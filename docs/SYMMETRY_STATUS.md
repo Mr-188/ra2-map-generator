@@ -1159,6 +1159,42 @@ if (pass && cpaired) {
 `[diag-cliffs]` 的 levelBad 增长（现在一路涨到 119）→ 目标不再增长；`--stop-after regions` 的
 ±4 各 119 → 0。
 
+**新目标轮 9 实测（重要）：源 A 可以彻底归零，但单独落会更差 —— 两个 bug 在互相抵消**
+
+**① 源 A 的修法找到了，而且效果干净**：镜像格不再"重新选件"，而是把权威半场那一件的落件
+**按镜像抄过来**（用现成的 `cliffStamps_` 记录：每格的 `x,y,slot,z,ok`；层号按定义相等，美术走
+`MirrorTile`、坡向走 `ReflectSlope`）。实测 `[diag-regions]`：
+
+```
+FixCliffLevels        levelBad=5
+PlaceCliffs           levelBad=0     ← 源 A 归零 ✓
+CorrectCliffTiles …   levelBad=0
+```
+而且**不止海拔**：`after MakeRegions` 的 markerBad/slopeBad/crossFam 从 **164 / 0 / 164 → 0 / 0 / 0** ✓✓
+（这是本目标里第一次有源被彻底清零 ✓）。
+
+**② 但最终图反而更差** ✗：
+
+| 版本 | 最终图镜像格高度不一致 |
+|---|---|
+| 基线（两个 bug 都在） | **1084 / 13913 = 7.79%**（±1 各 423 ＋ ±4 各 119） |
+| 只修 A | **1466 = 10.54%**（±1 各 **733**，±4 消失）✗ |
+| A ＋ B（读镜像角块） | **1202 = 8.64%**（±1 各 601）✗ |
+
+**原因**：源 A 的 ±4 与源 B 的 ±1 在最终图上**部分互相抵消** ✗ —— 去掉 A，B 的 ±1 就从 423 涨到 733 ✗。
+所以"只修一个"必然更差；两个都要修**且都要修对**才可能让 ① 归零 ✓。
+
+**③ B 的修法方向对但不够**：读镜像角块让 B 的 `after CreateHills` levelBad 从 733 降到 **601** ✓，
+但没有到 0 ✗。线索很明确：`FinalizeElevationSlopes` 里**读角块的地方不止一处**（主循环之外还有
+`ElevationCornerAt(...)` 的辅助路径，如 785 / 817 一带），我只改了其中一处 ✗。
+
+**已按规矩全部撤回** ✓：撤回后 `[diag-regions] PlaceCliffs=119`、最终图 **1084/13913（7.79%）** ✓、
+补丁与 HEAD **逐行一致** ✓。
+
+**下一轮**：把 B 补完 —— 找出所有读 2×2 角块的路径（`grep ElevationCornerAt`），让**镜像半场一律
+读锚点 (x−1, y−1) 的那一块**；然后 **A+B 一起**量测（口径：`after MakeRegions` levelBad=0 ✓ 保持、
+`after CreateHills` levelBad → 0、最终图 7.79% → 0、未覆盖落差 → 0、黑 ≤84565、none/LR 不变）。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
