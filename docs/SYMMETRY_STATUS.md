@@ -1804,6 +1804,37 @@ acceptBuilder 调用 189 → builder 自己失败 189、sideHighClash 撤销 0�
 **状态**：诊断门控 ✓、默认行为不变 ✓；落地状态未变 ✓（none/LR 逐字节 ✓、落差 0 ✓、黑 0.394% ✓）；
 补丁待诊断撤掉后重生成 ✗。
 
+**新目标轮 3：几何闸门的公式读到了，卡点像"块太大"** ✓
+
+`IsWithinUsableArea` → `IsWithinUsableRect`（`MapGenMakingSub.cpp:4131` ✓），公式是**把层号算进去的菱形**：
+
+```cpp
+const int width = size_.mapWidth;                       // 80
+return coords.Y + coords.X >  level + width + 2*visY
+    && coords.Y + coords.X <= level + width + 2*(visY+visH) + 2
+    && coords.X - coords.Y <  2*(visX+visW) - width
+    && coords.Y - coords.X <  width - 2*visX;
+```
+
+关键：**`level` 直接进不等式** ✓ —— 同一个格在不同层号下"可用性"不同 ✓：
+`Y+X` 的下界随 level 上移 ✓（层越高、越靠下的点越出界 ✓），上界也随之上移 ✓。
+所以一个块四角**跨 L4/L8 时**，L8 的两个角要用更紧的判据 ✓。
+
+配合上一轮的数据（块尺寸 **17×15 / 15×15** ✓ → `RampRectClear` 检查的是 **(w+10)×(h+10) = 27×25 / 25×25**
+的大块 ✓），"四角不在可用区 85/167 ≈ 一半"就**完全说得通** ✓ —— 这么大的块必须落在菱形相当靠中间的位置 ✓，
+而候选点取自**高地区域的边界** ✓（离中心较远 ✓）→ 一半左右出界 ✓。
+
+**注意**：`IsWithinUsableArea`/`IsWithinUsableRect` 与反汇编是**逐行对应**的 ✓（注释带地址 ✓），
+所以**不是判据写错** ✗，而是**喂进去的几何**：要么 strip 的 from/to 算得太大 ✓
+（文档说第一类 strip 只有 (X-1,Y-5)-(X+5,Y+1) 这种 ~6×6 ✓，而实测 w/h 到 15~17 ✗），
+要么候选点集来自边界而不是"可容纳整块的地方" ✓。
+
+**下一轮**：查 builder 里 `w = to.X - from.X`、`h = to.Y - from.Y` 的 `from/to` 从哪来 ✓
+（对照 `sub_593AF0` 第一段的注释 ✓），以及 `CollectRegionBoundary` 给出的候选点分布 ✓。
+
+**状态**：诊断门控 ✓、默认行为不变 ✓；落地状态未变 ✓（none/LR 逐字节 ✓、落差 0 ✓、黑 0.394% ✓）；
+补丁待诊断撤掉后重生成 ✗。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
