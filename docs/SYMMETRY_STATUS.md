@@ -1092,6 +1092,34 @@ after CreateHills … 之后所有阶段                                     542
 把 `PlaceCliffs` / `CorrectCliffTiles` / `RepairCliffPieces` 里那些方向相关的 ∓4 写入找出来并成对化；
 A 归零之后再回来做 B（角块相位），那时 B 才有可能成立。
 
+**新目标轮 7 实测：源 A 一步定位到 `PlaceCliffs`（±4 全部诞生在这一步）**
+
+`mgconsole` 只在整趟前后有钩子，所以在参考实现里加了一个 **env 门控**的子步骤诊断
+（`MG_DIAG_REGIONS=1`，自包含、只打印 ✓；`--symmetry 0` 与 LR 出图逐字节不变 ✓ 已验）：
+
+```
+[diag-regions] enter                  pairs=6917 levelBad=0      ← 进 MakeRegions 时两半完全相等 ✓
+[diag-regions] ReseedRegions          pairs=6917 levelBad=2664   ← 区域函数造成的大分歧（随后 MirrorLevels 平掉）
+[diag-regions] FixCliffLevels         pairs=6917 levelBad=5      ← 此时几乎对称
+[diag-regions] PlaceCliffs            pairs=6917 levelBad=119    ← **±4 全在这一步产生** ✓
+[diag-regions] CorrectCliffTiles      pairs=6917 levelBad=119
+[diag-regions] RepairCliffPieces      pairs=6917 levelBad=119
+[diag-regions] FillGreenPlaceholders  pairs=6917 levelBad=119
+```
+
+**源 A = `PlaceCliffs`** ✓（5 → 119，+114 对 ✓，全部是 ±4）。看一眼写入点：`PlaceCliffs` 自己不写
+`Level`，是它**落地崖片的辅助函数**在写（`MapGenMakingSub.cpp:2114~2282` 一带，形如
+`CellAt(c.X,c.Y)->Level = targetLevel;` / `cell->Level = ownerLevel - n - 1;`）—— 也就是说
+**海拔是被"摆件"带出来的**，而镜像半场摆的是镜像件、按镜像几何算出的层号 ✗。
+
+注意 ±4 的含义：`CliffMask` 的判据是"正好高 4 级"（崖面层正好 4 级），所以 ±4 不是舍入误差，
+而是"**一边有崖面层、另一边没有**" ✗ —— 这正是用户看到的"镜像半边有的地块被抬高"。
+
+**下一轮**：在 `PlaceCliffs` 的落地路径上把层号写入成对化（权威半场算出的层号，镜像格按镜像位置
+落同样的层号；`CorrectCliffTiles`/`RepairCliffPieces` 已实测不再引入新分歧 ✓ 可以后置），
+量测口径固定在 `--stop-after regions`（整图 ±4 各 119 → 0）＋ `MG_DIAG_REGIONS` 的
+`PlaceCliffs` 行（119 → 0）。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），

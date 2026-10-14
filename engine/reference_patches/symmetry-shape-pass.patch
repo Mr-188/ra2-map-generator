@@ -1,6 +1,6 @@
 diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
 --- a/MapGenerator/MapGen.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGen.cpp	2026-10-14 12:11:17.113081572 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-14 12:16:01.958156798 +0800
 @@ -1,4 +1,4 @@
 -﻿#include "pch.h"
 +#include "pch.h"
@@ -233,7 +233,7 @@ diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
 --- a/MapGenerator/MapGen.h	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGen.h	2026-10-14 12:11:17.114283157 +0800
++++ b/MapGenerator/MapGen.h	2026-10-14 12:16:01.959211551 +0800
 @@ -1,9 +1,18 @@
 -﻿#pragma once
 +#pragma once
@@ -574,7 +574,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      int       cellCount_;   // number of diamond cells
 diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
 --- a/MapGenerator/MapGenCleanup.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 12:11:17.113448739 +0800
++++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 12:16:01.958505855 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -586,7 +586,7 @@ diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 --- a/MapGenerator/MapGenHills.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenHills.cpp	2026-10-14 12:11:17.114143431 +0800
++++ b/MapGenerator/MapGenHills.cpp	2026-10-14 12:16:01.959100745 +0800
 @@ -74,9 +74,12 @@
  {
      MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
@@ -1054,7 +1054,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +}
 diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
 --- a/MapGenerator/MapGenLAT.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 12:11:17.112510625 +0800
++++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 12:16:01.957558078 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1390,24 +1390,72 @@ diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
              pool[nextNode].priority = key;
 diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
 --- a/MapGenerator/MapGenMaking.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 12:11:17.114080058 +0800
++++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 12:16:01.959054963 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
  // MapGenMaking.cpp - the "Making regions" stage of the random map generator
  //
  //   MakeRegions             sub_598960 @ 0x598D44   stage body - the only
-@@ -78,13 +78,44 @@
+@@ -72,23 +72,97 @@
+     // ---- 0x598d55 - 0x598d60: the LandType 3/4 gate ----------------------
+     const int landType = static_cast<int>(config_.landType);
+ 
++    // [移植侧/诊断] MG_DIAG_REGIONS=1 时，把 MakeRegions 每个子步骤之后的"镜像对海拔不一致数"
++    // 打出来（只打印，不改行为）。源 A 的 ±4 是在这一趟里产生的，而 mgconsole 只在整趟前后有钩子。
++    const bool diagRegions = (std::getenv("MG_DIAG_REGIONS") != nullptr
++                              && std::getenv("MG_DIAG_REGIONS")[0] == '1');
++    const auto diagStep = [&](const char* tag)
++    {
++        if (!diagRegions)
++            return;
++        long long pairs = 0, bad = 0;
++        if (cellSlots_ != nullptr)
++        {
++            const int W = size_.mapWidth, H = size_.mapHeight;
++            for (int y = 0; y < slotRows_; ++y)
++            {
++                for (int x = 0; x < 512; ++x)
++                {
++                    MapCell* a = cellSlots_[512 * y + x];
++                    if (a == nullptr)
++                        continue;
++                    int mx = 0, my = 0;
++                    if (!mg::MirrorCell(W, H, config_.symmetry, x, y, &mx, &my))
++                        continue;
++                    if (!mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
++                        continue;
++                    MapCell* b = cellSlots_[512 * my + mx];
++                    if (b == nullptr)
++                        continue;
++                    ++pairs;
++                    if (a->Level != b->Level)
++                        ++bad;
++                }
++            }
++        }
++        std::fprintf(stderr, "[diag-regions] %-22s pairs=%lld levelBad=%lld\n", tag, pairs, bad);
++    };
++
+     if (landType == 3 || landType == 4)
+     {
++        diagStep("enter");
+         RebuildRegionBodies();                      // 0x598d62  sub_58EBC0
          // [SNAPSHOT-OFF] SaveStageSnapshot("RebuildRegionBodies");
-         ReseedRegions();                            // 0x598d67  sub_58EF10
+-        ReseedRegions();                            // 0x598d67  sub_58EF10
++        ReseedRegions();
++        diagStep("ReseedRegions");                            // 0x598d67  sub_58EF10
          // [SNAPSHOT-OFF] SaveStageSnapshot("ReseedRegions");
+-        FixCliffLevels();                           // 0x598d6e  sub_5A19E0
 +        // [移植侧] 对称：区域函数刚定完海拔，而崖/坡/岸的美术都还没选 —— 就在这里把
 +        // 权威半场的海拔复制过去，后面那些阶段便会为对称的海拔自己选对称的美术。
 +        if (!MirrorLevels(config_.symmetry))
 +            std::fprintf(stderr, "[symmetry] MirrorLevels failed inside MakeRegions\n");
 +
-         FixCliffLevels();                           // 0x598d6e  sub_5A19E0
++        FixCliffLevels();
++        diagStep("FixCliffLevels");                           // 0x598d6e  sub_5A19E0
          // [SNAPSHOT-OFF] SaveStageSnapshot("FixCliffLevels");
+-        PlaceCliffs();                              // 0x598d7b  sub_578E60
 +        // [移植侧] 对称：再平一次海拔。FixCliffLevels 是这一串里**最后一个只写海拔**
 +        // 的阶段 —— 它之后 PlaceCliffs 就开始把海拔变成美术（崖片的 Height 与所在格
 +        // 的海拔绑在一起）。上面那次 MirrorLevels 在它之前，所以它把两半又拉开了：
@@ -1426,11 +1474,16 @@ diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
 +        if (config_.symmetry == mg::MapSymmetry::AxialLeftRight
 +            && !MirrorLevels(config_.symmetry))
 +            std::fprintf(stderr, "[symmetry] MirrorLevels failed after FixCliffLevels\n");
-         PlaceCliffs();                              // 0x598d7b  sub_578E60
++        PlaceCliffs();
++        diagStep("PlaceCliffs");                              // 0x598d7b  sub_578E60
          // [SNAPSHOT-OFF] SaveStageSnapshot("PlaceCliffs");
-         CorrectCliffTiles();                        // 0x598d82  sub_5A17F0
+-        CorrectCliffTiles();                        // 0x598d82  sub_5A17F0
++        CorrectCliffTiles();
++        diagStep("CorrectCliffTiles");                        // 0x598d82  sub_5A17F0
          // [SNAPSHOT-OFF] SaveStageSnapshot("CorrectCliffTiles");
-         RepairCliffPieces();                        // port-only swallowed-piece repair
+-        RepairCliffPieces();                        // port-only swallowed-piece repair
++        RepairCliffPieces();
++        diagStep("RepairCliffPieces");                        // port-only swallowed-piece repair
 +        // [移植侧/本轮实测结论] FixCliffLevels 的 ∓4 修正分支是**方向相关**的（east/west/cell），
 +        // 镜像半场走不同分支 → 实测 `--stop-after regions` 的 TB z 差分布恰为 ⟨-4:75, +4:75⟩（LR 为 0）。
 +        // 试过两处事后抄平：① 紧跟 FixCliffLevels 之后（那时两半已相等，抄 0 格 ✗）；
@@ -1442,9 +1495,15 @@ diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
          // [SNAPSHOT-OFF] SaveStageSnapshot("RepairCliffPieces");
      }
  
+     // ---- 0x598e1a: runs for every land type ------------------------------
+-    FillGreenPlaceholders();                        // sub_59B740
++    FillGreenPlaceholders();
++        diagStep("FillGreenPlaceholders");                        // sub_59B740
+     // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
+ }
 diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 --- a/MapGenerator/MapGenMakingSub.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 12:11:17.112765027 +0800
++++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 12:16:01.957843452 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -1619,7 +1678,7 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
  }
 diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
 --- a/MapGenerator/MapGenMapFile.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 12:11:17.113415867 +0800
++++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 12:16:01.958472984 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1675,7 +1734,7 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 --- a/MapGenerator/MapGenRiver.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 12:11:17.113216818 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 12:16:01.958300935 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2332,7 +2391,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
              const int packedCoords = cell->MapCoords;
 diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 --- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 12:11:17.114395823 +0800
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 12:16:01.959316406 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
