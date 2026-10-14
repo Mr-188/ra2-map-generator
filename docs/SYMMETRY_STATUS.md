@@ -1707,6 +1707,47 @@ TB 专属改动：① `MirrorElevationGrid` 增加 ψ(x,y)=(k−y,k−x) 的**�
 等 `webapp/` 那批改动收尾、浏览器套件转绿后再提交 ✓。当前工作区里改动已就位、
 `engine/reference_patches/symmetry-shape-pass.patch` 已重生成 ✓（未提交 ✗）。
 
+**用户问"内陆图为什么看不到从底下通向高地的坡" —— 查到最后一层，未修** ✗
+
+用户 2026-10-14：*"高地悬崖都没问题，但我没怎么看到坡，就是从底下通向高地的坡，你多生成几张看看"*。
+
+**① 事实：坡确实一个都没有，且不是我改的** ✓
+
+那类件是 `CliffRamps` 族（基号 **384**、宽 20 ✓，从引擎自己的 `[dump-mirror]` 读出 ✓，
+代码注释里就叫"carved region ramps" ✓）。8 个种子（内陆 TB）逐张数：**384..403 全部为 0** ✗✗；
+**老引擎的图同样为 0** ✓ → 既有状态，与"坡度交给官方算法"那处改动无关 ✓。
+
+| seed | CliffRamps | RampBase(33..48) | 落差 | 黑 |
+|---|---|---|---|---|
+| 20260913 | 0 | 1664 | 0 | 0.394% |
+| 4242 | 0 | 2945 | 0 | 0.537% |
+| 777 / 12345 / 999 / 31337 / 555 / 8888 | 0 | 2510 / 2793 / 2312 / 2554 / 2246 / 2169 | 0 | 0.41~0.50% |
+
+**② 用门控诊断（`MG_DIAG_RAMP=1`）逐层定位，结论明确** ✓
+
+```
+采样可用 174 / 不可用 26 | CarveRampAt 调用 174 → ok=false 96、mask=255 0、进入 strip 判据 78
+acceptBuilder 调用 189 → builder 自己失败 189、sideHighClash 撤销 0、高地被切两块撤销 0、通过 0
+```
+
+即：
+
+* `CarveRegionRamps` 在跑 ✓（`MapGenMakingSub.cpp:935` 调用、1278 定义 ✓），每个区域对**至少尝试一条** ✓
+  （`want = ramps + 1` ✓，即使可通行性掷出 0 ✓）；
+* `IsWithinUsableArea` 只在 26/200 次候选上否决 ✓ —— **不是瓶颈** ✓；
+* `RampMask`（`sub_590FD0` ✓）的 `ok=false` 96 次是**前期高门槛的正常现象** ✓
+  （`threshold = 5 + 10×(1−ratio)`，`ratio = attempts×0.01` ✓ → 开局要求 5×5 里 15 格、越试越松 ✓）；
+* **78 次进入了三个 strip 判据，189 次 `acceptBuilder` 全部"builder 自己失败"** ✗✗ ——
+  也就是说**移植侧的两个撤销（sideHighClash / 高地被切两块）根本不是原因** ✓（都是 0 ✓），
+  是**七个 strip builder 自己每次返回 0** ✗；
+* builder 内部有四角 `IsWithinUsableArea`、`mark != owner->id && mark != targetId`、
+  占位件测试（`sub_486380`）、`RampRectClear` 净空等条件 ✓ —— **具体哪一条永远为假还没测** ✗
+  （下一步就是在 builder 内部逐条计数 ✓）。
+
+**③ 状态**：诊断已撤回 ✓（产品代码保持干净 ✓）；落地状态未变 ✓ ——
+`none`/`LR` 逐字节不变 ✓、高度失配 1204 ✓、落差 0 ✓、黑 0.394% ✓；
+`engine/reference_patches/symmetry-shape-pass.patch` 与源码逐行一致 ✓。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
