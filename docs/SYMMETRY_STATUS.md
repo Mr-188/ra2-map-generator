@@ -1748,6 +1748,33 @@ acceptBuilder 调用 189 → builder 自己失败 189、sideHighClash 撤销 0�
 `none`/`LR` 逐字节不变 ✓、高度失配 1204 ✓、落差 0 ✓、黑 0.394% ✓；
 `engine/reference_patches/symmetry-shape-pass.patch` 与源码逐行一致 ✓。
 
+**新目标轮 1：坡查到了"最后一层"的第一手证据 —— 传进去的是 id 0 的区域** ✗✓
+
+目标：查清并（可修则）修好移植侧铺坡为何从不落地。
+
+**本轮进展**：读 builder 契约（`MapGenMakingSub.cpp` 2038 起 ✓）拿到 `RampRectClear`
+（`sub_594010` ✓）的完整条件表，并给它**逐条加计数 + 打印前几次失败细节**（门控 `MG_DIAG_RAMP=1` ✓）：
+
+```
+[rc] 块(81,121,17x15) → **格(86,121) 区域标记=1 既不是 owner=0 也不是 target=0** ✗
+[rc] 块(106,42,15x15) → **四角不在可用区** ✗
+[rc] 块(106,72,15x15) → **格(106,72) 区域标记=1 既不是 owner=0 也不是 target=0** ✗
+[rc] 块(96,131,16x12) → **四角不在可用区** ✗
+```
+
+**读出来两件事**：
+
+1. **传进 builder 的 `owner->id` 和 `targetId` 都是 0** ✗ —— 而块里格子的区域标记是 **1**（合法区 ✓）。
+   也就是说这条链在拿 **id 0 的"区域"** 去开坡 ✓，块检查（"块内只能是 owner 或 target 的格" ✓）
+   自然**永远不通过** ✗。这解释了 189 次 `acceptBuilder` 全部"builder 自己失败" ✓。
+   （调用侧 `CarveRegionRamps` 的循环是 `regions_[j]` ✓、pair 守卫要求 `other->id > region->id`
+   且 `other->level != region->level` ✓ —— 所以要么 `regions_[j]` 里混进了 id 0 的"非区域"对象 ✓，
+   要么 `region->id`/`lowerId` 在这一步读的不是同一个字段 ✓，**下一步就查这个** ✓。）
+2. 另一部分失败是 **"四角不在可用区"** ✓（`IsWithinUsableArea` 对块的四角 ✓）—— 这是第二个待查项 ✓。
+
+**状态**：诊断是门控的（默认行为不变 ✓），落地状态未变 ✓（`none`/`LR` 逐字节不变 ✓、
+落差 0 ✓、黑 0.394% ✓）；补丁**尚未重生成** ✗（等诊断撤掉后再生成 ✓）。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
