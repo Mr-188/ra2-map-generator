@@ -2014,6 +2014,23 @@ id1/id2=高地 L8 ✓）：
 **下一轮**：坡自身的写法 —— `CliffRamps` 族的 tile 号/坡度/层号（对照 `sub_593AF0` 的
 "five stamp loops" ✓），以及刻完坡之后 `RemoveCliffsOverRamps` 那一步 ✓。
 
+**新目标轮 5：读到坡的官方语义（出处 `sub_593AF0`），owner 修正被彻底坐实** ✓
+
+`MapGenMakingSub.cpp:2075` 起的 builder 注释（对着 `sub_593AF0` 写的 ✓）说明一个坡由五段盖子 +
+两块坡面件 + **三组 4 格宽的带**组成 ✓：
+
+* 前两段盖子用 `targetId` / 目标的 Level ✓；后三段用 `owner->id` / **`owner->level`** ✓；
+* 两块 slope-set 件经 `sub_5A6C10`（`PlaceWaterDetailTile` ✓）；
+* **三组带**（A/B/C ✓）每格写：`SlopeIndex` = **8 / 1 / 4** ✓、
+  **`Level = owner->level − n − 1`**（n = 0..3 ✓）、坡族 tile（`rampBase + 7 / +0 / +3` ✓）、`Height = 0` ✓。
+
+**关键推论（有出处 ✓）**：带的层号是**从 owner 的层号往下逐级推** ✓ ——
+所以 owner 必须是**高地** ✓：传 `higher`（L8 ✓）得到 L7/L6/L5/L4 的正常下降 ✓；
+若传低地（L4 ✗）会写成 L3/L2/L1/L0 ✓（比低地还低 ✓），根本不成坡 ✓。
+**这把"owner 该传 higher"从"实测有效"升级为"有反汇编语义支撑"** ✓✓
+（下一处修复就沿这条语义查：三组带的写入有没有被别处覆盖 ✓，以及 `RemoveCliffsOverRamps` 之后
+坡面上的格子有没有被清掉 ✓）。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
