@@ -202,6 +202,11 @@ EMSCRIPTEN_KEEPALIVE int mg_extract(int theater)
 // where the GUI's 时间 combo sits.  It is a real input: the engine reads it for
 // LevelLight/AmbientLight and for the per-time ore-patch lamps
 // (TEMMORLAMP/TEMDAYLAMP/TEMDUSLAMP/TEMNITLAMP).
+//
+// `land` 4 (Mountainous) is accepted but BYTE-IDENTICAL to 3 (Inland): every
+// land-type branch treats them together and the one land-type-shaped table is
+// indexed by the rolled option n3, not by the land type (MapGenStartpoint.cpp:670).
+// The page offers 内陆 only; the alias stays for API/CLI compatibility.
 EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, double size, int players,
                                      int ore, int water, unsigned seed,
                                      unsigned mapSeed, int single,

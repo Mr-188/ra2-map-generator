@@ -59,7 +59,12 @@ for p in "$DIR"/*.patch; do
     fi
 
     echo "  [apply] $name"
-    patch -p1 -d "$PARENT" < "$p"
+    # --no-backup-if-mismatch: these hunks apply at an OFFSET (a later patch in
+    # this directory shifts the lines an earlier one expects), and GNU patch
+    # writes a .orig next to the file whenever it has to move a hunk.  That
+    # backup is never read and it litters the reference sources, which are not
+    # ours to litter - so do not write it.
+    patch -p1 --no-backup-if-mismatch -d "$PARENT" < "$p"
 done
 
 [ "$found" = "1" ] || { echo "no patches in $DIR" >&2; exit 2; }

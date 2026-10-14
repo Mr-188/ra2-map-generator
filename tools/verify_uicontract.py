@@ -76,6 +76,100 @@ def main() -> int:
                         "script and cannot use one")
     print("  worker mode  : classic, no static imports")
 
+    # The page's 环境 select must not offer the same map twice.
+    #
+    # Mountainous (value 4) is deliberately NOT listed: every land-type branch in the
+    # engine treats 3 and 4 together (MapGenMaking.cpp:65, MapGenRegion.cpp:91,
+    # MapGen.cpp:1702, MapGenStartpoint.cpp:2240-2241, ...), and the one table that
+    # looks land-type-shaped - the option ranges in MapGenStartpoint.cpp:684-700, whose
+    # rows 3 and 4 DO differ - is indexed by the ROLLED option n3
+    # (RandomRanged(1,4) -> 1..3, MapGenStartpoint.cpp:670), so row 4 is unreachable and
+    # row 3 is shared by both.  Measured: --land 3 and --land 4 are byte-identical over
+    # seeds, sizes and symmetry kinds.
+    #
+    # Two names for one map is what a page must not offer, so this pins the list.  The
+    # engine API keeps accepting 4 as an alias (mgconsole --land 4, mg_generate(4)); that
+    # is a compatibility decision, not a second environment.
+    page = (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+    land_block = re.search(r'<select id="land".*?</select>', page, re.S)
+    if land_block is None:
+        failures.append("index.html has no #land select")
+    else:
+        values = re.findall(r'<option value="([^"]*)"', land_block.group(0))
+        # The concrete environments, then exactly one 随机 entry ('?') - the roll.
+        if values != ["0", "1", "2", "3", "?"]:
+            failures.append(
+                f"the #land select offers {values}; it must be exactly 0..3. "
+                "4 (Mountainous) is the same map as 3 - every land-type branch treats "
+                "them together and the option tables are indexed by the rolled n3, not "
+                "by the land type - so offering it is a second name for one map. "
+                "The list is the four environments plus one '?' (随机)")
+        else:
+            print("  env options  : 0/1/2/3 + 随机 (4 Mountainous not offered: "
+                  "byte-identical to 3 Inland)")
+
+    # The 对称 select offers every kind the engine can actually ship: 0 off, 1
+    # left-right, 2 and 4 the two 180 flavours (same cell map, opposite authoritative
+    # half - so 2's boundary runs top-right to bottom-left and 4's top-left to
+    # bottom-right), plus one "?" = 随机.  **3 top-bottom is NOT offered**: mirror.h's
+    # "WHY TOP-BOTTOM IS NOT OFFERED" records that the cell map works but the tileset
+    # has no art for it, so it was withdrawn.  mg_symmetry_max() is one number and
+    # cannot express that hole, so this list is where "not offered" lives - which is
+    # why it is pinned here and in tools/verify_browser.mjs (as behaviour).  The values
+    # are the engine's own enum, so a renumbering in mirror.h fails here.
+    # When top-bottom is finished (art supplied), put the option back and delete this
+    # exclusion - the failure message says so.
+    sym_block = re.search(r'<select id="symmetry".*?</select>', page, re.S)
+    if sym_block is None:
+        failures.append("index.html has no #symmetry select")
+    else:
+        values = re.findall(r'<option value="([^"]*)"', sym_block.group(0))
+        if values != ["0", "1", "2", "4", "?"]:
+            failures.append(
+                f"the #symmetry select offers {values}; it must be exactly 0 (off), "
+                "1 (左右), 2 and 4 (the two 180 flavours) plus one '?' = 随机 "
+                "- 3 (上下) is withdrawn in mirror.h (no art for it) and must not be "
+                "offered until it is finished")
+        else:
+            print("  symmetry     : 0 (无) / 1 (左右) / 2, 4 (两种 180° 半场) "
+                  "/ ? (随机) - 上下 (3) 已撤回，不在列表里")
+
+    # 地图类型 gets no 随机 entry and no roll: multiplayer (.yrm) is the layout the
+    # game's skirmish list shows, single player (.map) is the campaign/editor layout.
+    # The terrain is identical either way (measured: IsoMapPack5 / OverlayPack /
+    # Waypoints byte-equal), so a roll here would only ever hand the user a file in the
+    # layout they did not ask for.
+    kind_block = re.search(r'<select id="kind".*?</select>', page, re.S)
+    if kind_block is None:
+        failures.append("index.html has no #kind select")
+    else:
+        values = re.findall(r'<option value="([^"]*)"', kind_block.group(0))
+        if values != ["0", "1"]:
+            failures.append(
+                f"the #kind select offers {values}; it must be exactly 0 (多人 .yrm) and "
+                "1 (单人 .map), with no 随机 entry - the map type stays the user's "
+                "choice, and 全随机 must not touch it")
+        elif 'value="0" selected' not in kind_block.group(0):
+            failures.append("the #kind select must default to 0 (多人 .yrm)")
+        else:
+            print("  map type     : 0 (多人 .yrm, default) / 1 (单人 .map) - not rollable")
+
+    # The seed fields' defaults are product decisions too: the global seed defaults to
+    # 0, which the engine reads as "roll it from the clock" (wasm_entry.cpp:282), i.e.
+    # a fresh map per click exactly like the retail dialog; the terrain seed default 0
+    # is the vanilla constant.  Pinned so a stray edit cannot silently make every map
+    # reproducible (or every map the same).
+    seed_defaults = {}
+    for field in ("seed", "map-seed"):
+        m = re.search(r'<input id="' + field + r'"[^>]*value="(\d+)"', page)
+        seed_defaults[field] = m.group(1) if m else None
+    if seed_defaults["seed"] != "0" or seed_defaults["map-seed"] != "0":
+        failures.append(
+            f"seed defaults are {seed_defaults}; both must default to 0 "
+            "(global seed 0 = roll from the clock, terrain seed 0 = the vanilla seed)")
+    else:
+        print("  seed defaults: 全局种子 0 (随机) / 地形种子 0 (原版)")
+
     print()
     if failures:
         print(f"FAILED {len(failures)} checks")

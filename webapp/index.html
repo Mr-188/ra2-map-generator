@@ -4,9 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>RA2 随机地图生成器</title>
-<!-- Inline SVG favicon: no extra file, no extra request, no /favicon.ico 404. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' fill='%230a0b0d'/%3E%3Cpath d='M6 18V6h4.6a3 3 0 0 1 0 6H6m4 0 4 6' fill='none' stroke='%23e0a33a' stroke-width='2.2'/%3E%3C/svg%3E">
+<title>RA2 / YR 随机地图生成器</title>
+<!-- Tab + header icon: the RA2 icon itself (ra2.ico, from the retail install).
+
+     THIS FILE IS A RETAIL GAME ASSET AND IS AN EXPLICIT, AUTHORISED EXCEPTION to
+     AGENTS.md rule 1 ("no retail game assets in the repository or the product").
+     The user asked for the RA2 icon rather than a drawn mark and authorised the
+     exception on 2026-10-12; the note in AGENTS.md says the same thing.  It is
+     here so nobody removes it as a "cleanup" and so the exception is visible in
+     the rules rather than only in a commit message.
+
+     Everything else in this product still reads from the player's own install and
+     ships no game bytes - this icon is the one deliberate exception. -->
+<link rel="icon" href="ra2.ico" sizes="16x16 32x32">
+<link rel="apple-touch-icon" href="ra2.ico">
 <style>
 /* ===========================================================================
    RA2 / YR map generator -- instrument-panel styling.
@@ -100,7 +111,8 @@ body {
 .bar-r b { color: var(--ink-2); font-weight: 400; }
 
 .glyph { width: 26px; height: 26px; flex: none; color: var(--amber); }
-.glyph svg { width: 100%; height: 100%; display: block; }
+.glyph svg, .glyph img { width: 100%; height: 100%; display: block; }
+.glyph img { border-radius: 3px; }
 h1 {
   margin: 0; font: 400 18px/1 var(--sans);
   letter-spacing: .02em; text-transform: uppercase;
@@ -323,6 +335,61 @@ a.dl {
 a.dl:hover { border-bottom-color: var(--amber); }
 a.dl svg { width: 12px; height: 12px; }
 
+/* ---- 参数集 (share code) ------------------------------------------------
+   One string that reproduces this map; clicking it copies.  It is the only thing
+   on this page that can leave the machine, and only because the user copies it
+   by hand -- nothing is sent anywhere (red line 2).  The string is built by
+   webapp/sharebits.js, which also owns the layout. */
+#share {
+  margin-top: 14px; padding: 11px 12px;
+  border: 1px solid var(--rule); background: var(--well);
+}
+.share-h {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin: 0 0 9px; font: 400 12px/1 var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.share-h .k { color: var(--amber); }
+.code {
+  display: block; width: 100%; box-sizing: border-box; margin: 0;
+  padding: 10px 12px; border: 1px solid var(--rule-2); background: var(--panel);
+  color: var(--amber-2); cursor: pointer; user-select: all;
+  font: 400 20px/1.25 var(--mono); letter-spacing: .16em; text-align: center;
+  overflow-wrap: anywhere;
+}
+.code:hover { border-color: var(--amber); }
+.code:active { background: var(--panel-2); }
+.code:focus-visible { outline: none; box-shadow: var(--focus); }
+.share-note { margin: 9px 0 0; font: 400 12px/1.6 var(--mono); color: var(--ink-3); }
+.share-note.ok { color: var(--ok); }
+.share-note.err { color: var(--err); }
+
+/* ---- 导入参数集 ---------------------------------------------------------- */
+.imp {
+  margin-top: 14px; padding: 11px 12px;
+  border: 1px solid var(--rule); background: var(--well);
+}
+.imp-row { display: flex; gap: 8px; align-items: stretch; }
+/* width:auto, not the .btn default of 100%: with flex-shrink:0 a 100%-wide button
+   claims the whole row and squashes the input to a few pixels (measured: the input
+   came out ~35px wide in the 860px column).  The button sizes to 载入/LOAD instead,
+   and the input takes the rest. */
+.imp-row .btn { flex: 0 0 auto; width: auto; margin-top: 0; }
+.imp input {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  padding: 9px 11px; border: 1px solid var(--rule-2); background: var(--panel);
+  color: var(--ink); font: 400 15px/1.3 var(--mono); letter-spacing: .12em;
+}
+.imp input::placeholder { color: var(--ink-3); letter-spacing: .02em; }
+.imp input:focus { outline: none; border-color: var(--amber); }
+#import-switch {
+  display: inline-block; margin-top: 9px;
+  font: 400 13px/1 var(--mono); letter-spacing: .05em;
+  color: var(--amber); text-decoration: none;
+  border-bottom: 1px solid var(--amber); padding-bottom: 2px;
+}
+#import-switch[hidden] { display: none; }
+
 /* ---- preview band --------------------------------------------------------
    Full-bleed, below the two columns: a 4380px-wide map rendered into a 372px
    sidebar is a thumbnail, not a preview.  The section heading sits INSIDE
@@ -364,6 +431,145 @@ a.dl svg { width: 12px; height: 12px; }
 }
 #picked:empty { display: none; }
 
+/* ---- small controls: 全随机, the settings gear, the drawer ------------------ */
+
+/* Screen-reader-only text (the gear button still needs an accessible name). */
+.sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.minibtn {
+  /* .sec-h is a flex row, so this is a flex item: no float, just a small gap after
+     the 02 / 03 marker (which is already pushed right by margin-left:auto). */
+  align-self: center; margin-left: 12px; padding: 4px 10px;
+  border: 1px solid var(--rule-2); border-radius: 2px; background: transparent;
+  color: var(--ink-2); font: 400 12px/1 var(--mono); letter-spacing: .08em;
+  text-transform: none; cursor: pointer;
+  transition: background .15s linear, border-color .15s linear, color .15s linear;
+}
+.minibtn:hover { border-color: var(--amber); color: var(--amber-2); }
+.minibtn:active { background: var(--well); }
+
+.gearbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; margin-left: 12px;
+  border: 1px solid var(--rule-2); border-radius: 2px; background: transparent;
+  color: var(--ink-2); cursor: pointer;
+  transition: background .15s linear, border-color .15s linear, color .15s linear;
+}
+.gearbtn svg { width: 16px; height: 16px; display: block; }
+.gearbtn:hover { border-color: var(--amber); color: var(--amber-2); }
+/* .bar-r spans carry a left rule; the button is not one of them. */
+.bar-r .gearbtn { border-left: 1px solid var(--rule-2); }
+
+#settings-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+}
+#settings {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 92vw);
+  z-index: 41; background: var(--panel); border-left: 1px solid var(--rule-2);
+  box-shadow: -18px 0 40px rgba(0,0,0,.5); overflow-y: auto;
+}
+#settings[hidden], #settings-backdrop[hidden] { display: none; }
+.set-h {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--rule);
+}
+.set-h h2 {
+  margin: 0; font: 400 15px/1 var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-2);
+}
+.set-h .gearbtn { margin-left: 0; }
+.set-body { padding: 16px; }
+.set-row {
+  display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
+  padding: 12px 0; border-bottom: 1px solid var(--rule); cursor: pointer;
+}
+.set-label { font: 400 14px/1.5 var(--sans); color: var(--ink); }
+.set-note {
+  display: block; margin-top: 6px; font: 400 12px/1.7 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+#settings-note { margin: 14px 0 0; }
+#auto-render { width: 18px; height: 18px; flex: none; margin-top: 2px; accent-color: var(--amber); }
+
+/* What the 随机 entries rolled for this run (empty when nothing was rolled). */
+#rolled:empty { display: none; }
+#rolled { color: var(--amber-2); }
+
+/* ---- version badge + history drawer ---------------------------------------
+   The badge is filled from version.json, which tools/package_webapp.sh writes
+   at packaging time; the drawer reads /versions.json, written by
+   tools/versions.sh.  Neither exists when the page is opened straight from the
+   source tree, so both stay invisible/quiet rather than showing an empty state
+   that looks like a bug (see the note in app.js). */
+.ver {
+  font: 400 12px/1 var(--mono); letter-spacing: .06em;
+  color: var(--ink-2); background: var(--well);
+  border: 1px solid var(--rule-2); border-radius: 2px; padding: 4px 7px;
+}
+.ver[hidden] { display: none; }
+
+#hist-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+}
+#hist {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 92vw);
+  z-index: 41; background: var(--panel); border-left: 1px solid var(--rule-2);
+  box-shadow: -18px 0 40px rgba(0,0,0,.5); overflow-y: auto;
+}
+#hist[hidden], #hist-backdrop[hidden] { display: none; }
+
+.ver-list { list-style: none; margin: 2px 0 0; padding: 0; }
+.ver-list li { border-bottom: 1px solid var(--rule); }
+.ver-list a {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 11px 2px; text-decoration: none;
+  font: 400 14px/1.4 var(--sans); color: var(--ink);
+}
+.ver-list a:hover { color: var(--amber); }
+.ver-list .v-meta {
+  flex: none; font: 400 12px/1.4 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+.ver-list .v-cur {
+  margin-left: 8px; font: 400 11px/1 var(--mono);
+  letter-spacing: .1em; color: var(--amber);
+}
+.ver-list .v-note {
+  display: block; margin-top: 4px; font: 400 12px/1.6 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+
+/* ---- footer: the filing numbers, and a way to reach a human ---------------
+   Both 备案号 are required together: the ICP one from 工信部 and the 公安 one.
+   《非经营性互联网信息服务备案管理办法》 asks for the ICP number at the BOTTOM of
+   the homepage with a link to the filing system, and the 公安备案号 likewise;
+   this is a compliance requirement, not decoration, so do not drop it in a
+   redesign.  tools/verify_deploy.sh and tools/verify_deployed.sh both assert
+   these exact strings -- before publishing and against the live site -- so
+   losing the footer fails the release instead of being noticed by 通管局. */
+.foot {
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+  padding: 20px 24px 30px;
+}
+.foot-in {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  text-align: center;
+}
+.foot p {
+  margin: 0; font: 400 12.5px/1.7 var(--mono);
+  letter-spacing: .03em; color: var(--ink-3);
+}
+.foot a {
+  color: var(--ink-2); text-decoration: none;
+  border-bottom: 1px solid var(--rule-2);
+}
+.foot a:hover { color: var(--amber); border-bottom-color: var(--amber); }
+.foot .grp { color: var(--ink-2); letter-spacing: .1em; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -374,20 +580,74 @@ a.dl svg { width: 12px; height: 12px; }
 <header class="bar">
   <div class="bar-l">
     <span class="glyph" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="square" stroke-linejoin="miter">
-        <rect x="2.5" y="2.5" width="19" height="19"></rect>
-        <path d="M7.5 17V7h3.6a2.6 2.6 0 0 1 0 5.2H7.5m3.6 0L14.5 17"></path>
-      </svg>
+      <!-- The same file the tab uses (see the note at the top of <head>): the retail
+           RA2 icon, authorised by the user as an explicit exception to AGENTS.md
+           rule 1.  Drawn as an <img> rather than inlined so the header and the tab
+           can never drift apart. -->
+      <img src="ra2.ico" alt="" width="26" height="26">
     </span>
     <h1>RA2 <b>/</b> YR 随机地图生成器</h1>
+    <!-- Filled from version.json at publish time (empty in a source checkout). -->
+    <span class="ver" id="ver" hidden></span>
     <span class="tag">C++ → WASM · CNCMaps 渲染</span>
   </div>
   <div class="bar-r">
     <span>运行位置 <b>本机浏览器</b></span>
     <span>素材上传 <b>无</b></span>
+    <button type="button" id="hist-open" class="minibtn" aria-haspopup="dialog"
+            aria-controls="hist" title="历史版本">历史版本</button>
+    <button type="button" id="settings-open" class="gearbtn" aria-haspopup="dialog"
+            aria-controls="settings" title="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"></circle>
+        <path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"></path>
+      </svg>
+      <span class="sr">设置</span>
+    </button>
   </div>
 </header>
+
+<!-- ======================= settings drawer ======================= -->
+<!-- A right-hand drawer rather than more rows in the form: these are preferences,
+     not generation parameters, and mixing them would make 生成参数 lie about what
+     the engine receives. -->
+<div id="settings-backdrop" hidden></div>
+<aside id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-h" hidden>
+  <div class="set-h">
+    <h2 id="settings-h">设置</h2>
+    <button type="button" id="settings-close" class="gearbtn" title="关闭">✕</button>
+  </div>
+  <div class="set-body">
+    <label class="set-row" for="auto-render">
+      <span class="set-label">自动渲染地图
+        <span class="set-note">生成完成后自动开始渲染预览（渲染器首次要下载约 15 MB，随后很快）。关掉的话就还是手动点「渲染预览」。</span>
+      </span>
+      <input id="auto-render" type="checkbox">
+    </label>
+    <p class="set-note" id="settings-note"></p>
+  </div>
+</aside>
+
+<!-- ======================= history drawer ======================= -->
+<!-- Every version the site has SERVED, read from /versions.json (written by
+     tools/versions.sh at publish time).  Each entry links to that version's own
+     copy of the site under /v/<version>/: the page references everything
+     relatively, so an old copy is a working page rather than a dead archive --
+     which is the whole point of being able to go back to one. -->
+<div id="hist-backdrop" hidden></div>
+<aside id="hist" role="dialog" aria-modal="true" aria-labelledby="hist-h" hidden>
+  <div class="set-h">
+    <h2 id="hist-h">历史版本</h2>
+    <button type="button" id="hist-close" class="gearbtn" title="关闭">✕</button>
+  </div>
+  <div class="set-body">
+    <p class="set-note" id="hist-note">正在读取版本列表…</p>
+    <ul class="ver-list" id="ver-list"></ul>
+    <p class="set-note">切换版本会重新加载页面。若两版的浏览器缓存格式不同，
+      回到旧版时会请你重新选一次游戏目录（缓存不能跨格式复用）。</p>
+  </div>
+</aside>
 
 <div class="wrap">
 
@@ -402,6 +662,19 @@ a.dl svg { width: 12px; height: 12px; }
         <span class="pick-s">需要 <i>ra2.mix</i> · <i>ra2md.mix</i> · <i>expandmd01.mix</i></span>
       </label>
       <p id="picked" class="hint"></p>
+
+      <!-- The extracted tree, cached in the browser's own storage.  This is what makes
+           the SECOND visit need no directory at all: the File System Access permission
+           does not survive a browser restart and re-requesting it needs a user gesture,
+           but the ~13 MB of extracted tiles/INIs do, so they are kept and rehydrated
+           without asking anyone.  Shown always (the state is useful even when empty);
+           the clear button only appears once something is cached. -->
+      <p id="cache-note" class="hint"></p>
+      <div class="btn-row">
+        <button type="button" class="btn ghost" id="cache-clear" hidden>
+          <span>清除浏览器缓存</span><span class="k">CACHE</span>
+        </button>
+      </div>
 
       <!-- Progressive enhancement, hidden unless the browser exposes the File
            System Access API.  The <input webkitdirectory> above keeps working
@@ -422,16 +695,55 @@ a.dl svg { width: 12px; height: 12px; }
     </section>
 
     <section class="sec">
-      <h2 class="sec-h">生成参数<span class="sec-n">02 / 03</span></h2>
+      <h2 class="sec-h">生成参数<span class="sec-n">02 / 03</span>
+        <!-- Every parameter above offers 随机, and this sets all of them to it at
+             once.  The seeds already have the engine's own "random" spelling (0), so
+             this writes 0 into them rather than adding a second way to say it. -->
+        <button type="button" id="roll-all" class="minibtn"
+                title="把所有参数都设为随机（全局/地形种子设为 0）；生成时逐个抽定，并把抽到的值显示出来">全随机</button>
+      </h2>
+
+      <!-- 导入参数集: someone else's code, pasted or arriving as #p=<code> in the URL
+           (both go through the same validation).  The note under it says whether the
+           code came from THIS engine version, and offers the 历史版本 switch when it
+           did not -- carrying the code across in the fragment.
+           At the TOP of 生成参数 rather than in the output column: it fills these
+           controls in, so it reads as the first row of this section, and the 372px
+           column could not hold a code plus a note plus the switch link. -->
+      <div class="imp" id="import">
+        <p class="share-h"><span>导入参数集</span><span class="k">PASTE · RESTORE</span></p>
+        <div class="imp-row">
+          <input id="import-code" type="text" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" inputmode="latin" aria-label="参数集"
+                 placeholder="粘贴别人发来的参数集">
+          <button type="button" class="btn" id="import-go">
+            <span>载入</span><span class="k">LOAD</span>
+          </button>
+        </div>
+        <p class="share-note" id="import-note"></p>
+        <a id="import-switch" hidden></a>
+      </div>
+
       <div class="grid">
 
         <div class="cell"><label for="land">环境</label>
-          <select id="land">
+          <!-- 山地(value 4) deliberately not listed: in this engine it is the SAME map
+               as 内陆(3).  Every land-type branch treats 3 and 4 together
+               (MapGenMaking.cpp:65, MapGenRegion.cpp:91, MapGen.cpp:1702, ...), and the
+               one place that looks land-type-shaped - the option tables in
+               MapGenStartpoint.cpp:684-700, whose rows 3 and 4 do differ - is indexed by
+               the ROLLED option n3 (RandomRanged(1,4) -> 1..3, MapGenStartpoint.cpp:670),
+               so row 4 is unreachable and row 3 is shared by both.  Measured: --land 3
+               and --land 4 are byte-identical over seeds, sizes and symmetry kinds.
+               The engine still accepts 4 (CLI/API alias), the page just does not offer a
+               second name for the same map. -->
+          <select id="land"
+                  title="内陆与山地在本引擎里是同一张图，所以只列内陆（引擎仍接受 --land 4 作为别名）。">
             <option value="0">群岛</option>
             <option value="1" selected>大岛屿</option>
             <option value="2">大岛屿群</option>
             <option value="3">内陆</option>
-            <option value="4">山地</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -441,6 +753,7 @@ a.dl svg { width: 12px; height: 12px; }
             <option value="1">下午</option>
             <option value="2">黄昏</option>
             <option value="3">夜晚</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -448,6 +761,7 @@ a.dl svg { width: 12px; height: 12px; }
           <select id="theater">
             <option value="0" selected>温带</option>
             <option value="1">雪地</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -455,6 +769,8 @@ a.dl svg { width: 12px; height: 12px; }
           <div class="seg" id="size-mode" role="group" aria-label="尺寸模式">
             <button type="button" data-mode="square" class="on">正方形</button>
             <button type="button" data-mode="rect">长 × 宽</button>
+            <button type="button" data-mode="random"
+                    title="每次生成时在合法范围内随机取一个大小（按当前环境的尺寸上限）">随机</button>
           </div>
           <!-- min/max/step are all replaced by app.js from the engine's
                SizeSliderRange as soon as the worker reports ready; these are just
@@ -476,6 +792,7 @@ a.dl svg { width: 12px; height: 12px; }
           <select id="players">
             <option>2</option><option>3</option><option>4</option>
             <option>5</option><option>6</option><option>7</option><option>8</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
@@ -485,12 +802,13 @@ a.dl svg { width: 12px; height: 12px; }
             <option value="1" selected>中</option>
             <option value="2">高</option>
             <option value="3">极高</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
         <div class="cell"><label for="seed">全局种子 · 0 = 随机</label>
-          <input id="seed" type="number" value="1" min="0"
-                 title="0 = 每次随机；填一个数字即可复现同一张地图">
+          <input id="seed" type="number" value="0" min="0"
+                 title="0 = 每次随机（引擎用时钟取种子）；填一个数字即可复现同一张地图">
         </div>
 
         <div class="cell"><label for="map-seed">地形种子 · 0 = 原版</label>
@@ -499,16 +817,41 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="symmetry">对称</label>
+          <!-- 引擎的枚举里是五种（mirror.h 的 MapSymmetry），页面给出四种：
+                0 无 / 1 左右 是两种"对折"；
+                2 与 4 都是**绕中心转半圈**（格映射完全相同），区别只在权威半场取哪一半，
+                于是"原始地形"和"它的旋转"之间那条分界是两条不同的对角线 ——
+                2 的分界在图上从右上到左下、4 的从左上到右下。
+
+              **3 上下对称不在列表里**：mirror.h 的 "WHY TOP-BOTTOM IS NOT OFFERED"
+              写明了原因 —— 格映射能实现（原型跑过），但图块素材没有对应的美术，
+              所以它不能发。mg_symmetry_max() 是一个数值上限，表达不了 3 这个洞，
+              因此"不给"这件事只能落在页面这张列表上；tools/verify_uicontract.py 与
+              tools/verify_browser.mjs 都钉着它，谁把选项加回来都会红。
+              真做完（补齐图块）时：这一档加回来，同时删掉那两处断言和 app.js 里
+              针对 3 的拒绝分支。
+
+              app.js 会按引擎的 mg_symmetry_max() 把超出范围的选项禁用，所以引擎若哪天少了
+              某一档，页面是灰掉而不是说谎。 -->
           <select id="symmetry"
-                  title="左右轴对称：把地图沿两轴对调镜像。上下轴对称不提供 —— tileset 里没有它需要的朝向美术（见 engine/src/mirror.h）。">
+                  title="左右轴对称：沿竖直中轴把两半对折重合。180° 两种：绕地图中心转半圈（镜像半场不一样，分界线分别在右上-左下 / 左上-右下）。">
             <option value="0" selected>无</option>
             <option value="1">左右轴对称</option>
-            <option value="2" disabled>180° 中心对称</option>
+            <option value="2">180°（分界：右上-左下）</option>
+            <option value="4">180°（分界：左上-右下）</option>
+            <option value="?">随机</option>
           </select>
         </div>
 
         <div class="cell"><label for="kind">地图类型</label>
-          <select id="kind">
+          <!-- No 随机 here, by product decision: multiplayer (.yrm) is the layout you
+               can actually drop into the game and play in Skirmish, single player
+               (.map) is the campaign/editor layout.  A roll that silently produced a
+               .map would hand the user a file the skirmish list does not list, so this
+               stays a deliberate choice and 全随机 leaves it alone.  The two differ
+               only in [Header]/[Basic]/[Houses] and the extension - the terrain is the
+               same map (measured: IsoMapPack5/OverlayPack/Waypoints identical). -->
+          <select id="kind" title="多人 .yrm 是遭遇战用的布局；单人 .map 是关卡/编辑器布局（地形相同，只是文件布局不同）">
             <option value="0" selected>多人 .yrm</option>
             <option value="1">单人 .map</option>
           </select>
@@ -532,8 +875,18 @@ a.dl svg { width: 12px; height: 12px; }
         <span>生成地图</span><span class="k">RUN</span>
       </button>
 
+      <!-- What the 随机 entries actually rolled for THIS run.  It is shown rather
+           than written back into the controls for two reasons: the controls stay on
+           随机 (so the next click rolls again), and the values are still readable
+           when the user wants to reproduce exactly this map by typing them in. -->
+      <p id="rolled" class="readout"></p>
+
       <p id="status" class="readout" role="status" aria-live="polite"></p>
       <p id="error" class="err" role="alert"></p>
+
+      <!-- 导入参数集 lives at the top of 生成参数 (in the left column) -- a 12-character
+           code plus its note and the 历史版本 switch were too cramped in this 372px
+           column, and the box is an INPUT to the form anyway, not part of the result. -->
 
       <div id="result">
         <div class="row">
@@ -549,6 +902,18 @@ a.dl svg { width: 12px; height: 12px; }
         <button id="render" class="btn" type="button">
           <span>渲染预览</span><span class="k">RENDER</span>
         </button>
+
+        <!-- 参数集: every input to the run that produced this map, in one string
+             (webapp/sharebits.js).  It is filled in when the map arrives and not
+             before, because it describes a map that exists -- a failed run must
+             not leave a code behind.  Nothing is uploaded: the code is only ever
+             copied by the user's own click. -->
+        <div id="share" hidden>
+          <p class="share-h"><span>参数集</span><span class="k">点击复制 · SHARE</span></p>
+          <button type="button" id="share-code" class="code"
+                  title="点击复制这串参数集。别人把它粘回来就能生成同一张地图（同样的游戏素材下逐字节相同）。"></button>
+          <p class="share-note" id="share-note"></p>
+        </div>
       </div>
 
       <div class="log-h"><span>引擎日志</span><span>STDERR</span></div>
@@ -576,6 +941,22 @@ a.dl svg { width: 12px; height: 12px; }
     </div>
   </div>
 </section>
+
+<!-- ======================= footer ======================= -->
+<!-- 备案地 江苏 -> 服务备案号（非广东挂服务号，广东才挂主体号）。
+     改这两个号要同时改 tools/verify_deploy.sh 与 tools/verify_deployed.sh 的断言，
+     否则发布会被拦（那是有意的：页脚丢了属于合规问题，不该靠肉眼发现）。
+     如果你们省还要求写明备案主体名称（或写"版权所有 XX"），在下面第一行加上。 -->
+<footer class="foot">
+  <div class="foot-in">
+    <p>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">苏ICP备2023037209号-2</a>
+      ·
+      <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
+    </p>
+    <p>反馈与交流：QQ 群 <span class="grp">1002834147</span>（在 QQ 里搜索该群号加入）</p>
+  </div>
+</footer>
 
 <script type="module" src="./app.js"></script>
 </body>

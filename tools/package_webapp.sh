@@ -23,6 +23,13 @@ cp "$ROOT/webapp/index.html" "$OUT/"
 cp "$ROOT/webapp/app.js"     "$OUT/"
 cp "$ROOT/webapp/worker.js"  "$OUT/"
 
+# The tab / header icon.  This one file IS a retail game asset and is here as an
+# explicit, authorised exception to AGENTS.md rule 1 (see the note there and in
+# webapp/index.html): the user asked for the RA2 icon itself and authorised it on
+# 2026-10-12.  Keep it in this list - the deploys copy files by name, so dropping
+# the line silently ships a page whose favicon 404s.
+cp "$ROOT/webapp/ra2.ico"    "$OUT/"
+
 # Host configuration, read by `edgeone makers deploy`: it pins
 # `Content-Type: application/wasm` for the engine and the renderer (a wasm
 # served as application/octet-stream is refused by streaming instantiation),

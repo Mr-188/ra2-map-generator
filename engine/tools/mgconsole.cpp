@@ -13,6 +13,8 @@
 //              [--single] [--out map.map]
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -26,6 +28,10 @@ void usage()
     std::fprintf(stderr,
         "usage: mgconsole --root <extract dir> [options]\n"
         "  --land 0..4      Archipelago/Continent/TeamContinent/Inland/Mountainous\n"
+        "                   (4 Mountainous is BYTE-IDENTICAL to 3 Inland here: every\n"
+        "                   land-type branch treats them together and the option tables\n"
+        "                   are indexed by the rolled n3 - see MapGenStartpoint.cpp:670.\n"
+        "                   The page therefore offers 内陆 only; 4 stays as an alias.)\n"
         "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
@@ -42,7 +48,12 @@ void usage()
         "                   (top-bottom is not offered: the tile set has no art for\n"
         "                   the orientations it needs - see engine/src/mirror.h)\n"
         "  --size-range     print the legal/useful --size bounds for --land/--players, exit\n"
-        "  --out PATH       output map path\n");
+        "  --out PATH       output map path\n"
+        "  --stop-after S   [diagnostic] write the map after stage S and exit;\n"
+        "                   S in special|terrain|water|regions|hills|lats|prune|mirror\n"
+        "  --diag-hills     [diagnostic] run CreateHills one sub-step at a time and\n"
+        "                   print the mirror divergence after each (pair it with\n"
+        "                   --diag-symmetry); says WHICH step breaks the two halves\n");
 }
 
 // UTF-8 -> UTF-16, via the shim.  The obvious byte-wise cast is WRONG here:
@@ -88,11 +99,26 @@ static int diagTileFamily(const RandomMapGenerator& rmg, int tile)
 static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const char* stage)
 {
     if (cfg.symmetry == mg::MapSymmetry::None) return;
+    // [诊断用] The family bases the classifier below needs, once per run: without
+    // them a tile number cannot be attributed to a family by hand.
+    static bool dumped = false;
+    if (!dumped)
+    {
+        dumped = true;
+        const RandomMapGenerator::TileSets s = rmg.GetTileSets();
+        std::fprintf(stderr,
+                     "[diag-sets] water=%d shorePieces=%d shoreTile=%d waterCliffs=%d "
+                     "green=%d rough=%d sand=%d rampBase=%d rampSmooth=%d\n",
+                     s.water, s.shorePieces, s.shoreTile, s.waterCliffs, s.greenTile,
+                     s.roughTile, s.sandTile, s.rampBase, s.rampSmooth);
+    }
     const MapSizeResult ms = RandomMapGenerator::CalcMapSize(cfg);
     MapCell* const* slots = rmg.GetCellSlots();
     const int rows = rmg.GetSlotRows();
     long long pairs = 0, lvlBad = 0, markerBad = 0, tileDiff = 0, subDiff = 0;
+    long long slopeBad = 0;
     long long crossFam = 0;
+    std::map<std::pair<int, int>, long long> slopePairs;
     for (int y = 0; y < rows; ++y)
     {
         for (int x = 0; x < 512; ++x)
@@ -125,6 +151,15 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
                 }
             }
             if (a->Height != b->Height) ++subDiff;
+            // [诊断用] SlopeIndex 的镜像关系是量出来的，不是猜的：镜像格的斜坡件由引擎自己
+            // 按**转置后的角值**选出来，所以两半的 SlopeIndex 满足角值模式的转置关系 ——
+            // 实测主组合是 1<->2、3<->4、6<->8、10<->12（下面的直方图直接打印）。
+            // mg::ReflectSlope 描述的是另一件事（斜坡平滑那两个探测位的互换：1<->3、2<->4），
+            // 复制路径用它。两者不是同一个关系，所以这里两个都量，别把 slopeBad 当成缺陷数。
+            if (b->SlopeIndex != mg::ReflectSlope(cfg.symmetry, a->SlopeIndex))
+                ++slopeBad;
+            if (a->SlopeIndex != b->SlopeIndex)
+                ++slopePairs[std::make_pair(a->SlopeIndex, b->SlopeIndex)];
             // The TILE is deliberately not compared for equality: a mirrored map is
             // supposed to give the image cell the MIRRORED piece, which is a different
             // tile index, so "tile indices equal" is the wrong expectation and an
@@ -133,8 +168,29 @@ static void diagSymmetry(RandomMapGenerator& rmg, const MapGenConfig& cfg, const
         }
     }
     std::fprintf(stderr,
-                 "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld tileDiff=%lld crossFam=%lld subDiff=%lld\n",
-                 stage, pairs, lvlBad, markerBad, tileDiff, crossFam, subDiff);
+                 "[diag] %-24s pairs=%lld levelBad=%lld markerBad=%lld slopeBad=%lld "
+                 "tileDiff=%lld crossFam=%lld subDiff=%lld\n",
+                 stage, pairs, lvlBad, markerBad, slopeBad, tileDiff, crossFam, subDiff);
+    if (!slopePairs.empty())
+    {
+        // [诊断用] SlopeIndex 的镜像关系只能从数据里读出来：镜像格的斜坡件是引擎按
+        // 转置后的角值自己选出来的，所以"a 的镜像应该是几"不是猜出来的，是这对直方图
+        // 给出的。前 6 个组合足够看清主关系。
+        std::fprintf(stderr, "[diag-slopes] %s pairs whose SlopeIndex differs (top 6):",
+                     stage);
+        std::vector<std::pair<long long, std::pair<int, int> > > top;
+        for (std::map<std::pair<int, int>, long long>::const_iterator it =
+                 slopePairs.begin(); it != slopePairs.end(); ++it)
+            top.push_back(std::make_pair(it->second, it->first));
+        std::sort(top.begin(), top.end(),
+                  [](const std::pair<long long, std::pair<int, int> >& l,
+                     const std::pair<long long, std::pair<int, int> >& r)
+                  { return l.first > r.first; });
+        for (size_t i = 0; i < top.size() && i < 6; ++i)
+            std::fprintf(stderr, " %d<->%d x%lld", top[i].second.first,
+                         top[i].second.second, top[i].first);
+        std::fprintf(stderr, " (of %lld pairs)\n", pairs);
+    }
 }
 
 int main(int argc, char** argv)
@@ -143,6 +199,14 @@ int main(int argc, char** argv)
     std::string out = "oracle.map";
     int land = 1, theater = 0, time = 0, players = 2, ore = 1, water = -1;
     bool diagSym = false;
+    // [诊断用] Run CreateHills one sub-step at a time instead of in one call, so
+    // --diag-symmetry can print the divergence after each of the ten steps and the
+    // one that first moves the two halves apart is visible instead of inferred.
+    bool diagHills = false;
+    // [诊断用] Write the map after one named stage and stop there, so a render of
+    // every intermediate state can say WHICH stage leaves a height step without art
+    // covering it (see docs in verify_symmetry.py / mirror.h).  Empty = run to the end.
+    std::string stopAfter;
     double size = 1.0;
     int width = 0, height = 0;   // explicit rectangle, overrides --size when both > 0
     unsigned seed = 1, mapSeed = 0;
@@ -169,6 +233,8 @@ int main(int argc, char** argv)
         else if (a == "--ore") ore = std::atoi(next());
         else if (a == "--water") water = std::atoi(next());
         else if (a == "--diag-symmetry") diagSym = true;
+        else if (a == "--diag-hills") diagHills = true;
+        else if (a == "--stop-after") stopAfter = next();
         else if (a == "--seed") seed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--map-seed") mapSeed = static_cast<unsigned>(std::strtoul(next(), nullptr, 0));
         else if (a == "--single") single = true;
@@ -299,6 +365,30 @@ int main(int argc, char** argv)
         }
     }
 
+    // [诊断用] Finish + write, for --stop-after: the writer needs the cells, and
+    // Cleanup() keeps them (the normal flow writes after it too).
+    const auto emit = [&]() -> int
+    {
+        rmg.Cleanup();                                    // 0x5993A5
+        rmg.ComputeRadarImage();                          // 0x599451
+        rmg.Done();                                       // 0x59947E
+        const std::wstring w = widen(out);
+        if (!rmg.SaveMapFile(w.c_str()))
+        {
+            std::fprintf(stderr, "[mgconsole] SaveMapFile failed\n");
+            return 4;
+        }
+        std::fprintf(stderr, "[mgconsole] wrote %s (stopped after %s)\n",
+                     out.c_str(), stopAfter.c_str());
+        return 0;
+    };
+    const auto stopHere = [&](const char* stage) -> bool
+    {
+        if (stopAfter.empty() || stopAfter != stage)
+            return false;
+        return true;
+    };
+
     // ---- the pipeline, in WinMain.cpp's order -----------------------------
     if (!rmg.GenerateMapBody(cfg))                       // sub_599650
     {
@@ -316,17 +406,21 @@ int main(int argc, char** argv)
             return 8;
         }
         if (diagSym) diagSymmetry(rmg, cfg, "after MirrorSpecialTerrain");
+        if (stopHere("special")) return emit();
     }
     else
     {
         rmg.GenerateTerrain();                            // sub_59A6C0
     }
 
+    if (stopHere("terrain")) return emit();
     rmg.DecorateWaterTiles();                             // 0x598b14  sub_59C630
+    if (stopHere("water")) return emit();
     if (diagSym) diagSymmetry(rmg, cfg, "after DecorateWaterTiles");
     rmg.InitRegions();                                    // 0x598C24
     rmg.MakeRegions();                                    // 0x598D44
     if (diagSym) diagSymmetry(rmg, cfg, "after MakeRegions");
+    if (stopHere("regions")) return emit();
     rmg.RecalculateCellAttributes();                      // 0x598E1F
     rmg.CreateStartingPoints();                           // 0x598E9E
     rmg.AddTechBuildings();                               // 0x598EBF
@@ -340,13 +434,63 @@ int main(int argc, char** argv)
     }
     rmg.RecalculateCellAttributes();                      // 0x598FB8
     rmg.RecalculateCellAttributes();                      // 0x59912A
-    rmg.CreateHills();                                    // 0x599171
+    // [诊断用] CreateHills' own body, one call at a time (see MapGenHills.cpp).  Two
+    // reasons to take this route: --diag-hills (print the mirror divergence after
+    // each step) and --stop-after hills:<Step> (write the map there, so each step
+    // can be RENDERED - the stage that first paints black is then a measurement
+    // rather than an inference).  Without either flag the single call below runs
+    // and the map is byte-identical to before.
+    const bool splitHills = diagHills || stopAfter.rfind("hills:", 0) == 0;
+    if (splitHills)
+    {
+        const auto step = [&](const char* tag, auto&& fn) -> bool
+        {
+            fn();
+            if (diagSym) diagSymmetry(rmg, cfg, tag);
+            return stopHere(tag);
+        };
+        if (step("hills: MarkTechBuildingProtection", [&] { rmg.MarkTechBuildingProtection(); })) return emit();
+        if (step("hills: MarkHillProtection",         [&] { rmg.MarkHillProtection(); }))         return emit();
+        if (step("hills: MirrorWorkMarks",            [&] { rmg.MirrorWorkMarks(cfg.symmetry); })) return emit();
+        if (step("hills: BuildHillHeightField",       [&] { rmg.BuildHillHeightField(); }))       return emit();
+        if (step("hills: BuildElevationGrid",         [&] { rmg.BuildElevationGrid(); }))         return emit();
+        if (step("hills: ApplyElevationLevels",       [&] { rmg.ApplyElevationLevels(); }))       return emit();
+        if (step("hills: MirrorElevationGrid",        [&] { rmg.MirrorElevationGrid(); }))        return emit();
+        if (step("hills: FinalizeElevationSlopes",    [&] { rmg.FinalizeElevationSlopes(); }))    return emit();
+        if (step("hills: MergeSlopeBlocks",           [&] { rmg.MergeSlopeBlocks(); }))           return emit();
+        if (step("hills: RemoveCliffsOverRamps",      [&] { rmg.RemoveCliffsOverRamps(); }))      return emit();
+    }
+    else
+        rmg.CreateHills();                                // 0x599171
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateHills");
-    rmg.CreateLATs();                                     // 0x599215
+    if (stopHere("hills")) return emit();
+    // [诊断用] CreateLATs is four calls in a fixed order; --diag-symmetry runs
+    // them one at a time so the probe can say WHICH one breaks the mirror
+    // instead of only that the stage as a whole did.  The calls, their order and
+    // their arguments are exactly what CreateLATs does, so this path produces
+    // the same map - it is only taken when the flag is on.  (Without the split,
+    // "after CreateLATs" is the first probe that reports a difference at all.)
+    if (diagSym)
+    {
+        rmg.PrepareLATDensities();                        // 0x59922B
+        diagSymmetry(rmg, cfg, "lat: PrepareLATDensities");
+        rmg.ScatterLATBlobs();                            // 0x599232
+        diagSymmetry(rmg, cfg, "lat: ScatterLATBlobs");
+        rmg.ResetLATDensityFields();                      // 0x59923E
+        diagSymmetry(rmg, cfg, "lat: ResetLATDensityFields");
+        rmg.ScatterRocks();                               // 0x5992AB
+        diagSymmetry(rmg, cfg, "lat: ScatterRocks");
+    }
+    else
+    {
+        rmg.CreateLATs();                                 // 0x599215
+    }
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateLATs");
+    if (stopHere("lats")) return emit();
     rmg.RecalculateCellAttributes();                      // 0x599354
     rmg.PruneTerrainTrees();                              // port-side, after pass 4
     if (diagSym) diagSymmetry(rmg, cfg, "after PruneTrees");
+    if (stopHere("prune")) return emit();
     // [移植侧] 对称镜像。放在 PruneTerrainTrees 之后、Cleanup 之前：所有吃 RNG
     // 与所有出处出自反汇编的阶段都已结束，而 ComputeRadarImage 与写盘都在其后，
     // 雷达与 [Header] 因此自动重算。
@@ -355,6 +499,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[mgconsole] MirrorMap failed\n");
         return 6;
     }
+    if (stopHere("mirror")) return emit();
     rmg.Cleanup();                                        // 0x5993A5
     rmg.ComputeRadarImage();                              // 0x599451
     rmg.Done();                                           // 0x59947E

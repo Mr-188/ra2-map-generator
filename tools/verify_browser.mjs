@@ -16,6 +16,27 @@ import puppeteer from 'puppeteer-core';
 
 const ROOT = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
 
+// The symmetry kinds the engine DECLARES (engine/src/mirror.h), read rather than
+// hard-coded: the page's <select> must offer exactly 0..max with none disabled, and
+// a hard-coded list goes stale the moment a kind ships (measured: top-bottom landed
+// in the header and in the page's options while this file still expected
+// "0,1,2", so the suite went red over a feature that worked).
+function declaredSymmetryMax() {
+  try {
+    // ROOT is the repository root: new URL('.') ends in a slash, so dirname drops 'tools/'.
+    const header = fs.readFileSync(path.join(ROOT, 'engine', 'src', 'mirror.h'), 'utf8');
+    const enumBody = header.split('enum class MapSymmetry')[1]?.split('};')[0] ?? '';
+    const values = {};
+    for (const m of enumBody.matchAll(/(\w+)\s*=\s*(\d+)/g)) values[m[1]] = Number(m[2]);
+    const impl = header.match(
+      /kMapSymmetryImplementedMax\s*=\s*static_cast<int>\(\s*MapSymmetry::(\w+)\s*\)/);
+    if (!impl || values[impl[1]] === undefined) return null;
+    return values[impl[1]];
+  } catch {
+    return null;
+  }
+}
+
 function parseArgs(argv) {
   const out = { url: 'http://127.0.0.1:8017/', timeout: 300000 };
   for (let i = 2; i < argv.length; i += 2) out[argv[i].replace(/^--/, '')] = argv[i + 1];
@@ -96,11 +117,20 @@ try {
   check('engine ready', true);
   check('worker is classic', workers.length > 0, workers.join(','));
 
-  // The 对称 select must be driven by the engine's own answer: the ready message
-  // carries mg_symmetry_max() (= 2: left-right and 180 degrees both apply now), so
-  // all three options have to end up usable.  This is the point of the plumbing:
-  // the page must not offer a kind the generator then refuses, and must not hide
-  // one it can do.
+  // The 对称 select is a PRODUCT decision, not "everything the engine can do".
+  //
+  // The page offers exactly three values: 0 (off), 1 (left-right axial symmetry) and
+  // ? (随机 - rolled at generate time).  The engine also implements 180 and top-bottom
+  // and verify_symmetry.py keeps testing all three; the page exposes the one the user
+  // asked for.
+  // The engine still implements left-right (1) and top-bottom (3) - mirror.h declares
+  // the max, and the CLI/API accept them - but the page deliberately exposes one
+  // optional kind, and it must be the one that actually works: the option has to be
+  // ENABLED (the ready message's mg_symmetry_max() is what disables a kind the engine
+  // would refuse) and 180 is what the generate call below then exercises.
+  //
+  // A page that hid 180 (or offered a kind the engine refuses) is the failure this
+  // pins; "the page offers all four" is no longer the contract.
   const sym = await page.evaluate(() => {
     const s = document.getElementById('symmetry');
     if (!s) return null;
@@ -110,11 +140,138 @@ try {
       value: s.value,
     };
   });
-  check('the page offers exactly the symmetry the engine implements',
-        sym !== null && sym.values.join(',') === '0,1,2'
-          && sym.disabled.every((d) => d === false) && sym.value === '0',
+  const declaredMax = declaredSymmetryMax();
+  check('the page offers exactly 无 / 左右轴对称 / 随机 for 对称, all enabled',
+        sym !== null && sym.values.join(',') === '0,1,?'
+          && sym.disabled.every((d) => d === false) && sym.value === '0'
+          && declaredMax !== null && declaredMax >= 1,
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
-              + `selected ${sym.value}` : 'no #symmetry select');
+              + `selected ${sym.value} (mirror.h declares 0..${declaredMax})`
+            : 'no #symmetry select');
+
+  // ---- the 随机 entries, 全随机, and the 设置 drawer ---------------------------
+  //
+  // Every parameter the generator takes can be left to a roll, one at a time or all
+  // at once, and the rolled values are printed rather than written back (app.js), so
+  // what is checked here is the state the user sees.  Done BEFORE the archives are
+  // injected, because the drawer's switch is persisted and this reloads the page to
+  // prove it; the switch is turned back off afterwards so the rest of the suite -
+  // which clicks 渲染预览 by hand - runs exactly as it did before.
+  const ROLL_IDS = ['land', 'time', 'theater', 'players', 'ore', 'symmetry'];
+  const noRandom = await page.evaluate((ids) => ids.filter((id) =>
+    ![...document.getElementById(id).options].some((o) => o.value === '?')), ROLL_IDS);
+  check('every variable parameter offers 随机', noRandom.length === 0,
+        `missing on ${noRandom.join(', ')}`);
+
+  // 地图类型 carries no 随机 and 全随机 must not touch it: multiplayer (.yrm) is the
+  // layout that shows up in the game's skirmish list, so it is a deliberate choice.
+  const kindUi = await page.evaluate(() => ({
+    values: [...document.getElementById('kind').options].map((o) => o.value),
+    value: document.getElementById('kind').value,
+  }));
+  check('地图类型 offers exactly 多人/单人 and defaults to 多人',
+        kindUi.values.join(',') === '0,1' && kindUi.value === '0', JSON.stringify(kindUi));
+
+  await page.click('#roll-all');
+  const rollAll = await page.evaluate((ids) => ({
+    values: ids.map((id) => document.getElementById(id).value),
+    mode: [...document.querySelectorAll('#size-mode button')]
+      .find((b) => b.classList.contains('on'))?.dataset.mode,
+    seed: document.getElementById('seed').value,
+    mapSeed: document.getElementById('map-seed').value,
+    kind: document.getElementById('kind').value,
+  }), ROLL_IDS);
+  check('全随机 sets every variable parameter to 随机 and both seeds to 0 (地图类型 untouched)',
+        rollAll.values.every((v) => v === '?') && rollAll.mode === 'random'
+          && rollAll.seed === '0' && rollAll.mapSeed === '0'
+          && rollAll.kind === '0',
+        JSON.stringify(rollAll));
+
+  await page.click('#settings-open');
+  const drawer = await page.waitForFunction(
+    () => !document.getElementById('settings').hidden
+          && !document.getElementById('settings-backdrop').hidden, { timeout: 5000 })
+    .then(() => true).catch(() => false);
+  await page.click('#auto-render');
+  await page.click('#settings-close');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+  const persisted = await page.evaluate(() => ({
+    checked: document.getElementById('auto-render').checked,
+    stored: (() => {
+      try { return JSON.parse(localStorage.getItem('ra2mg.settings') || '{}').autoRender; }
+      catch { return null; }
+    })(),
+  }));
+  check('设置 drawer opens and 自动渲染地图 survives a reload',
+        drawer && persisted.checked === true && persisted.stored === true,
+        `drawer=${drawer} ${JSON.stringify(persisted)}`);
+  // Back off again: the auto-render path gets its own end-to-end check at the end.
+  await page.click('#settings-open');
+  await page.click('#auto-render');
+  await page.click('#settings-close');
+
+  // ---- the remembered game directory -----------------------------------------
+  //
+  // The handle (WHICH folder) is remembered in IndexedDB, but the permission to read
+  // it belongs to the browser and often does not survive a restart.  app.js therefore
+  // asks on boot (queryPermission) and reopens the folder silently when the answer is
+  // still "granted"; only a downgraded permission needs the click, because
+  // requestPermission() has to run inside a user gesture.
+  //
+  // Only the second half of that is testable here: minting a real handle needs the
+  // native folder picker and a human, so the "granted" path cannot be driven from a
+  // test.  What IS checked is the robustness the auto-restore path depends on - a
+  // fresh profile shows no restore button, and a stored record that is not a usable
+  // handle (an older browser's entry, or one this page cannot use) must not break boot
+  // nor the manual button.
+  const rememberUi = await page.evaluate(() => ({
+    supported: typeof window.showDirectoryPicker === 'function',
+    blockHidden: document.getElementById('remember').hidden,
+    restoreHidden: document.getElementById('restore').hidden,
+  }));
+  check('remembered directory: fresh profile offers no restore button',
+        !rememberUi.supported
+          || (rememberUi.blockHidden === false && rememberUi.restoreHidden === true),
+        JSON.stringify(rememberUi));
+
+  const wrote = await page.evaluate(() => new Promise((resolve) => {
+    const open = indexedDB.open('ra2-rmg', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('handles');
+    open.onsuccess = () => {
+      const st = open.result.transaction('handles', 'readwrite').objectStore('handles');
+      const req = st.put({ name: 'RA2MD' }, 'gameDir');    // NOT a FileSystemHandle
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    };
+    open.onerror = () => resolve(false);
+  }));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+  const afterStale = await page.evaluate(() => ({
+    restoreHidden: document.getElementById('restore').hidden,
+    note: document.getElementById('remember-note').textContent.trim(),
+    error: document.getElementById('error').textContent.trim(),
+    ready: /就绪/.test(document.getElementById('status').textContent),
+  }));
+  check('a stored record that is not a handle does not break boot',
+        wrote && afterStale.ready && afterStale.error === ''
+          && afterStale.restoreHidden === false,
+        `wrote=${wrote} ${JSON.stringify(afterStale)}`);
+  await page.evaluate(() => new Promise((resolve) => {
+    const open = indexedDB.open('ra2-rmg', 1);
+    open.onsuccess = () => {
+      const st = open.result.transaction('handles', 'readwrite').objectStore('handles');
+      const req = st.delete('gameDir');
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(true);
+    };
+    open.onerror = () => resolve(true);
+  }));
 
   // A webkitdirectory input cannot be populated with uploadFile() -- Chrome
   // ignores it and the FileList stays empty.  Instead fetch the archives over
@@ -147,6 +304,18 @@ try {
     { timeout: 120000 });
   const picked = await page.$eval('#picked', (e) => e.textContent);
   check('archives accepted', /已找到 3\/3/.test(picked), picked.trim());
+
+  // The reported scenario: pick a folder, refresh, and NOT have to pick again.  That
+  // needs the cache to exist from the PICK alone, so the extraction (and the cache
+  // write that follows it) starts when the folder is picked - not on the first
+  // generate, which is how it used to work and why a fresh pick + reload had none.
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 180000 }).catch(() => {});
+  const cacheAfterPick = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  check('picking a folder alone fills the cache for BOTH theatres (no generate needed)',
+        /已缓存素材/.test(cacheAfterPick) && /温和/.test(cacheAfterPick)
+          && /雪地/.test(cacheAfterPick), cacheAfterPick);
 
   console.log('  generate');
   await page.click('#go');
@@ -256,11 +425,12 @@ try {
   }
 
   // The 对称 select has to reach the ENGINE through the worker, not merely exist.
-  // The same rectangle is generated again with only the symmetry changed, so the
-  // two maps are directly comparable, and the [Waypoints] section is the smallest
-  // part of the file that proves the mirror applied: the writer stores start
-  // points as X + 1000*Y (MapGenMapFile.cpp:1092), so a left-right mirror swaps
-  // the two fields of every waypoint and nothing else.
+  // The same rectangle is generated again with only the symmetry changed, so the two
+  // maps are directly comparable, and the [Waypoints] section is the smallest part of
+  // the file that proves the mirror applied.
+  //
+  // The page's one optional kind is 左右轴对称 (value 1), whose cell map in
+  // engine/src/mirror.h is the pure swap of the two cell coordinates.
   const readBlob = () => page.evaluate(async () => {
     if (!window.__mapBlob) return null;
     return Array.from(new Uint8Array(await window.__mapBlob.arrayBuffer()));
@@ -272,28 +442,197 @@ try {
   await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
   const mirroredBytes = await readBlob();
 
+  const textOf = (bytes) => (bytes ? new TextDecoder('latin1').decode(Buffer.from(bytes)) : '');
   const waypoints = (bytes) => {
-    if (!bytes) return [];
-    const text = new TextDecoder('latin1').decode(Buffer.from(bytes));
-    const section = (text.split('[Waypoints]')[1] || '').split('\n\n')[0];
+    const section = (textOf(bytes).split('[Waypoints]')[1] || '').split('\n\n')[0];
     return section.split('\n').filter((l) => l.includes('='))
       .map((l) => l.split('=').map((n) => Number(n)));
   };
   const wa = waypoints(plain);
   const wb = waypoints(mirroredBytes);
-  // X + 1000*Y -> Y + 1000*X, i.e. the cell's two coordinates swapped.
-  const swapped = (packed) => (packed % 1000) * 1000 + Math.floor(packed / 1000);
+  // The writer stores start points as X + 1000*Y (MapGenMapFile.cpp:1092), and the
+  // left-right cell map is the PURE SWAP (engine/src/mirror.h:566, and the same
+  // formula is written out independently in tools/verify_symmetry.py's mirror_cell).
+  const mirror = (packed) => (packed % 1000) * 1000 + Math.floor(packed / 1000);
   // What the symmetric map must show is NOT "each waypoint equals the mirror of the
   // plain map's own".  A pairwise swap produces exactly that, and a swap is not a
   // symmetric map: it preserves whether a pair agrees.  The property is that the
   // symmetric map's own start points come in mirror pairs, with the count preserved
-  // (a 2-player map has to stay a 2-player map).
+  // (a 2-player map has to stay a 2-player map).  The swap is its own inverse, so the
+  // closed-set test below needs no range exception: every image is inside the map.
   const cells = wb.map(([, v]) => v);
-  const paired = cells.length > 0 && cells.every((v) => cells.includes(swapped(v)));
-  check("the page's 对称 option reaches the engine",
-        wb.length > 0 && wb.length === wa.length && paired,
+  const paired = cells.length > 0 && cells.every((v) => cells.includes(mirror(v)));
+  check("the page's 对称 option reaches the engine (左右轴对称)",
+        wb.length > 0 && wb.length === wa.length && paired
+          && Buffer.compare(Buffer.from(mirroredBytes || []), Buffer.from(plain || [])) !== 0,
         `waypoints ${JSON.stringify(wa)} -> ${JSON.stringify(wb)} ` +
-        `(mirror-paired within the symmetric map: ${paired}, count)`);
+        `(mirror-paired within the symmetric map: ${paired}, count, differs: ` +
+        `${Buffer.compare(Buffer.from(mirroredBytes || []), Buffer.from(plain || [])) !== 0})`);
+
+  // ---- 随机 + 自动渲染, end to end -------------------------------------------
+  //
+  // Two features that only mean something if they reach the engine, so this drives
+  // both at once: every parameter is left on 随机 (全随机), and 自动渲染地图 is turned
+  // on, so a single #go click has to roll the parameters, generate a map from them,
+  // print what it rolled, and then render WITHOUT 渲染预览 being clicked.
+  console.log('  random   all parameters to 随机, 自动渲染 on, one click');
+  await page.click('#settings-open');
+  await page.click('#auto-render');                 // back ON
+  await page.click('#settings-close');
+  await page.click('#roll-all');
+  await page.evaluate(() => { window.__mapBlob = null; document.getElementById('rolled').textContent = ''; });
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const rollNote = await page.$eval('#rolled', (e) => e.textContent.trim());
+  const autoImg = await page.waitForFunction(
+    () => {
+      const p = document.getElementById('preview');
+      if (p && p.style.display !== 'none'
+          && document.getElementById('preview-img')?.naturalWidth > 0) return 'ok';
+      const err = document.getElementById('error')?.textContent || '';
+      return err ? 'error:' + err : false;
+    },
+    { timeout: args.timeout, polling: 1000 }).then((h) => h.jsonValue()).catch((e) => 'timeout:' + e.message);
+  check('随机 rolls every parameter and prints what it used',
+        /本次随机/.test(rollNote) && /环境=/.test(rollNote) && /地图大小=/.test(rollNote),
+        `#rolled = "${rollNote}"`);
+  check('自动渲染地图 renders by itself after a generation',
+        autoImg === 'ok', String(autoImg));
+
+  // ---- the cached extraction: a second visit without the game directory ---------
+  //
+  // The first generation above read the picked archives; the worker also wrote the
+  // extracted tree (~13 MB / ~970 files) into OPFS.  This reloads the page with
+  // NOTHING injected - no directory, no permission, no click - and requires the page
+  // to be able to generate again, from the cache, producing the SAME bytes for the
+  // same parameters.  Byte equality is the point: it proves the rehydrated MEMFS is
+  // the tree the generator had, not merely "some assets that happen to work".
+  console.log('  cache    first with the picked archives, then a reload with none');
+  // Auto-render must be OFF for this section: it would create a second object URL for
+  // the preview image and the blob captured below could be the PNG instead of the map.
+  await page.click('#settings-open');
+  if (await page.$eval('#auto-render', (e) => e.checked)) await page.click('#auto-render');
+  await page.click('#settings-close');
+  const setFixed = () => page.evaluate(() => {
+    document.getElementById('land').value = '1';
+    document.getElementById('time').value = '0';
+    document.getElementById('theater').value = '0';
+    document.getElementById('players').value = '2';
+    document.getElementById('ore').value = '1';
+    document.getElementById('symmetry').value = '0';
+    document.getElementById('kind').value = '0';
+    document.getElementById('seed').value = '20260913';
+    document.getElementById('map-seed').value = '0';
+    document.getElementById('size').value = '1';
+    document.querySelector('#size-mode button[data-mode="square"]').click();
+  });
+  const installCapture = () => page.evaluate(() => {
+    if (!window.__captureWrapped) {
+      window.__captureWrapped = true;
+      const orig = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = (blob) => { window.__mapBlob = blob; return orig(blob); };
+    }
+    window.__mapBlob = null;
+  });
+  const waitForReady = () => page.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 60000 });
+
+  await page.evaluate(() => { window.__mapBlob = null; });
+  await setFixed();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const withDir = await readBlob();
+  // The cache write is posted as `cache-saved` once OPFS is done; wait for the note
+  // to say so rather than guessing a delay.
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 120000 }).catch(() => {});
+  const noteWithCache = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  console.log(`  cache    ${noteWithCache}`);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForReady();
+  // The cache lookup is a worker round trip: wait for the section to say it found one
+  // rather than reading the note the instant the page is ready (it would read
+  // "尚未缓存" and the assertion below would fail for a timing reason).
+  await page.waitForFunction(
+    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
+    { timeout: 60000 }).catch(() => {});
+  await installCapture();
+  await setFixed();
+  const afterReload = await page.evaluate(() => ({
+    note: document.getElementById('cache-note').textContent.trim(),
+    goEnabled: !document.getElementById('go').disabled,
+    picked: document.getElementById('picked').textContent.trim(),
+  }));
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const fromCache = await readBlob();
+  const same = withDir && fromCache
+    && Buffer.compare(Buffer.from(withDir), Buffer.from(fromCache)) === 0;
+  check('cached extraction: a reload with no directory generates the same map',
+        /已缓存素材/.test(afterReload.note) && afterReload.goEnabled && same
+          && afterReload.picked === '',
+        `note="${afterReload.note}" go=${afterReload.goEnabled} picked="${afterReload.picked}" `
+          + `same=${same} (${withDir?.length}B vs ${fromCache?.length}B)`);
+
+  // The reason the cache holds BOTH theatres: 随机 in the 剧场 row (or a manual switch)
+  // must not send the user back to the folder picker.  Nothing is injected anywhere in
+  // this block - the cache written from the single pick above is the only asset source.
+  await page.select('#theater', '1');
+  await installCapture();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  const snowBytes = await readBlob();
+  const snowNote = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  check('the cache covers 雪地 as well: switch the theatre, still no directory',
+        !!snowBytes && snowBytes.length > 0
+          && Buffer.compare(Buffer.from(snowBytes), Buffer.from(fromCache || [])) !== 0
+          && /温和/.test(snowNote) && /雪地/.test(snowNote),
+        `${snowBytes?.length}B, differs from 温和: `
+          + `${Buffer.compare(Buffer.from(snowBytes || []), Buffer.from(fromCache || [])) !== 0}, `
+          + `note="${snowNote.slice(0, 60)}…"`);
+
+  // ---- the parameters of the last generation survive a refresh ----------------
+  //
+  // Clicking 生成 records every control (and the note about what the roll picked), and
+  // boot puts them back, so a refresh does not cost the user their setup.  This is the
+  // whole point of persisting them, so it is driven: set a distinctive setup, generate,
+  // reload, and read the controls back.  The game directory is gone after the reload
+  // (the injected Files die with the page); the cache written earlier covers it.
+  console.log('  params   set a distinctive setup, generate, reload');
+  const WANT = { land: '3', time: '2', theater: '1', players: '5', ore: '2',
+                 symmetry: '1', kind: '1', seed: '12345', 'map-seed': '7' };
+  await page.evaluate((want) => {
+    for (const [id, v] of Object.entries(want)) document.getElementById(id).value = v;
+    document.querySelector('#size-mode button[data-mode="rect"]').click();
+    const w = document.getElementById('rect-w');
+    const h = document.getElementById('rect-h');
+    w.value = '200';
+    h.value = '150';
+    w.dispatchEvent(new Event('input', { bubbles: true }));
+  }, WANT);
+  await installCapture();
+  await page.click('#go');
+  await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForReady();
+  const restored = await page.evaluate((ids) => {
+    const o = {};
+    for (const id of ids) o[id] = document.getElementById(id).value;
+    o.sizeMode = [...document.querySelectorAll('#size-mode button')]
+      .find((b) => b.classList.contains('on'))?.dataset.mode;
+    o.rectW = document.getElementById('rect-w').value;
+    o.rectH = document.getElementById('rect-h').value;
+    return o;
+  }, Object.keys(WANT));
+  const wrong = Object.entries(WANT).filter(([k, v]) => restored[k] !== v);
+  check('the last generated parameters come back after a refresh',
+        wrong.length === 0 && restored.sizeMode === 'rect'
+          && restored.rectW === '200' && restored.rectH === '150',
+        wrong.length ? `restored wrong: ${JSON.stringify(wrong)}`
+                     : JSON.stringify(restored));
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);
