@@ -1568,6 +1568,84 @@ def rot180_cell(Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
     return Wp + Hp - x, Wp + Hp - y
 
 
+def check_level_symmetry(failures: list[str]) -> int:
+    """Is the ELEVATION itself mirrored, and not just the water/land outline?
+
+    Measured 2026-10-14 (Inland, size 2, 2 players, seed 20260913, water 70):
+
+        left-right      0 / 13992        (0.00%)
+        rotational-180  498 / 13913      (3.58%)
+        top-bottom      1084 / 13913     (7.79%)
+        rotational-180-alt 520 / 13913   (3.74%)
+
+    Nothing gated this before, which is exactly why it went unnoticed: every other
+    check looks at the water/land marker, the coast pieces or the interior art, and
+    all of them are happy while the two halves sit at different heights.  The user
+    sees it as "cells on the mirrored half raised for no reason, with black blocks
+    underneath" - a height step whose art was chosen for the OTHER half's elevation.
+
+    Where it comes from (per-stage probe, `--stop-after`): levelBad is 0 through
+    special/terrain/water, jumps to 119 pairs at `regions` (FixCliffLevels' +-4
+    correction, whose branch conditions are direction-dependent - the notes in
+    MapGenMaking.cpp record the same with an exact < -4:75, +4:75 > split) and grows
+    to 1084 pairs at `hills` (CreateHills).  MirrorElevationGrid only runs for
+    left-right, so it cannot repair either.
+
+    The floors are the measured values with a small margin: they are a regression
+    tripwire, not a statement that the numbers are good.
+    """
+    import tempfile
+    from maptools.map_ini import parse_map_size
+    checks = 0
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        return 0
+    floors = {1: 0.005, 2: 0.045, 3: 0.090, 4: 0.045}
+    with tempfile.TemporaryDirectory() as td:
+        for kind, tag in ((1, "left-right"), (2, "rotational-180"),
+                          (3, "top-bottom"), (4, "rotational-180-alt")):
+            mp = Path(td) / f"lvl{kind}.yrm"
+            proc = run_generator(mp, 3, kind, ["--size", "2", "--players", "2", "--water", "70",
+                                               "--seed", "20260913", "--map-seed", "0"])
+            checks += 1
+            if proc.returncode != 0 or not mp.is_file():
+                failures.append(f"{tag}: generation failed: {proc.stderr[-200:]}")
+                continue
+            from maptools.iso_pack import decode_iso_map_pack
+            from maptools.map_ini import extract_iso_pack_b64
+            sections = sections_of(mp)
+            Wp, Hp = parse_map_size(sections)
+            cells = {(t.rx, t.ry): t
+                     for t in decode_iso_map_pack(extract_iso_pack_b64(sections), Wp, Hp)}
+            K = Wp + Hp
+            bad = pairs = 0
+            for (x, y), t in cells.items():
+                # the elevation belongs to the CELL, so every kind goes through its own
+                # mirror mapping here (not through cells_of(), which carries tiles only).
+                if kind == 1:
+                    m = (y, x)
+                elif kind in (2, 4):
+                    m = rot180_cell(Wp, Hp, x, y)
+                else:
+                    m = (K - y, K - x)
+                o = cells.get(m)
+                if o is None:
+                    continue
+                pairs += 1
+                if o.z != t.z:
+                    bad += 1
+            checks += 1
+            ratio = bad / max(1, pairs)
+            if ratio > floors[kind]:
+                failures.append(
+                    f"{tag}: {bad}/{pairs} mirrored pairs ({ratio:.2%}) sit at DIFFERENT "
+                    f"heights, above the {floors[kind]:.1%} floor - the elevation is not "
+                    f"mirrored (see the notes in MapGenMaking.cpp about FixCliffLevels' "
+                    f"direction-dependent +-4 writes)")
+            else:
+                print(f"  levels   {tag:<20} {bad}/{pairs} pairs differ in height "
+                      f"({ratio:.2%}, floor {floors[kind]:.1%})")
+    return checks
+
 def check_rot180_flavours(failures: list[str]) -> int:
     """Both 180 flavours: identical cell map, opposite authoritative half.
 
@@ -2080,6 +2158,7 @@ def main() -> int:
     print("  map     mirror a map and compare it cell by cell")
     generation_checks = check_generation(failures)
     tb_checks = check_top_bottom(failures)
+    level_checks = check_level_symmetry(failures)
     flavour_checks = check_rot180_flavours(failures)
 
     print("  matrix  every land type x every theatre the product offers")
@@ -2096,7 +2175,7 @@ def main() -> int:
           f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
           f"a symmetric map decodes back symmetric ({generation_checks} generation "
           f"checks, {tb_checks} of them top-bottom, {flavour_checks} for the two 180 "
-          f"flavours), and every land x theatre pair the "
+          f"flavours, {level_checks} for the elevation), and every land x theatre pair the "
           f"product offers holds its shape, its coast and its elevation "
           f"({matrix_checks} matrix checks)")
     return 0
