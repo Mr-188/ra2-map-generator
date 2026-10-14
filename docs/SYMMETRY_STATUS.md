@@ -1060,6 +1060,38 @@ cell->Level = lowest / 15;     // lowest 来自本格**自己的 2×2 角块**
 （即左上角 −1 的那一块，只对 TB 生效），然后**只在 `--stop-after hills` 上量 ±1**（目标 423 → 0），
 再看最终图与 none/LR。
 
+**新目标轮 6 实测：子步骤闸门把源 B 钉死；但修 B 必须在修 A 之后（实测更差已撤回）**
+
+**① 源 B 精确定位**（`--diag-hills --diag-symmetry`，canonical pairs=6917）：
+
+```
+… BuildElevationGrid / ApplyElevationLevels / MirrorElevationGrid   levelBad=119
+hills: FinalizeElevationSlopes                                      levelBad=119 → 545   ← +426
+hills: MergeSlopeBlocks                                             → 542
+after CreateHills … 之后所有阶段                                     542 不变
+```
++426 与我在整图上量到的 **±1 各 423 对**吻合 ✓ → **源 B 就是 `FinalizeElevationSlopes`** ✓。
+（顺带对齐了口径：闸门的 542 个 canonical 对 ↔ 我的 1084 = 2×542 ✓ 一致 ✓。）
+
+**② TB 在这里走的是"独立判定"**（`kKindOk` 只放 LR），而且这是前人**量过才选的**：成对判定
+会让纯黑从 474 涨到 305976 ✗（海拔成对、美术脱节），族别不一致则是 503 vs 122 ✗ —— 他选了"黑优先"。
+
+**③ 按目标里写的办法试了一版**：保持独立判定，但**镜像半场读被镜像后的角块**（反射把锚在
+`(x',y')` 的 2×2 块映到锚在 `(k−y'−1, k−x'−1)` 的块；镜像格是 `(x',y')=(k−y,k−x)`，代进去即
+`(x−1, y−1)`）—— 这正是本文件注释里说的"块比格差一格"。
+
+结果：**`after CreateHills` levelBad 542 → 787** ✗ 更差。已撤回，撤回后补丁与 HEAD **逐行一致**
+（3618 == 3618 ✓）、LR 与归档逐字节相同 ✓、基线 levelBad 542 ✓。
+
+**④ 这轮最重要的结论（顺序问题）**：**必须先把源 A 的 ±4 修掉**。因为 hills 阶段读的角块种子含
+`15 * Level`（`BuildElevationGrid`），而源 A 的 ±4 是在 `MakeRegions` 里产生的 —— 也就是说
+**在 B 的阶段，网格里已经带着 A 的污染** ✗：镜像半场按"镜像角块"读到的并不是权威格那一块地，
+读出来自然不对 ✗。这也解释了为什么单独修 B 一定更差 ✓。
+
+**下一轮**：攻源 A —— 在 `--stop-after regions` 上量（当前整图口径 ±4 各 119；闸门口径见下），
+把 `PlaceCliffs` / `CorrectCliffTiles` / `RepairCliffPieces` 里那些方向相关的 ∓4 写入找出来并成对化；
+A 归零之后再回来做 B（角块相位），那时 B 才有可能成立。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
