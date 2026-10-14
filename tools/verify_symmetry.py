@@ -1599,7 +1599,12 @@ def check_level_symmetry(failures: list[str]) -> int:
     checks = 0
     if not MGCONSOLE.is_file() or not ASSETS.is_dir():
         return 0
-    floors = {1: 0.005, 2: 0.045, 3: 0.090, 4: 0.045}
+    # 3 (top-bottom) 是 0.100，因为 2026-10-14 用户拍板保留了"官方扫全图"（去掉移植侧那段
+    # "TB 镜像半场跳过 + 给镜像格重新落件"的特例，让官方铺崖算法把两半都当普通地形各扫一遍）。
+    # 实测取舍：TB 渲染的纯黑 0.768% → 0.707%、最大黑块 1807px → 1069px（−41%）、崖墙那两片
+    # 楔形黑块完全消失（用户肉眼确认）；代价是这个数 7.79% → 9.59% —— 崖件落地本身会写层号，
+    # 两半各自铺崖就不再写同一批层号了。这个值是对 9.59% 的回归绊线，不是目标值。
+    floors = {1: 0.005, 2: 0.045, 3: 0.100, 4: 0.045}
     with tempfile.TemporaryDirectory() as td:
         for kind, tag in ((1, "left-right"), (2, "rotational-180"),
                           (3, "top-bottom"), (4, "rotational-180-alt")):
