@@ -1,7 +1,188 @@
 diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
---- a/MapGenerator/MapGen.cpp	2026-10-14 08:42:50.499529320 +0800
-+++ b/MapGenerator/MapGen.cpp	2026-10-14 08:42:50.533612324 +0800
-@@ -809,6 +809,48 @@
+--- a/MapGenerator/MapGen.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-14 11:30:47.213785971 +0800
+@@ -1,4 +1,4 @@
+-﻿#include "pch.h"
++#include "pch.h"
+ #include "MapGen.h"
+ #include "MapGenFastSqrt.h"
+ 
+@@ -64,8 +64,7 @@
+ static const int kHmin[7] = { 70, 70, 70, 80, 90, 100, 100 };
+ static const int kHmax[7] = { 80, 80, 80, 90, 100, 110, 120 };
+ 
+-static const float kSizeClamp = 1.2f;
+-static const float kOneThird  = 1.0f / 3.0f;
++static const float kOneThird  = 1.0f / 3.0f;   // kSizeFractionMax lives on the class
+ 
+ // F2I64 (Game::F2I64 0x7C5F00, truncate toward zero) moved to MapGen.h - both
+ // this file and MapGenRiver.cpp use it.
+@@ -402,16 +401,33 @@
+ //
+ //   i = clamp(playerCount - 2, 0, 6)
+ //   wFrac = hFrac = sizeSlider / 3.0
+-//   if LandType != Inland and != Mountainous: clamp both to 1.2
++//   if LandType != Inland and != Mountainous: clamp both to kSizeFractionMax
+ //   W = F2I64(Wmin[i]*(1-wFrac) + Wmax[i]*wFrac)   (visible size)
+ //   H = F2I64(Hmin[i]*(1-hFrac) + Hmax[i]*hFrac)
+ //   W' = W + 4, H' = H + 12  (MapRect, sub_42AC00)
+ //   workSide = W' + H' + 1  (dword_89C2DC)
++//
++// Static, and public, so SizeSliderRange() can be built on it instead of
++// re-deriving the same arithmetic from a second copy of the tables.
+ // ---------------------------------------------------------------------------
+-MapSizeResult RandomMapGenerator::CalcMapSize(const MapGenConfig& cfg) const
++MapSizeResult RandomMapGenerator::CalcMapSize(const MapGenConfig& cfg)
+ {
+     MapSizeResult result = {};
+ 
++    // An explicit rectangle replaces the table lookup.  The tables give W and H
++    // the same value from the same fraction, so this is the only way to get a
++    // non-square map.  Everything after this point (mapWidth/mapHeight/workSide)
++    // is the same arithmetic either way.
++    if (cfg.widthCells > 0 && cfg.heightCells > 0)
++    {
++        result.width     = cfg.widthCells;
++        result.height    = cfg.heightCells;
++        result.mapWidth  = result.width + 4;
++        result.mapHeight = result.height + 12;
++        result.workSide  = result.mapWidth + result.mapHeight + 1;
++        return result;
++    }
++
+     int playerIdx = cfg.playerCount - 2;
+     if (playerIdx < 0) playerIdx = 0;
+     if (playerIdx > 6) playerIdx = 6;
+@@ -422,8 +438,8 @@
+     LandType lt = cfg.landType;
+     if (lt != LandType::Inland && lt != LandType::Mountainous)
+     {
+-        if (wFrac > kSizeClamp) wFrac = kSizeClamp;
+-        if (hFrac > kSizeClamp) hFrac = kSizeClamp;
++        if (wFrac > kSizeFractionMax) wFrac = kSizeFractionMax;
++        if (hFrac > kSizeFractionMax) hFrac = kSizeFractionMax;
+     }
+ 
+     float w = kWmin[playerIdx] * (1.0f - wFrac) + kWmax[playerIdx] * wFrac;
+@@ -439,7 +455,116 @@
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// InitCells (MapClass::CreateEmptyMap + cell reset 0x599e86 - 0x599eaa)
++// SizeSliderRange -- the legal (and useful) sizeSlider bounds for one
++// (land, players) pair.  Both are DOUBLES: the parameter is continuous, and the
++// interesting bound is fractional (kSizeFractionMax of 1.2 is a size of 3.6).
++//
++// Derived by *asking CalcMapSize*, not by re-implementing it, so the two cannot
++// drift: this and the generator read the same tables and the same
++// kSizeFractionMax.
++//
++//   legalMax   the last value whose diamond still fits the fixed 512x512
++//              [OverlayPack] grid.  The grid is addressed x + 512*y over rows
++//              running to workSide - 1, so the test is on workSide, not on
++//              mapWidth/mapHeight separately (a 274x282 map is inside 512 on
++//              both axes yet needs 557 rows).  One step past this the writer
++//              would silently drop whole rows of overlays, so callers must
++//              reject it.
++//   usefulMax  the last value that actually CHANGES the map size.  The map size
++//              is a step function of the slider -- F2I64 quantises it to whole
++//              cells -- so "the next step changes nothing" would fire on the
++//              very first plateau.  What matters is where the changes stop: for
++//              the three clamped land types the fraction pins at
++//              kSizeFractionMax, so 3.6 is the final step that moves anything and
++//              every larger value repeats it; Inland and Mountainous keep growing
++//              and their usefulMax is their legalMax.
++//
++// The scan is quantised to kSizeSliderStep, which is also the step the page's
++// slider uses -- so the bounds reported here are values a caller can actually
++// ask for, and never one the writer would refuse.
++//
++// Concretely, with the retail tables:
++//   players 2-4  usefulMax 3.6,  legalMax 53.3
++//   players 5/6/7                legalMax 50.4 / 47.5 / 44.6
++//   players 8    usefulMax 3.6,  legalMax 22.1
++//   Inland/Mtn   usefulMax == legalMax
++//
++// For the three clamped land types legalMax comes back as the top of the scan
++// (just under kOverlayGridSide): the fraction is pinned at kSizeFractionMax, so
++// the map stops growing and every value is legal.  That is the intended answer,
++// not a sentinel -- those land types have no input the writer would refuse.
++// ---------------------------------------------------------------------------
++RandomMapGenerator::SizeRange
++RandomMapGenerator::SizeSliderRange(LandType land, int playerCount)
++{
++    SizeRange out = { 0.0, 0.0 };
++    int prevW = -1, prevH = -1;
++
++    const double step = kSizeSliderStep;
++    // Repeated += on a binary fraction accumulates error (3.6 comes out as
++    // 3.6000000000000005), and these values are handed to a UI as a slider's
++    // bounds.  Report them at the step's own precision.
++    auto snap = [step](double v) {
++        // Divide by the scale rather than multiply by step: 5119 * 0.1 comes out
++        // as 511.90000000000003, while 5119 / 10 gives the correctly rounded 511.9.
++        const double scale = (step > 0.0) ? (1.0 / step) : 1.0;
++        return std::floor(v * scale + 0.5) / scale;
++    };
++
++    // kOverlayGridSide / step is the worst case; for the clamped land types the
++    // scan does reach the end (nothing ever exceeds the grid), which is fine.
++    for (double s = 0.0; s <= static_cast<double>(kOverlayGridSide); s += step)
++    {
++        MapGenConfig cfg = {};
++        cfg.landType = land;
++        cfg.playerCount = playerCount;
++        cfg.sizeSlider = s;
++
++        const MapSizeResult here = CalcMapSize(cfg);
++        if (here.workSide > kOverlayGridSide)
++            break;                                  // s is illegal
++
++        out.legalMax = s;
++        if (here.mapWidth != prevW || here.mapHeight != prevH)
++        {
++            out.usefulMax = s;                      // this step moved the size
++            prevW = here.mapWidth;
++            prevH = here.mapHeight;
++        }
++    }
++    out.usefulMax = snap(out.usefulMax);
++    out.legalMax = snap(out.legalMax);
++    return out;
++}
++
++// ---------------------------------------------------------------------------
++// MaxRectCellSum -- the largest widthCells + heightCells that still fits the
++// overlay grid.
++//
++// The grid limit is on mapWidth + mapHeight, so a WIDE rectangle reaches sizes a
++// square cannot: maxRectCellSum is 495, i.e. 380x100 fits, and a square can only
++// ever be 247x247.  Measured against the retail tables, the Inland square cap and
++// a 380x100 rectangle both come out inside the same 512 grid.
++//
++// Derived by asking CalcMapSize with a 1-cell-tall rectangle, so the +4 / +12 / +1
++// in that function stay the only copy of them.
++// ---------------------------------------------------------------------------
++int RandomMapGenerator::MaxRectCellSum()
++{
++    int best = 0;
++    for (int w = 1; w <= 2 * kOverlayGridSide; ++w)
++    {
++        MapGenConfig cfg = {};
++        cfg.widthCells = w;
++        cfg.heightCells = 1;
++        if (CalcMapSize(cfg).workSide > kOverlayGridSide)
++            break;
++        best = w + 1;                                   // widthCells + heightCells
++    }
++    return best;
++}
++
++
+ //
+ // Diamond existence: W' < x+y <= W'+2H' and |x-y| < W' (CellExists).
+ // Slot array: 512-stride rows, nullptr outside the diamond - this is the
+@@ -684,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
      // into bare land on purpose, so the shores have to be repainted here.
@@ -51,9 +232,13 @@ diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
---- a/MapGenerator/MapGen.h	2026-10-14 08:42:50.499460058 +0800
-+++ b/MapGenerator/MapGen.h	2026-10-14 08:42:50.534976398 +0800
-@@ -4,6 +4,15 @@
+--- a/MapGenerator/MapGen.h	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGen.h	2026-10-14 11:30:47.214981756 +0800
+@@ -1,9 +1,18 @@
+-﻿#pragma once
++#pragma once
+ 
+ #include <cstdint>
  #include <cstddef>
  #include <string>
  #include <vector>
@@ -69,7 +254,33 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
  
  // ============================================================================
  // Shared numeric helpers (used by MapGen.cpp and MapGenRiver.cpp)
-@@ -457,6 +466,17 @@
+@@ -419,8 +428,24 @@
+     LandType   landType;     // this[15]
+     int        theater;      // this[14]
+     int        timeOfDay;    // this[18]  (0-3)
+-    int        sizeSlider;   // this[25] = this[26]  (0-3)
++    double     sizeSlider;   // this[25] = this[26].  Fractional on purpose: the
++                             // engine interpolates Wmin..Wmax by sizeSlider/3, so a
++                             // whole number only ever reaches every third of the
++                             // way.  The retail dialog offered integers 0-3;
++                             // anything in 0..SizeSliderRange().usefulMax is valid
++                             // here.  Integer inputs are unchanged -- see
++                             // CalcMapSize, which still does the arithmetic in
++                             // float.
+     int        playerCount;  // this[20]  (2-8)
++    // Explicit visible dimensions, in cells.  When BOTH are > 0 they replace the
++    // sizeSlider table lookup entirely.  That is the only way to get a NON-SQUARE
++    // map: CalcMapSize feeds W and H from the same tables and the same fraction,
++    // so sizeSlider can only ever produce width == height.  Nothing below the
++    // size calculation assumes squareness -- the diamond formula, the slot array
++    // (slotRows_ * 512, slotRows_ = mapWidth + mapHeight + 1) and every
++    // size_.width / size_.height use are already independent.
++    int        widthCells;   // 0 = derive both from sizeSlider
++    int        heightCells;
+     int        oreDensity;   // ore density index
+     bool       multiplayer;  // false = single-player map (.map), true =
+                              // multiplayer map (.yrm). Only the writer reads it:
+@@ -441,6 +466,17 @@
      // MovementZone table the starting-point stage uses, so it belongs here
      // rather than being rolled inside the generator. See GlobalMapOptions.
      GlobalMapOptions global;
@@ -87,7 +298,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
  };
  
  // ============================================================================
-@@ -962,6 +982,13 @@
+@@ -946,12 +982,72 @@
      uint8_t ok;         // 1 stamped, 0 blocked
  };
  
@@ -101,7 +312,66 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
  class RandomMapGenerator
  {
  public:
-@@ -1450,8 +1477,21 @@
+     RandomMapGenerator();
+     ~RandomMapGenerator();
+ 
++    // -----------------------------------------------------------------------
++    // Parameter limits -- the SINGLE definition of them.
++    //
++    // Every consumer (this class, engine/tools/mgconsole, engine/tools/
++    // wasm_entry and through it the web page) must ask here instead of
++    // restating the numbers.  They used to be scattered: the "the size slider
++    // stops growing past 4" figure the page carried was a hand copy of
++    // kSizeFractionMax, and the 512-cell overlay wall was not written down
++    // anywhere -- it existed only as a `continue` in the writer.
++    // -----------------------------------------------------------------------
++
++    // [OverlayPack] is a fixed 512x512 byte grid (262144 bytes, indexed
++    // x + 512*y), so the isometric diamond -- workSide = mapWidth +
++    // mapHeight + 1 -- has to stay inside it.  Past this the writer would drop
++    // whole rows of overlays with no error.
++    static constexpr int kOverlayGridSide = 512;
++
++    // CalcMapSize extrapolates W = Wmin*(1-f) + Wmax*f.  For every land type
++    // EXCEPT Inland and Mountainous the fraction is capped here, i.e. the size
++    // tables may be extrapolated by at most 20%.  Inland and Mountainous are
++    // not capped and keep extrapolating linearly until kOverlayGridSide stops
++    // them.
++    static constexpr float kSizeFractionMax = 1.2f;
++
++    // The largest widthCells + heightCells a rectangle may use.  The grid limit is
++    // on mapWidth + mapHeight -- the SUM, not either side -- which is why an
++    // explicit rectangle reaches sizes sizeSlider cannot: a square is capped at
++    // workSide = 2*(maxWidth + 8) + 1 while 380x100 fits comfortably.
++    //
++    // Exposed so a UI can clamp two explicit dimensions without re-deriving the
++    // +4 / +12 / +1 in CalcMapSize.
++    static int MaxRectCellSum();
++
++    // The sizeSlider bounds for one (land, players) pair.  Doubles, because the
++    // useful bound is fractional: kSizeFractionMax of 1.2 is a size of 3.6, and
++    // the retail dialog's integer 0-3 could not reach it.
++    struct SizeRange
++    {
++        double usefulMax;   // last value worth offering: a larger one changes nothing
++        double legalMax;    // last value that is not silently truncated by the writer
++    };
++    static SizeRange SizeSliderRange(LandType land, int playerCount);
++
++    // The granularity SizeSliderRange() scans at -- and the step the page's slider
++    // should use.  Defined here rather than restated there so the two cannot
++    // drift, the same rule the bounds themselves follow.
++    static constexpr double kSizeSliderStep = 0.1;
++
++    // Replicates 0x599665 - 0x599748.  Static because it depends on nothing but
++    // the config and the size tables -- which is also what lets
++    // SizeSliderRange() be derived from it rather than re-deriving it.
++    static MapSizeResult CalcMapSize(const MapGenConfig& cfg);
++
+     bool GenerateMapBody(const MapGenConfig& cfg);
+ 
+     // Re-initialize map data from RMGMD.INI (replicates sub_5981F0)
+@@ -1381,8 +1477,21 @@
      void ScatterRocks();
      // sub_5A4B60: best-first growth of a LAT / rock blob of `count` cells,
      // stamping work dword +0x3C with the seed's slot index.
@@ -124,7 +394,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      // sub_5A45E0: plant up to `count` TREE01..TREE25 objects around the cell,
      // returning how many were planted. Route B: records MapTerrainObject.
      int ScatterTrees(MapCell* cell, int count, double probability);
-@@ -1467,6 +1507,66 @@
+@@ -1398,6 +1507,66 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
  
@@ -191,7 +461,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1523,6 +1623,22 @@
+@@ -1454,6 +1623,22 @@
      // budget), false on failure (map already rolled back to all-land).
      bool GenerateRiver(int* startXY, double initialAngle, bool isTributary);
  
@@ -214,7 +484,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      // One river-mouth delta fan (replicates sub_59E740) - IMPLEMENTED.
      // Called by the river main loop's delta trigger (0x59ddf5) after all
      // six gates pass; carves a fan of water downstream of the river end
-@@ -1720,6 +1836,14 @@
+@@ -1651,6 +1836,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -229,7 +499,15 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2126,53 @@
+@@ -1677,7 +1870,6 @@
+     }
+ 
+ private:
+-    MapSizeResult CalcMapSize(const MapGenConfig& cfg) const;
+     void InitCells();
+     void InitWorkArray();
+     void FillWorkCoords();
+@@ -1934,6 +2126,53 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -283,7 +561,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2351,10 @@
+@@ -2112,6 +2351,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -295,8 +573,8 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
---- a/MapGenerator/MapGenCleanup.cpp	2026-10-14 08:42:50.498595573 +0800
-+++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 08:42:50.534106714 +0800
+--- a/MapGenerator/MapGenCleanup.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 11:30:47.214189399 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -307,8 +585,8 @@ diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
      delete[] workCells_;
      workCells_ = nullptr;
 diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
---- a/MapGenerator/MapGenHills.cpp	2026-10-14 08:42:50.498731809 +0800
-+++ b/MapGenerator/MapGenHills.cpp	2026-10-14 08:42:50.534847823 +0800
+--- a/MapGenerator/MapGenHills.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenHills.cpp	2026-10-14 11:30:47.214875431 +0800
 @@ -74,9 +74,12 @@
  {
      MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
@@ -681,7 +959,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          }
      }
  }
-@@ -1290,3 +1548,91 @@
+@@ -1290,3 +1548,92 @@
          }
      }
  }
@@ -724,6 +1002,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +            dst.touched = src.touched;
 +        }
 +    }
++
 +}
 +
 +// ===========================================================================
@@ -774,8 +1053,8 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +    return true;
 +}
 diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
---- a/MapGenerator/MapGenLAT.cpp	2026-10-14 08:42:50.498770530 +0800
-+++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 08:42:50.533111084 +0800
+--- a/MapGenerator/MapGenLAT.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 11:30:47.213182753 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1110,8 +1389,8 @@ diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
---- a/MapGenerator/MapGenMaking.cpp	2026-10-14 08:42:50.498827083 +0800
-+++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 08:42:50.534798741 +0800
+--- a/MapGenerator/MapGenMaking.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 11:30:47.214827459 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1164,8 +1443,8 @@ diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
      }
  
 diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
---- a/MapGenerator/MapGenMakingSub.cpp	2026-10-14 08:42:50.498844733 +0800
-+++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 08:42:50.533316312 +0800
+--- a/MapGenerator/MapGenMakingSub.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 11:30:47.213457336 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -1339,9 +1618,39 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
---- a/MapGenerator/MapGenMapFile.cpp	2026-10-14 08:42:50.499587113 +0800
-+++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 08:42:50.534070272 +0800
-@@ -828,7 +828,7 @@
+--- a/MapGenerator/MapGenMapFile.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 11:30:47.214155828 +0800
+@@ -1,4 +1,4 @@
+-﻿// ============================================================================
++// ============================================================================
+ // MapGenMapFile.cpp - the ".map" writer
+ //
+ // The vanilla RMG itself never writes a file (the game saves the finished map
+@@ -646,6 +646,23 @@
+     if (!slots)
+         return false;
+ 
++    // The overlay sections below are a FIXED 512x512 grid (see kOverlayGridSide)
++    // and the loop that fills them skips anything past it with `continue`.  The
++    // grid is addressed x + 512*y over a diamond whose rows run to
++    // workSide - 1, so it is workSide -- NOT mapWidth/mapHeight individually --
++    // that has to fit: a 274x282 map is well inside 512 on both axes yet needs
++    // 557 rows.  Such a map would come out missing ore and objects, silently,
++    // looking entirely normal.  Refuse it instead.  Callers are expected to keep
++    // sizeSlider inside RandomMapGenerator::SizeSliderRange(); this is the
++    // backstop for anyone who does not.
++    if (size_.workSide > kOverlayGridSide)
++    {
++        DiagLog("SAVE-FILE REFUSED workSide=%d (mapWidth=%d mapHeight=%d) exceeds "
++                "the %d-cell overlay grid; the overlays would be truncated",
++                size_.workSide, size_.mapWidth, size_.mapHeight, kOverlayGridSide);
++        return false;
++    }
++
+     // The port's slot array is slotRows_ * 512, slotRows_ = mapWidth + mapHeight
+     // + 1 (AllocateCells). Walk it whole and skip the empty slots, so no cell
+     // can be missed regardless of how the diamond was laid out.
+@@ -811,7 +828,7 @@
      if (config_.multiplayer)
      {
          const int localLeft = 2;                        // [Map] LocalSize left
@@ -1350,7 +1659,7 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
          const int localWidth = size_.width;             // [Map] LocalSize width
          const int localHeight = size_.height;           // [Map] LocalSize height
          const int playWidth = size_.mapWidth;           // [Map] Size width
-@@ -968,8 +968,11 @@
+@@ -951,8 +968,11 @@
      text += "Theater=";
      text += snow ? "SNOW" : "TEMPERATE";
      text += "\n";
@@ -1365,8 +1674,8 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
---- a/MapGenerator/MapGenRiver.cpp	2026-10-14 08:42:50.499020730 +0800
-+++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 08:42:50.533867494 +0800
+--- a/MapGenerator/MapGenRiver.cpp	2026-10-05 18:29:11.000000000 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 11:30:47.213938608 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1522,7 +1831,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3248,374 @@
+@@ -3169,6 +3248,398 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -1872,6 +2181,30 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +        if (mg::IsRotation180(kind) && shorePieces_ >= 0
 +            && r.base == shorePieces_ && r.base + k == tile)
 +            continue;
++
++        // [移植侧/目标③] 崖族"自己配自己"的验证（上面那条注释留给后人的正是这一件事）。
++        // 依据：tools/cliff_signature.py —— 用每格 TMP 头部的 Extra 图几何（那面墙画在哪）
++        // 当朝向签名，按当前对称做镜像（TB = 反对角翻转：格 (row,col)->(bw-1-col,bh-1-row)、
++        // 尺寸换轴，Extra 在格内竖直翻转 y'=30-ey-eh），再与同足印候选比差异；差异小 = 朝向对。
++        // 与引擎现有选择逐片对照后，只有 7 片不一致（其余 11 片引擎已与签名法一致，不动）。
++        // 两条独立交叉验证：13 片 1x1 片（Extra 未设置 = 头部无朝向信息）引擎本就返回 -1、
++        // 签名法也判它们不可分；且签名法在 7<->17 上互反，而引擎的 1->17 / 7->17 / 17->1 非单射。
++        // 只对 TB 生效（LR 的既有基线 0.967 不动；180 待单独验证）。指定的片没有同足印候选时
++        // 走不到 return、函数返回 -1，调用方保留生成器自己选的片（与岸族"宁可留差异"同一策略）。
++        static const signed char kCliffPartnerTB[40] = {
++            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
++            14, 15, 16,  7,  2,  3,  2,
++            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
++        };
++        if (kind == mg::MapSymmetry::AxialTopBottom && shoreTileIndex_ >= 0
++            && r.base == shoreTileIndex_ && tile >= shoreTileIndex_
++            && tile < shoreTileIndex_ + 40)
++        {
++            const int p = tile - shoreTileIndex_;
++            const int want = kCliffPartnerTB[p];
++            if (want >= 0 && r.base + k != shoreTileIndex_ + want)
++                continue;
++        }
 +        if (inoutHeight != nullptr)
 +        {
 +            const int idx = *inoutHeight;
@@ -1897,7 +2230,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4189,55 @@
+@@ -3742,6 +4213,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -1953,7 +2286,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4258,45 @@
+@@ -3762,36 +4282,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -2022,8 +2355,8 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
              const int packedCoords = cell->MapCoords;
 diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 --- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 08:42:50.535118564 +0800
-@@ -0,0 +1,1368 @@
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 11:30:47.215074780 +0800
+@@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -2739,6 +3072,25 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +{
 +    if (kind == mg::MapSymmetry::None)
 +        return true;
++
++    // [移植侧/诊断] MG_DUMP_MIRROR=1 时，一次性把崖族 40 片在**当前对称下**的
++    // MirrorTile 结果打出来。用途：目标②要知道"引擎现在给每一片配的是谁"，而"两半里
++    // 碰巧都是崖族格的片号相关"**不是**这个答案（权威半场的崖件是崖算法独立选的，
++    // 不是镜像复制的）—— 实测就因此得出过"29 片要改"的错误口径。
++    // 只在环境变量打开时执行，不改产品行为。
++    if (const char* dump = std::getenv("MG_DUMP_MIRROR"); dump != nullptr && dump[0] == '1')
++    {
++        std::fprintf(stderr, "[dump-mirror] kind=%d shoreTileIndex_=%d\n",
++                     static_cast<int>(kind), shoreTileIndex_);
++        for (int p = 0; p < 40; ++p)
++        {
++            int h = 0;
++            bool approx = false;
++            const int q = MirrorTile(shoreTileIndex_ + p, kind, &h, &approx);
++            std::fprintf(stderr, "[dump-mirror] kind=%d p=%2d -> q=%3d (height=%d approx=%d)\n",
++                         static_cast<int>(kind), p, q, h, approx ? 1 : 0);
++        }
++    }
 +    if (cellSlots_ == nullptr)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorSpecialTerrain: no cells allocated\n");
