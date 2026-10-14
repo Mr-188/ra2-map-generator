@@ -1120,6 +1120,45 @@ A 归零之后再回来做 B（角块相位），那时 B 才有可能成立。
 量测口径固定在 `--stop-after regions`（整图 ±4 各 119 → 0）＋ `MG_DIAG_REGIONS` 的
 `PlaceCliffs` 行（119 → 0）。
 
+**新目标轮 8 实测：源 A 的病灶是"镜像格落了同一件，而不是镜像件"**
+
+在 `PlaceCliffs` 的主循环里加了"值变化才打印"的钩子（`[diag-cliffs]`，同一把 `MG_DIAG_REGIONS` 开关），
+把 ±4 的增长分成"权威落件后 / 镜像落件后"两类：
+
+```
+[diag-regions] enter             levelBad=0
+[diag-regions] FixCliffLevels    levelBad=5
+[diag-cliffs] 权威落件后 (1,80)      levelBad=9
+[diag-cliffs] 镜像落件后 (119,136)   levelBad=10
+[diag-cliffs] 镜像落件后 (120,135)   levelBad=11
+[diag-cliffs] 镜像落件后 (121,134)   levelBad=12
+…（一路上升）…
+```
+
+**增量几乎全部来自"镜像落件后"** ✓ —— 源 A 的 ±4 是**镜像侧的落件**造成的。
+
+读代码就明白了（`MapGenMakingSub.cpp:4300` 一带，这段是移植侧加的 TB 配对）：
+
+```cpp
+if (cpaired && !mg::AuthoritativeXY(...)) continue;   // 权威格负责落件
+pass = PlaceCliffPiece(cell, -1);                     // 权威格：选件 + 落地
+if (pass && cpaired) {
+    MapCell* mc = CellAt(cmx, cmy);
+    ...
+    pass = PlaceCliffPiece(mc, -1);                   // 镜像格：**落的是同一件** ✗
+}
+```
+
+即"镜像格 follow its pair"这一步落的是**同一个件** ✗，没有做**镜像件**映射 —— 而件内部的层号
+是按件自己的几何算的（`Level = ownerLevel - n - 1` 那一类方向相关公式），所以同一件落在镜像格上
+层号就对不上，差值的量级正好是一个崖面层（**±4**）✗。
+
+`none` / `LR` 出图逐字节不变 ✓（诊断只打印）。
+
+**下一轮**：把镜像侧的落件改成"落**镜像件**"（按镜像足印选件、层号按镜像位置算），量测口径：
+`[diag-cliffs]` 的 levelBad 增长（现在一路涨到 119）→ 目标不再增长；`--stop-after regions` 的
+±4 各 119 → 0。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
