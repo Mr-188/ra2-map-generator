@@ -47,6 +47,16 @@ def probe(path: Path) -> int:
                 nxt = o2
         size = (nxt - base) if nxt is not None else (len(b) - base)
         print(f"  块{i}: 起点 {base}  x={x} y={y} extra_off={hex(extra)}  实测大小 {size}")
+        # [实测] 12 字节头之后还有一小段子头（本文件块2: 952, 2722, 0, 15, 30, 29），
+        # 再往后就是**明文 24 位象素**，透明色 = 0xCDCDCD（RA2 TMP 的经典标记）。
+        sub = struct.unpack_from("<6i", b, base + 12)
+        print(f"      子头 6×int32 = {sub}")
+        # 找第一个 0xCDCDCD（透明）出现的位置，粗略标出象素起点
+        cd = b.find(b"\xcd\xcd\xcd", base + 12, base + size)
+        if cd >= 0:
+            print(f"      首个 0xCDCDCD 在 +{cd - base}（子头 {cd - base - 12} 字节），"
+                  f"其后 {size - (cd - base)} 字节按 24 位象素看 = "
+                  f"{(size - (cd - base)) / 3:.1f} 象素")
         print(f"      候选布局: 12+24bit({12 + w * h * 3}) 12+8bit({12 + w * h}) "
               f"12+24bit+extra({12 + w * h * 3}+extra)  → 与实测差 "
               f"{size - (12 + w * h * 3)} / {size - (12 + w * h)}")
