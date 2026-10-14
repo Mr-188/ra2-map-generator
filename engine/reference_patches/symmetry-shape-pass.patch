@@ -1,6 +1,6 @@
 diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
 --- a/MapGenerator/MapGen.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGen.cpp	2026-10-14 15:13:41.397646940 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-14 17:30:14.357275430 +0800
 @@ -1,4 +1,4 @@
 -﻿#include "pch.h"
 +#include "pch.h"
@@ -233,7 +233,7 @@ diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
 --- a/MapGenerator/MapGen.h	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGen.h	2026-10-14 15:13:41.398757307 +0800
++++ b/MapGenerator/MapGen.h	2026-10-14 17:30:14.358437171 +0800
 @@ -1,9 +1,18 @@
 -﻿#pragma once
 +#pragma once
@@ -574,7 +574,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      int       cellCount_;   // number of diamond cells
 diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
 --- a/MapGenerator/MapGenCleanup.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 15:13:41.398027110 +0800
++++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 17:30:14.357645350 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -586,7 +586,7 @@ diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 --- a/MapGenerator/MapGenHills.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenHills.cpp	2026-10-14 15:13:41.398625331 +0800
++++ b/MapGenerator/MapGenHills.cpp	2026-10-14 17:30:14.358332176 +0800
 @@ -74,9 +74,12 @@
  {
      MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
@@ -955,11 +955,11 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          const int16_t y = static_cast<int16_t>(
                                static_cast<uint32_t>(cell->MapCoords) >> 16);
 +
-+        // [移植侧] 对称：锚点只由权威半场提供，镜像块跟着一起盖章（见下面那段）。
-+        // 与 FinalizeElevationSlopes 一样：LR 与 TB（同为反射）成对处理，180 排除。
++        // [移植侧·实验] 与"官方扫全图"同一思路：这段成对逻辑原本也把 TB 算进去，
++        // 让镜像半场跟着权威半场的锚点盖章 ✗。现在**只留 LR**，让官方合并算法在
++        // 两半各自统一处理（TB 的镜像半场不再被跳过）。
 +        int pairX = 0, pairY = 0;
-+        const bool paired = (config_.symmetry == mg::MapSymmetry::AxialLeftRight
-+                          || config_.symmetry == mg::MapSymmetry::AxialTopBottom)
++        const bool paired = (config_.symmetry == mg::MapSymmetry::AxialLeftRight)
 +            && size_.mapWidth > 0
 +            && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                              x, y, &pairX, &pairY);
@@ -1112,7 +1112,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +}
 diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
 --- a/MapGenerator/MapGenLAT.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 15:13:41.397054430 +0800
++++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 17:30:14.356795585 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1448,7 +1448,7 @@ diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
              pool[nextNode].priority = key;
 diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
 --- a/MapGenerator/MapGenMaking.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 15:13:41.398571888 +0800
++++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 17:30:14.358276283 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1561,7 +1561,7 @@ diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
  }
 diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 --- a/MapGenerator/MapGenMakingSub.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 15:13:41.397320734 +0800
++++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 17:30:14.356995796 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -1792,7 +1792,7 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
  }
 diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
 --- a/MapGenerator/MapGenMapFile.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 15:13:41.397989138 +0800
++++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 17:30:14.357601117 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1848,7 +1848,7 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 --- a/MapGenerator/MapGenRiver.cpp	2026-10-05 18:29:11.000000000 +0800
-+++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 15:13:41.397821559 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 17:30:14.357417778 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2004,7 +2004,16 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3248,375 @@
+@@ -2673,6 +2752,8 @@
+       { 4, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 0 } },  // dcliff02
+ };
+ 
++
++
+ // The footprint of one isotile, resolved from the family tables by the very
+ // rule PlaceIsoTile applies: the shore set (42), the cliff set (40), the
+ // cliff/water pieces (28), the destroyable cliffs (2) and the four waterfall
+@@ -3169,6 +3250,375 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -2380,7 +2389,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4190,55 @@
+@@ -3742,6 +4192,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -2436,7 +2445,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4259,45 @@
+@@ -3762,36 +4261,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -2505,7 +2514,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
              const int packedCoords = cell->MapCoords;
 diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 --- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 15:13:41.398888164 +0800
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 17:30:14.358532936 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
