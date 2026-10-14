@@ -1,4 +1,4 @@
-"""TMP 解码器的自校验骨架（目标③：按美术象素推崖片"对手件"）。
+"""TMP 结构解析（权威结构见 ModEnc 的 TMP 页）（目标③：按美术象素推崖片"对手件"）。
 
 用法（写好解码器后）：
 
@@ -26,44 +26,40 @@ from pathlib import Path
 
 
 def probe(path: Path) -> int:
+    """按 ModEnc 的权威结构解析（https://modenc.renegadeprojects.com/TMP，2025-05 修订）。
+
+    FileHeader: uint BlockWidth, BlockHeight, BlockImageWidth, BlockImageHeight   (16 字节)
+    随后 BlockWidth*BlockHeight 个 uint 指针（指向各 TileCellHeader；0 = 该格不存在）
+    TileCellHeader (52 字节):
+        int X, Y; uint ExtraDataOffset, ZDataoffset, ExtraZDataoffset;
+        int ExtraX, ExtraY; uint ExtraWidth, ExtraHeight;
+        uchar Bitfield; BYTE pad[3]; uchar Height, LandType, SlopeType;
+        RGB TL, RGB BR; BYTE pad2[3];
+    图形数据在各自 cell header 之后。
+    """
     b = path.read_bytes()
-    cx, cy, cblocks, w, h = struct.unpack_from("<5i", b, 0)
-    data = 20 + cx * cy * 4
-    offs = struct.unpack_from("<%di" % (cx * cy), b, 20)
-    print(f"{path.name}: {len(b)} 字节  cx={cx} cy={cy} cblocks={cblocks} w={w} h={h}")
-    print(f"  数据区起点 {data}；偏移表 = {[hex(o) for o in offs]}"
-          f"（实测是**绝对文件偏移**，不是相对数据区）")
-    present = [(i, o) for i, o in enumerate(offs)]
-    for i, o in enumerate(offs):
-        base = o          # 绝对偏移（实测）
-        if o == 0 or base + 12 > len(b):
-            print(f"  块{i}: 不存在")
+    bw, bh, biw, bih = struct.unpack_from("<4I", b, 0)
+    cells = bw * bh
+    ptrs = struct.unpack_from("<%dI" % cells, b, 16)
+    print(f"{path.name}: {len(b)} 字节  BlockWidth={bw} BlockHeight={bh} "
+          f"BlockImage={biw}x{bih}  格数={cells}")
+    print(f"  指针表 = {[hex(p) for p in ptrs]}")
+    n = 0
+    for i, o in enumerate(ptrs):
+        if o == 0 or o + 52 > len(b):
             continue
-        x, y, extra = struct.unpack_from("<3i", b, base)
-        # 下一块的起点决定这一块的实测大小
-        nxt = None
-        for j, o2 in enumerate(offs):
-            if o2 > o and (nxt is None or o2 < nxt):
-                nxt = o2
-        size = (nxt - base) if nxt is not None else (len(b) - base)
-        print(f"  块{i}: 起点 {base}  x={x} y={y} extra_off={hex(extra)}  实测大小 {size}")
-        # [实测] 12 字节头之后还有一小段子头（本文件块2: 952, 2722, 0, 15, 30, 29），
-        # 再往后就是**明文 24 位象素**，透明色 = 0xCDCDCD（RA2 TMP 的经典标记）。
-        sub = struct.unpack_from("<6i", b, base + 12)
-        print(f"      子头 6×int32 = {sub}")
-        # 找第一个 0xCDCDCD（透明）出现的位置，粗略标出象素起点
-        cd = b.find(b"\xcd\xcd\xcd", base + 12, base + size)
-        if cd >= 0:
-            print(f"      首个 0xCDCDCD 在 +{cd - base}（子头 {cd - base - 12} 字节），"
-                  f"其后 {size - (cd - base)} 字节按 24 位象素看 = "
-                  f"{(size - (cd - base)) / 3:.1f} 象素")
-        print(f"      候选布局: 12+24bit({12 + w * h * 3}) 12+8bit({12 + w * h}) "
-              f"12+24bit+extra({12 + w * h * 3}+extra)  → 与实测差 "
-              f"{size - (12 + w * h * 3)} / {size - (12 + w * h)}")
-    print("\n  必须成立的检查（解码器写好后逐条过）:")
-    print("   a) 每块的实测大小 == 12 + 该块解码后消耗的字节数（首尾相接，无缝隙）")
-    print("   b) 解码出的 cx*cy 块能恰好拼成 w*cx × h*cy 的图，透明区连续")
-    print("   c) 用生成图反查：该片实例的低侧方向应与解码出的墙朝向一致")
+        (x, y, extra, zoff, extraz, ex, ey, ew, eh,
+         bitfield) = struct.unpack_from("<9iB", b, o)
+        pad = b[o + 37:o + 40]
+        height, land, slope = b[o + 40], b[o + 41], b[o + 42]
+        tl = tuple(b[o + 43:o + 46]); br = tuple(b[o + 46:o + 49])
+        print(f"  格{i} @{o}: X={x} Y={y} Extra=(off {extra}, {ex},{ey} {ew}x{eh}) "
+              f"Z={zoff} ExtraZ={extraz}")
+        print(f"        Bitfield=0x{bitfield:02X} (extra={bitfield & 1} z={(bitfield >> 1) & 1} "
+              f"damaged={(bitfield >> 2) & 1}) pad={pad.hex(' ')} "
+              f"Height={height} LandType={land} Slope={slope} TL={tl} BR={br}")
+        n += 1
+    print(f"  解析到 {n} 个存在的格")
     return 0
 
 

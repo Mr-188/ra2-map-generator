@@ -442,6 +442,42 @@ TMP 比对，取最像的那一片——这正是本项目当年为岸族建表�
 仍待定：子头 6 个 int32 的确切语义 + 1185/1573 这两个数怎么来的。下一轮把它定完，就能解出
 40 片崖的象素 → 逐候选比对 → `kCliffMirrorPartner[40]` → 接进 `MirrorTile`（只对 180/TB）。
 
+**第 11 轮（新目标轮 9）突破：TMP 格式拿下（权威规格 + 字节级逐字段对上）**
+
+来源：ModEnc 的 TMP 页（2025-05 修订，"File Format"）+ XCC 作者 Olaf van der Spek 的
+`TMP_TS_Format.html`（GPL，图形编码部分）。两者合起来是完整规格：
+
+```
+FileHeader : uint BlockWidth, BlockHeight, BlockImageWidth, BlockImageHeight   // 16 字节
+Index      : BlockWidth*BlockHeight 个 uint（绝对文件偏移；0 = 该格不存在）
+CellHeader : int X, Y; uint ExtraDataOffset, ZDataoffset, ExtraZDataoffset;
+             int ExtraX, ExtraY; uint ExtraWidth, ExtraHeight;
+             uchar Bitfield; BYTE pad[3]; uchar Height, LandType, SlopeType;
+             RGB TL, RGB BR; BYTE pad2[3];                                     // 52 字节
+图形        : 紧跟 CellHeader 之后 —— **8 位**（不是 24 位）：
+             正常图 = 等距形状的字节数（48x24 → 576；RA2 的 60x30 → 860/900，下一轮用
+             ZDataoffset 反推定死），随后同样大小的一块 Z 数据，
+             再后是 Extra 图（Rect，cx_extra*cy_extra 字节，0 表示透明）。
+Bitfield    : 低 3 位 = HasExtraData / HasZData / HasDamagedData；文档原话举的例子就是 **0xCB**
+              （`xxxxx011`）—— 正是我在文件里读到的那个字节。
+```
+
+**字节级验证**（`tools/tmp_probe.py` 已按此结构重写，实测 `Cliff01.tem`）：
+
+```
+BlockWidth=2 BlockHeight=3 BlockImage=60x30   指针表 = [0x28, 0, 0x9d4, 0x1c68, 0, 0x2a70]
+格0 @40 : X=0 Y=0   Extra=(off 1852, 1,1 24x13)  Z=952 ExtraZ=2164  Bitfield=0xCB Height=4
+          LandType=15 (**Cliff**) Slope=0 TL=(113,82,46) BR=(119,100,52)  pad=cd cd cd
+格2 @2516 / 格3 @7272 / 格5 @10864 同样字段全对得上（4/6 格存在）
+```
+
+之前所有失败的根源找到了：**文件头是 4 个 int（16 字节），我当成 5 个** → 偏移全错位一格；
+以及**图形是 8 位等距形状 + 一块 Z 数据**，不是明文 24 位（我据此做的两次编码假设自然全错）。
+
+**下一轮**：按 ZDataoffset 反推 RA2 正常图形块的确切字节数 → 写解码器（8 位 → 用剧场调色板
+转 RGB）→ 对 40 片崖做镜像变换、与同足印候选比象素 → 生成 `kCliffMirrorPartner[40]` →
+接进 `MirrorTile`（只对 180/TB 生效）→ 验收 `TB 6/45 → 0`、`180 7/72 → 0`。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
