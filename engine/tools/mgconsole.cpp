@@ -434,21 +434,31 @@ int main(int argc, char** argv)
     }
     rmg.RecalculateCellAttributes();                      // 0x598FB8
     rmg.RecalculateCellAttributes();                      // 0x59912A
-    if (diagHills)
+    // [诊断用] CreateHills' own body, one call at a time (see MapGenHills.cpp).  Two
+    // reasons to take this route: --diag-hills (print the mirror divergence after
+    // each step) and --stop-after hills:<Step> (write the map there, so each step
+    // can be RENDERED - the stage that first paints black is then a measurement
+    // rather than an inference).  Without either flag the single call below runs
+    // and the map is byte-identical to before.
+    const bool splitHills = diagHills || stopAfter.rfind("hills:", 0) == 0;
+    if (splitHills)
     {
-        // Exactly CreateHills' own body, one call at a time (see MapGenHills.cpp).
-        // Only the probe path takes this route; without --diag-hills the single call
-        // below is what runs and the map is byte-identical to before.
-        rmg.MarkTechBuildingProtection();   diagSymmetry(rmg, cfg, "hills: MarkTechBuildingProtection");
-        rmg.MarkHillProtection();           diagSymmetry(rmg, cfg, "hills: MarkHillProtection");
-        rmg.MirrorWorkMarks(cfg.symmetry);  diagSymmetry(rmg, cfg, "hills: MirrorWorkMarks");
-        rmg.BuildHillHeightField();         diagSymmetry(rmg, cfg, "hills: BuildHillHeightField");
-        rmg.BuildElevationGrid();           diagSymmetry(rmg, cfg, "hills: BuildElevationGrid");
-        rmg.ApplyElevationLevels();         diagSymmetry(rmg, cfg, "hills: ApplyElevationLevels");
-        rmg.MirrorElevationGrid();          diagSymmetry(rmg, cfg, "hills: MirrorElevationGrid");
-        rmg.FinalizeElevationSlopes();      diagSymmetry(rmg, cfg, "hills: FinalizeElevationSlopes");
-        rmg.MergeSlopeBlocks();             diagSymmetry(rmg, cfg, "hills: MergeSlopeBlocks");
-        rmg.RemoveCliffsOverRamps();        diagSymmetry(rmg, cfg, "hills: RemoveCliffsOverRamps");
+        const auto step = [&](const char* tag, auto&& fn) -> bool
+        {
+            fn();
+            if (diagSym) diagSymmetry(rmg, cfg, tag);
+            return stopHere(tag);
+        };
+        if (step("hills: MarkTechBuildingProtection", [&] { rmg.MarkTechBuildingProtection(); })) return emit();
+        if (step("hills: MarkHillProtection",         [&] { rmg.MarkHillProtection(); }))         return emit();
+        if (step("hills: MirrorWorkMarks",            [&] { rmg.MirrorWorkMarks(cfg.symmetry); })) return emit();
+        if (step("hills: BuildHillHeightField",       [&] { rmg.BuildHillHeightField(); }))       return emit();
+        if (step("hills: BuildElevationGrid",         [&] { rmg.BuildElevationGrid(); }))         return emit();
+        if (step("hills: ApplyElevationLevels",       [&] { rmg.ApplyElevationLevels(); }))       return emit();
+        if (step("hills: MirrorElevationGrid",        [&] { rmg.MirrorElevationGrid(); }))        return emit();
+        if (step("hills: FinalizeElevationSlopes",    [&] { rmg.FinalizeElevationSlopes(); }))    return emit();
+        if (step("hills: MergeSlopeBlocks",           [&] { rmg.MergeSlopeBlocks(); }))           return emit();
+        if (step("hills: RemoveCliffsOverRamps",      [&] { rmg.RemoveCliffsOverRamps(); }))      return emit();
     }
     else
         rmg.CreateHills();                                // 0x599171

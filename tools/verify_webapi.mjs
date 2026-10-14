@@ -413,3 +413,11 @@ if (failures.length) {
   process.exit(1);
 }
 console.log('OK -- the browser entry-point contract holds end to end');
+
+// Exit explicitly.  Nothing here closes the wasm runtime's handles (the renderer
+// module keeps an epoll registration alive), so node would finish the work, print
+// this line and then sit in epoll_wait for ever - which is not a cosmetic detail:
+// tools/verify_all.sh waits for the process, so the whole acceptance suite blocked
+// on it (measured twice: the log ended with the OK above and the process was still
+// alive an hour later).  The failure path above already exits for the same reason.
+process.exit(0);

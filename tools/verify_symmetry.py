@@ -119,7 +119,12 @@ def mirrored(f: tuple[int, int, int], kind: str) -> tuple[int, int, int]:
         # Screen left-right is (x, y) -> (y, x), i.e. the footprint transposes.
         return (h, w, pack([(c, r) for r, c in cells(m, w, h)], h))
     if kind == "top-bottom":
-        return (w, h, pack([(h - 1 - r, c) for r, c in cells(m, w, h)], w))
+        # 与引擎 MirrorTile 的 topbottom 分支一致（= MirrorCell 的 (x,y)->(k-y,k-x)）：
+        # 转置 + 双向反转，足印尺寸变成 (h, w)。原来这里写的是"纯纵向翻转、不转置" ✗，
+        # 与引擎不一致，于是把 TB 崖族算成 27/40 "缺 13 片"、并据此决定页面不提供 TB
+        # （见下面的绊线）。按引擎的口径，崖族是 40/40 完整闭合的 ✓。
+        moved = [(w - 1 - c) * h + (h - 1 - r) for r, c in cells(m, w, h)]
+        return (h, w, pack([(i // h, i % h) for i in moved], h))
     if kind == "rotational-180":
         return (w, h, pack([(h - 1 - r, w - 1 - c) for r, c in cells(m, w, h)], w))
     raise ValueError(kind)
@@ -189,9 +194,12 @@ def check_family_closure(failures: list[str]) -> int:
         if gaps[kind]["kCliffFootprints"]:
             failures.append(f"CliffSet is not closed under {kind}: "
                             f"{gaps[kind]['kCliffFootprints']} pieces have no counterpart")
-    if gaps["top-bottom"]["kCliffFootprints"] == 0:
-        failures.append("top-bottom is closed now; MapSymmetry could offer it "
-                        "(see engine/src/mirror.h)")
+    # 修正后的事实：按引擎真正使用的 top-bottom 变换，崖族同样 40/40 闭合 —— 上面那条
+    # "TB 不闭合所以不提供"的旧结论作废（它来自一个与引擎不一致的变换）。现在要求它与另外
+    # 两种一样闭合；TB 因此是可以开放给页面的（见 engine/src/mirror.h）。
+    if gaps["top-bottom"]["kCliffFootprints"] != 0:
+        failures.append("CliffSet is not closed under top-bottom: "
+                        f"{gaps['top-bottom']['kCliffFootprints']} pieces have no counterpart")
 
     # The residual gaps, pinned.  Left-right is what the product ships, so its gaps
     # are what a mirrored map may have to report; if a family gains or loses one,
@@ -324,8 +332,19 @@ ART_DIFF = 20
 
 
 def mirror_cell(kind: int, Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
+    """The engine's own cell map, written independently here.
+
+    kind 1 = left-right (the transpose), 2 = rotational-180, 3 = top-bottom, which is
+    the ANTI-transpose (x,y) -> (k-y, k-x) - the same form as the 180 rotation but
+    with the two coordinates swapped on the way in and out.  It is an isometry of the
+    diamond and it preserves the 8-neighbourhood, so unlike 180 it has no off-diamond
+    band.  See engine/src/mirror.h.
+    """
     if kind == 1:
         return y, x
+    if kind == 3:
+        k = Wp + Hp
+        return k - y, k - x
     return rot180_cell(Wp, Hp, x, y)
 
 
@@ -575,9 +594,11 @@ def check_generation(failures: list[str]) -> int:
         #     interior has a structurally different floor per kind - see mirror.h and
         #     INTERIOR_LIMIT_180.
         special_renders: list[tuple[str, Path, Path]] = []
+        map_plain_special: dict[str, Path] = {}
         for land, label in ((3, "Inland"), (4, "Mountainous")):
             proc_sp0, map_sp0 = generate(0, f"{label.lower()}_plain.yrm",
                                          ["--land", str(land)])
+            map_plain_special[label] = map_sp0
             for kind, kind_short in ((1, "lr"), (2, "180")):
                 kind_name = "left-right" if kind == 1 else "rotational-180"
                 tag = f"{label} {kind_name}"
@@ -824,7 +845,14 @@ def check_generation(failures: list[str]) -> int:
         #     behaviour measured 8%).
         # 180 的自洽率在"纯 180° 旋转 + 按对应件铺岸"下是 80/82（98%），与权威侧 85/87 同级；
         # 换成错位映射时它是 8%，所以这条现在是**真闸门**（floor 0.80）。
-        for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.80)):
+        # 上下对称也进这一条。**实测 181/215 = 84%**（floor 0.80）：离群的 34 个实例就是
+        # "顺序盖章互相吃格子"留下的半片（2x2 的片只剩 1~2 格，渲染成水里的浅色半方块）。
+        # 线上那个数字曾经是 177/177 = 100%——那是靠"把半片整片还原成卸妆前美术"的临时补丁
+        # 撑起来的假象（还原会把没坏的格也一起动，且黑块只是挪位），补丁撤掉后真实值就是
+        # 84%。两条修法都实测过并否决：足印冲突就不盖（半片 34 -> 61，更差）、把后半场也
+        # 纳入成对判定（岸族要走官方选片树，实测把它弄差）。这条闸门的意义是**防止再退化**。
+        for label, sym, floor in (("left-right", 1, 0.90), ("rotational-180", 2, 0.80),
+                                  ("top-bottom", 3, 0.80)):
             # Explicit parameters, not GEN_PARAMS: the shore family only exists when the
             # carve actually makes a river or a lake, which needs water > 20.
             mp = tmp_path / f"cohesion-{sym}.yrm"
@@ -898,6 +926,43 @@ def check_generation(failures: list[str]) -> int:
             checks += render_cleanliness(failures, map_plain, map_sym, tmp_path, tag,
                                          png_out=coast_pngs)
             coast_maps[tag] = map_sym
+
+        # 7a-2. top-bottom, on the same yardstick (it sits here because the
+        #       symmetry-off Inland / Mountainous maps it compares against are
+        #       generated just above).  It is the kind with the recorded
+        #     hole defect, so the two render bounds are the ones that matter here and
+        #     both are enforced: dark pixels against the SAME map with symmetry off,
+        #     and - the one that localises a hole - the share of 4-neighbour height
+        #     steps whose drop no art covers.  Measured at this configuration:
+        #         before (paired FinalizeElevationSlopes)  62 of 2676 steps (2.32%)  ✗
+        #         now                                       0 of 2713 steps (0.00%)  ✓
+        #     at 0.50% dark pixels against the plain map's 0.44%.
+        #
+        #     The interior-art number is printed, never bounded: on top-bottom the
+        #     corner-block lattice is the cell lattice shifted one cell (derived in
+        #     MapGenHills.cpp, FinalizeElevationSlopes), so a ramp layer that is BOTH
+        #     symmetric and locally correct does not exist in this tile set.  Bounding
+        #     it would force the pairing back, which is what painted 300k black
+        #     pixels.  It is 7.4% here against left-right's 2.3% and 180's 22.9%.
+        for land, label in ((3, "Inland"), (4, "Mountainous")):
+            proc_tb, map_tb = generate(3, f"{label.lower()}_tb.yrm", ["--land", str(land)])
+            checks += 1
+            if not (map_tb.is_file() and map_plain_special[label].is_file()):
+                failures.append(f"the generator produced no {label} top-bottom map: "
+                                f"{proc_tb.stderr.strip()[-200:]}")
+                continue
+            checks += render_cleanliness(failures, map_plain_special[label], map_tb,
+                                         tmp_path, f"{label.lower()}-tb",
+                                         png_out=coast_pngs)
+            sec_tb = sections_of(map_tb)
+            C_tb = cells_of(sec_tb)
+            Wp_tb, Hp_tb = parse_map_size(sec_tb)
+            tb_pairs, tb_art, tb_exact = interior_stats(C_tb, Wp_tb, Hp_tb, 3)
+            checks += 1
+            print(f"  special {label + ' top-bottom':<24} interior art differs on "
+                  f"{tb_art}/{tb_pairs} pairs ({100.0 * tb_art / tb_pairs:.1f}%, "
+                  f"reported only - see the note above); "
+                  f"{100.0 * tb_exact / tb_pairs:.1f}% differ at all")
 
         # 7b. The coast itself, which is the number the Inland / Mountainous work is
         #     accepted on: the mirrored-pair difference restricted to water and shore
@@ -1353,7 +1418,10 @@ def coast_water_mask_iou(mapfile: Path, pngfile: Path, kind: int,
             continue
         L = im[y - half_h:y + half_h, x - half_w:x + half_w]
         R = im[y2 - half_h:y2 + half_h, x2 - half_w:x2 + half_w]
-        R = R[:, ::-1] if kind == 1 else R[::-1, ::-1]
+        # kind 1 = 左右（横向翻转）、3 = 上下（纵向翻转）、2 = 180°（旋转 180°）。
+        # 这里原来把「非 1」一律当 180° 处理，于是上下对称的水面 IoU 被算成了错的
+        # （实测 0.376，而它的形状其实是镜像的）。
+        R = R[:, ::-1] if kind == 1 else (R[::-1, :] if kind == 3 else R[::-1, ::-1])
         ml = L.sum(axis=2) < 260
         mr = R.sum(axis=2) < 260
         union = np.logical_or(ml, mr).sum()
@@ -1499,6 +1567,124 @@ def rot180_cell(Wp: int, Hp: int, x: int, y: int) -> tuple[int, int]:
     """
     return Wp + Hp - x, Wp + Hp - y
 
+
+def check_rot180_flavours(failures: list[str]) -> int:
+    """Both 180 flavours: identical cell map, opposite authoritative half.
+
+    The two differ ONLY in which half of the generated terrain is kept, so the
+    boundary between "the terrain as generated" and "its rotation" runs along the
+    other diagonal (x = k/2 vs y = k/2).  Everything else has to hold exactly as it
+    does for the first flavour, which is what this checks:
+
+      * the water/land outline is symmetric under the 180 cell map, on BOTH;
+      * the coast pairs are footprint-mirrored, never translated - the check that
+        catches a flavour falling through to the left-right branches (measured
+        before the fix: the alt flavour picked transpose partners and, with the
+        river seam wall on the wrong axis, ended up with no water at all: 0 water
+        and 0 shore cells on the whole map);
+      * the two flavours produce DIFFERENT maps, i.e. the option is not a duplicate;
+      * each is reproducible byte for byte.
+    """
+    import tempfile
+    checks = 0
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        return 0
+    ini = None
+    try:
+        from maptools.tileset_names import load_tileset_ini
+        ini = load_tileset_ini(str(THEATER_INI))
+    except Exception:                                          # pragma: no cover
+        pass
+    tab = (parse_table(FOOTPRINTS_CPP.read_text(encoding="utf-8", errors="replace"),
+                       "kShoreFootprints") if FOOTPRINTS_CPP.is_file() else [])
+    base = shore_family_base(ini) if ini is not None else None
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        maps = {}
+        for kind, tag in ((2, "rotational-180"), (4, "rotational-180-alt")):
+            mp = tmp / f"{kind}.yrm"
+            proc = run_generator(mp, 3, kind, ["--size", "2", "--players", "2", "--water", "80",
+                                               "--seed", "20260913"])
+            checks += 1
+            if proc.returncode != 0 or not mp.is_file():
+                failures.append(f"{tag}: generation failed: {proc.stderr[-300:]}")
+                continue
+            maps[kind] = mp
+            mp2 = tmp / f"{kind}b.yrm"
+            run_generator(mp2, 3, kind, ["--size", "2", "--players", "2", "--water", "80",
+                                         "--seed", "20260913"])
+            checks += 1
+            if mp2.is_file() and mp.read_bytes() != mp2.read_bytes():
+                failures.append(f"{tag}: two runs with the same parameters differ")
+
+            # The copy pass has to actually TURN the orientation-bearing pieces.  Checking
+            # only the coast pairs' footprints is not enough: a 2x2 shore piece has a 2x2
+            # footprint whichever way it faces, so a flavour whose kind is missing from
+            # MirrorTile's whitelist copies every shore piece "as is" and still measures
+            # 0 translated pairs - while the rendered mirrored half has no shore fringe at
+            # all (measured: turned 0 against the first flavour's 270, user-visible).  The
+            # counter comes from the pass's own log line, i.e. from the run we just did.
+            checks += 1
+            counters = re.search(
+                r"copied \d+ cell pairs whole, (\d+) art pieces turned"
+                r".{0,200}?(\d+) coast pieces chosen by the measured water-direction table",
+                proc.stderr, re.S)
+            if counters is None:
+                failures.append(f"{tag}: the copy pass printed no turned-piece counters")
+            elif int(counters.group(1)) == 0:
+                failures.append(
+                    f"{tag}: the copy pass turned 0 art pieces (the other flavour turns its "
+                    f"own) - MirrorTile's kind whitelist is missing this kind, so every "
+                    f"orientation-bearing piece comes back 'no counterpart' and the mirrored "
+                    f"half keeps the wrong art")
+            else:
+                print(f"  flavours {tag:<22} {counters.group(1)} pieces turned "
+                      f"({counters.group(2)} of them coast pieces)")
+
+            sections = sections_of(mp)
+            C = cells_of(sections)
+            from maptools.map_ini import parse_map_size
+            Wp, Hp = parse_map_size(sections)
+            pairs = bad = water = 0
+            for (x, y), t in C.items():
+                o = C.get(rot180_cell(Wp, Hp, x, y))
+                if o is None:
+                    continue
+                pairs += 1
+                if water_key_of(t) != water_key_of(o):
+                    bad += 1
+                if water_key_of(t):
+                    water += 1
+            checks += 1
+            if bad:
+                failures.append(f"{tag}: {bad} of {pairs} mirrored cell pairs disagree "
+                                f"about water/land")
+            else:
+                print(f"  flavours {tag:<22} outline symmetric on {pairs}/{pairs} pairs "
+                      f"({water} water cells)")
+            checks += 1
+            if water == 0:
+                failures.append(f"{tag}: the map has no water at all - the river seam wall "
+                                f"is on the wrong axis for this flavour (see "
+                                f"RiverSeamAllows in MapGenRiver.cpp)")
+            if tab and base is not None:
+                trans, mirror_ok, gaps = translated_shore_pairs(C, Wp, Hp, 2, tab, base)
+                checks += 1
+                if trans:
+                    failures.append(f"{tag}: {trans} mirrored shore pairs carry translated "
+                                    f"art instead of the mirrored piece - this flavour is "
+                                    f"not going through the 180 branches")
+                else:
+                    print(f"  flavours {tag:<22} shore pairs all footprint-mirrored "
+                          f"({mirror_ok} pairs, {gaps} without a counterpart)")
+        checks += 1
+        if len(maps) == 2 and maps[2].read_bytes() == maps[4].read_bytes():
+            failures.append("rotational-180 and rotational-180-alt produced the SAME map: "
+                            "the authoritative half is not actually being switched")
+        elif len(maps) == 2:
+            print("  flavours the two 180 halves differ, as they must")
+    return checks
 
 def check_usable_band(failures: list[str]) -> int:
     """Why a 180-degree map declares its visible rect one row lower, and LR does not.
@@ -1669,7 +1855,7 @@ def check_top_bottom(failures: list[str]) -> int:
     return checks
 
 
-def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2)) -> int:
+def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2, 3)) -> int:
     """Print the whole-map interior yardstick, per land type and per kind.
 
         python3 tools/verify_symmetry.py --score
@@ -1894,6 +2080,7 @@ def main() -> int:
     print("  map     mirror a map and compare it cell by cell")
     generation_checks = check_generation(failures)
     tb_checks = check_top_bottom(failures)
+    flavour_checks = check_rot180_flavours(failures)
 
     print("  matrix  every land type x every theatre the product offers")
     matrix_checks = check_land_theater_matrix(failures)
@@ -1908,7 +2095,8 @@ def main() -> int:
           f"the product offers are closed ({closure_checks} closure checks), the 180 "
           f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
           f"a symmetric map decodes back symmetric ({generation_checks} generation "
-          f"checks, {tb_checks} of them top-bottom), and every land x theatre pair the "
+          f"checks, {tb_checks} of them top-bottom, {flavour_checks} for the two 180 "
+          f"flavours), and every land x theatre pair the "
           f"product offers holds its shape, its coast and its elevation "
           f"({matrix_checks} matrix checks)")
     return 0

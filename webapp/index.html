@@ -335,6 +335,61 @@ a.dl {
 a.dl:hover { border-bottom-color: var(--amber); }
 a.dl svg { width: 12px; height: 12px; }
 
+/* ---- 参数集 (share code) ------------------------------------------------
+   One string that reproduces this map; clicking it copies.  It is the only thing
+   on this page that can leave the machine, and only because the user copies it
+   by hand -- nothing is sent anywhere (red line 2).  The string is built by
+   webapp/sharebits.js, which also owns the layout. */
+#share {
+  margin-top: 14px; padding: 11px 12px;
+  border: 1px solid var(--rule); background: var(--well);
+}
+.share-h {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin: 0 0 9px; font: 400 12px/1 var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.share-h .k { color: var(--amber); }
+.code {
+  display: block; width: 100%; box-sizing: border-box; margin: 0;
+  padding: 10px 12px; border: 1px solid var(--rule-2); background: var(--panel);
+  color: var(--amber-2); cursor: pointer; user-select: all;
+  font: 400 20px/1.25 var(--mono); letter-spacing: .16em; text-align: center;
+  overflow-wrap: anywhere;
+}
+.code:hover { border-color: var(--amber); }
+.code:active { background: var(--panel-2); }
+.code:focus-visible { outline: none; box-shadow: var(--focus); }
+.share-note { margin: 9px 0 0; font: 400 12px/1.6 var(--mono); color: var(--ink-3); }
+.share-note.ok { color: var(--ok); }
+.share-note.err { color: var(--err); }
+
+/* ---- 导入参数集 ---------------------------------------------------------- */
+.imp {
+  margin-top: 14px; padding: 11px 12px;
+  border: 1px solid var(--rule); background: var(--well);
+}
+.imp-row { display: flex; gap: 8px; align-items: stretch; }
+/* width:auto, not the .btn default of 100%: with flex-shrink:0 a 100%-wide button
+   claims the whole row and squashes the input to a few pixels (measured: the input
+   came out ~35px wide in the 860px column).  The button sizes to 载入/LOAD instead,
+   and the input takes the rest. */
+.imp-row .btn { flex: 0 0 auto; width: auto; margin-top: 0; }
+.imp input {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  padding: 9px 11px; border: 1px solid var(--rule-2); background: var(--panel);
+  color: var(--ink); font: 400 15px/1.3 var(--mono); letter-spacing: .12em;
+}
+.imp input::placeholder { color: var(--ink-3); letter-spacing: .02em; }
+.imp input:focus { outline: none; border-color: var(--amber); }
+#import-switch {
+  display: inline-block; margin-top: 9px;
+  font: 400 13px/1 var(--mono); letter-spacing: .05em;
+  color: var(--amber); text-decoration: none;
+  border-bottom: 1px solid var(--amber); padding-bottom: 2px;
+}
+#import-switch[hidden] { display: none; }
+
 /* ---- preview band --------------------------------------------------------
    Full-bleed, below the two columns: a 4380px-wide map rendered into a 372px
    sidebar is a thumbnail, not a preview.  The section heading sits INSIDE
@@ -443,6 +498,78 @@ a.dl svg { width: 12px; height: 12px; }
 #rolled:empty { display: none; }
 #rolled { color: var(--amber-2); }
 
+/* ---- version badge + history drawer ---------------------------------------
+   The badge is filled from version.json, which tools/package_webapp.sh writes
+   at packaging time; the drawer reads /versions.json, written by
+   tools/versions.sh.  Neither exists when the page is opened straight from the
+   source tree, so both stay invisible/quiet rather than showing an empty state
+   that looks like a bug (see the note in app.js). */
+.ver {
+  font: 400 12px/1 var(--mono); letter-spacing: .06em;
+  color: var(--ink-2); background: var(--well);
+  border: 1px solid var(--rule-2); border-radius: 2px; padding: 4px 7px;
+}
+.ver[hidden] { display: none; }
+
+#hist-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+}
+#hist {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 92vw);
+  z-index: 41; background: var(--panel); border-left: 1px solid var(--rule-2);
+  box-shadow: -18px 0 40px rgba(0,0,0,.5); overflow-y: auto;
+}
+#hist[hidden], #hist-backdrop[hidden] { display: none; }
+
+.ver-list { list-style: none; margin: 2px 0 0; padding: 0; }
+.ver-list li { border-bottom: 1px solid var(--rule); }
+.ver-list a {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 11px 2px; text-decoration: none;
+  font: 400 14px/1.4 var(--sans); color: var(--ink);
+}
+.ver-list a:hover { color: var(--amber); }
+.ver-list .v-meta {
+  flex: none; font: 400 12px/1.4 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+.ver-list .v-cur {
+  margin-left: 8px; font: 400 11px/1 var(--mono);
+  letter-spacing: .1em; color: var(--amber);
+}
+.ver-list .v-note {
+  display: block; margin-top: 4px; font: 400 12px/1.6 var(--mono);
+  letter-spacing: .02em; color: var(--ink-3);
+}
+
+/* ---- footer: the filing numbers, and a way to reach a human ---------------
+   Both 备案号 are required together: the ICP one from 工信部 and the 公安 one.
+   《非经营性互联网信息服务备案管理办法》 asks for the ICP number at the BOTTOM of
+   the homepage with a link to the filing system, and the 公安备案号 likewise;
+   this is a compliance requirement, not decoration, so do not drop it in a
+   redesign.  tools/verify_deploy.sh and tools/verify_deployed.sh both assert
+   these exact strings -- before publishing and against the live site -- so
+   losing the footer fails the release instead of being noticed by 通管局. */
+.foot {
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+  padding: 20px 24px 30px;
+}
+.foot-in {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  text-align: center;
+}
+.foot p {
+  margin: 0; font: 400 12.5px/1.7 var(--mono);
+  letter-spacing: .03em; color: var(--ink-3);
+}
+.foot a {
+  color: var(--ink-2); text-decoration: none;
+  border-bottom: 1px solid var(--rule-2);
+}
+.foot a:hover { color: var(--amber); border-bottom-color: var(--amber); }
+.foot .grp { color: var(--ink-2); letter-spacing: .1em; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -460,11 +587,15 @@ a.dl svg { width: 12px; height: 12px; }
       <img src="ra2.ico" alt="" width="26" height="26">
     </span>
     <h1>RA2 <b>/</b> YR 随机地图生成器</h1>
+    <!-- Filled from version.json at publish time (empty in a source checkout). -->
+    <span class="ver" id="ver" hidden></span>
     <span class="tag">C++ → WASM · CNCMaps 渲染</span>
   </div>
   <div class="bar-r">
     <span>运行位置 <b>本机浏览器</b></span>
     <span>素材上传 <b>无</b></span>
+    <button type="button" id="hist-open" class="minibtn" aria-haspopup="dialog"
+            aria-controls="hist" title="历史版本">历史版本</button>
     <button type="button" id="settings-open" class="gearbtn" aria-haspopup="dialog"
             aria-controls="settings" title="设置">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -495,6 +626,26 @@ a.dl svg { width: 12px; height: 12px; }
       <input id="auto-render" type="checkbox">
     </label>
     <p class="set-note" id="settings-note"></p>
+  </div>
+</aside>
+
+<!-- ======================= history drawer ======================= -->
+<!-- Every version the site has SERVED, read from /versions.json (written by
+     tools/versions.sh at publish time).  Each entry links to that version's own
+     copy of the site under /v/<version>/: the page references everything
+     relatively, so an old copy is a working page rather than a dead archive --
+     which is the whole point of being able to go back to one. -->
+<div id="hist-backdrop" hidden></div>
+<aside id="hist" role="dialog" aria-modal="true" aria-labelledby="hist-h" hidden>
+  <div class="set-h">
+    <h2 id="hist-h">历史版本</h2>
+    <button type="button" id="hist-close" class="gearbtn" title="关闭">✕</button>
+  </div>
+  <div class="set-body">
+    <p class="set-note" id="hist-note">正在读取版本列表…</p>
+    <ul class="ver-list" id="ver-list"></ul>
+    <p class="set-note">切换版本会重新加载页面。若两版的浏览器缓存格式不同，
+      回到旧版时会请你重新选一次游戏目录（缓存不能跨格式复用）。</p>
   </div>
 </aside>
 
@@ -551,6 +702,28 @@ a.dl svg { width: 12px; height: 12px; }
         <button type="button" id="roll-all" class="minibtn"
                 title="把所有参数都设为随机（全局/地形种子设为 0）；生成时逐个抽定，并把抽到的值显示出来">全随机</button>
       </h2>
+
+      <!-- 导入参数集: someone else's code, pasted or arriving as #p=<code> in the URL
+           (both go through the same validation).  The note under it says whether the
+           code came from THIS engine version, and offers the 历史版本 switch when it
+           did not -- carrying the code across in the fragment.
+           At the TOP of 生成参数 rather than in the output column: it fills these
+           controls in, so it reads as the first row of this section, and the 372px
+           column could not hold a code plus a note plus the switch link. -->
+      <div class="imp" id="import">
+        <p class="share-h"><span>导入参数集</span><span class="k">PASTE · RESTORE</span></p>
+        <div class="imp-row">
+          <input id="import-code" type="text" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" inputmode="latin" aria-label="参数集"
+                 placeholder="粘贴别人发来的参数集">
+          <button type="button" class="btn" id="import-go">
+            <span>载入</span><span class="k">LOAD</span>
+          </button>
+        </div>
+        <p class="share-note" id="import-note"></p>
+        <a id="import-switch" hidden></a>
+      </div>
+
       <div class="grid">
 
         <div class="cell"><label for="land">环境</label>
@@ -644,17 +817,28 @@ a.dl svg { width: 12px; height: 12px; }
         </div>
 
         <div class="cell"><label for="symmetry">对称</label>
-          <!-- One optional kind, by product decision: LEFT-RIGHT axial symmetry (1).
-               The engine also implements rotational 180 (2) and top-bottom (3) - mirror.h
-               declares them, mgconsole --symmetry and mg_generate take them, and
-               tools/verify_symmetry.py keeps testing all three - but the page exposes
-               the one the user asked for, plus 随机.  app.js still disables any value
-               above the engine's mg_symmetry_max(), so if 1 were ever not implemented
-               the option would grey out instead of lying. -->
+          <!-- 引擎的枚举里是五种（mirror.h 的 MapSymmetry），页面给出四种：
+                0 无 / 1 左右 是两种"对折"；
+                2 与 4 都是**绕中心转半圈**（格映射完全相同），区别只在权威半场取哪一半，
+                于是"原始地形"和"它的旋转"之间那条分界是两条不同的对角线 ——
+                2 的分界在图上从右上到左下、4 的从左上到右下。
+
+              **3 上下对称不在列表里**：mirror.h 的 "WHY TOP-BOTTOM IS NOT OFFERED"
+              写明了原因 —— 格映射能实现（原型跑过），但图块素材没有对应的美术，
+              所以它不能发。mg_symmetry_max() 是一个数值上限，表达不了 3 这个洞，
+              因此"不给"这件事只能落在页面这张列表上；tools/verify_uicontract.py 与
+              tools/verify_browser.mjs 都钉着它，谁把选项加回来都会红。
+              真做完（补齐图块）时：这一档加回来，同时删掉那两处断言和 app.js 里
+              针对 3 的拒绝分支。
+
+              app.js 会按引擎的 mg_symmetry_max() 把超出范围的选项禁用，所以引擎若哪天少了
+              某一档，页面是灰掉而不是说谎。 -->
           <select id="symmetry"
-                  title="左右轴对称：沿竖直中轴把两半对折重合（地图自身与它的镜像逐格一致）。">
+                  title="左右轴对称：沿竖直中轴把两半对折重合。180° 两种：绕地图中心转半圈（镜像半场不一样，分界线分别在右上-左下 / 左上-右下）。">
             <option value="0" selected>无</option>
             <option value="1">左右轴对称</option>
+            <option value="2">180°（分界：右上-左下）</option>
+            <option value="4">180°（分界：左上-右下）</option>
             <option value="?">随机</option>
           </select>
         </div>
@@ -700,6 +884,10 @@ a.dl svg { width: 12px; height: 12px; }
       <p id="status" class="readout" role="status" aria-live="polite"></p>
       <p id="error" class="err" role="alert"></p>
 
+      <!-- 导入参数集 lives at the top of 生成参数 (in the left column) -- a 12-character
+           code plus its note and the 历史版本 switch were too cramped in this 372px
+           column, and the box is an INPUT to the form anyway, not part of the result. -->
+
       <div id="result">
         <div class="row">
           <p id="done"></p>
@@ -714,6 +902,18 @@ a.dl svg { width: 12px; height: 12px; }
         <button id="render" class="btn" type="button">
           <span>渲染预览</span><span class="k">RENDER</span>
         </button>
+
+        <!-- 参数集: every input to the run that produced this map, in one string
+             (webapp/sharebits.js).  It is filled in when the map arrives and not
+             before, because it describes a map that exists -- a failed run must
+             not leave a code behind.  Nothing is uploaded: the code is only ever
+             copied by the user's own click. -->
+        <div id="share" hidden>
+          <p class="share-h"><span>参数集</span><span class="k">点击复制 · SHARE</span></p>
+          <button type="button" id="share-code" class="code"
+                  title="点击复制这串参数集。别人把它粘回来就能生成同一张地图（同样的游戏素材下逐字节相同）。"></button>
+          <p class="share-note" id="share-note"></p>
+        </div>
       </div>
 
       <div class="log-h"><span>引擎日志</span><span>STDERR</span></div>
@@ -741,6 +941,22 @@ a.dl svg { width: 12px; height: 12px; }
     </div>
   </div>
 </section>
+
+<!-- ======================= footer ======================= -->
+<!-- 备案地 江苏 -> 服务备案号（非广东挂服务号，广东才挂主体号）。
+     改这两个号要同时改 tools/verify_deploy.sh 与 tools/verify_deployed.sh 的断言，
+     否则发布会被拦（那是有意的：页脚丢了属于合规问题，不该靠肉眼发现）。
+     如果你们省还要求写明备案主体名称（或写"版权所有 XX"），在下面第一行加上。 -->
+<footer class="foot">
+  <div class="foot-in">
+    <p>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">苏ICP备2023037209号-2</a>
+      ·
+      <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
+    </p>
+    <p>反馈与交流：QQ 群 <span class="grp">1002834147</span>（在 QQ 里搜索该群号加入）</p>
+  </div>
+</footer>
 
 <script type="module" src="./app.js"></script>
 </body>

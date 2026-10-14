@@ -310,9 +310,16 @@ enum class MapSymmetry
     AxialLeftRight = 1,   // 轴对称：左右
     Rotational180 = 2,    // 普通对称：旋转 180°
     AxialTopBottom = 3,   // 轴对称：上下（纯反对角翻转）
+    // [移植侧] 180° 的**另一种半场归属**：格映射与 Rotational180 完全相同
+    // （(x,y)->(k-x,k-y)），区别只在"哪一半是权威半场"——权威半场决定"原始地形"
+    // 留在哪一半、"它的旋转"盖在哪一半，于是两者的**分界线**是两条不同的对角线：
+    //   Rotational180    权威半场 x < k/2  -> 分界线 x = k/2，图上=右上→左下
+    //   Rotational180Alt 权威半场 y < k/2  -> 分界线 y = k/2，图上=左上→右下
+    // 两者都是真正的 180° 旋转对称、都不拉伸（和 LR/TB/180 一样是刚性变换）。
+    Rotational180Alt = 4,
 };
 
-constexpr int kMapSymmetryMax = 3;
+constexpr int kMapSymmetryMax = 4;
 
 // The kinds the PASS actually applies, and therefore what the page may offer and
 // mg_symmetry_max() reports: offering a kind the generator then refuses is the
@@ -323,7 +330,7 @@ constexpr int kMapSymmetryMax = 3;
 // four WaterCliffs pieces that have no 180-degree counterpart - the pass reports
 // the latter instead of writing art it does not have.
 constexpr int kMapSymmetryImplementedMax =
-    static_cast<int>(MapSymmetry::AxialTopBottom);
+    static_cast<int>(MapSymmetry::Rotational180Alt);
 
 // WHY TOP-BOTTOM IS NOT OFFERED, RE-MEASURED (a prototype was built and withdrawn).
 //
@@ -529,6 +536,7 @@ inline const char* MapSymmetryName(MapSymmetry s)
     case MapSymmetry::AxialLeftRight: return "left-right";
     case MapSymmetry::Rotational180:  return "rotational-180";
     case MapSymmetry::AxialTopBottom: return "top-bottom";
+    case MapSymmetry::Rotational180Alt: return "rotational-180-alt";
     }
     return "?";
 }
@@ -568,7 +576,8 @@ inline bool MirrorCell(int mapWidth, int mapHeight, MapSymmetry kind,
         mx = y;
         my = x;
     }
-    else if (kind == MapSymmetry::Rotational180)
+    else if (kind == MapSymmetry::Rotational180
+          || kind == MapSymmetry::Rotational180Alt)
     {
         // [移植侧] 纯 180° 旋转：(x, y) -> (W'+H'-x, W'+H'-y)。
         //
@@ -601,6 +610,38 @@ inline bool MirrorCell(int mapWidth, int mapHeight, MapSymmetry kind,
     return true;
 }
 
+// True for either 180-degree flavour: the two share ONE cell map, one water/shore
+// direction table, one seam wall and one usable-band compensation - everything that
+// is a property of the rotation itself.  They differ ONLY in which half is
+// authoritative (see AuthoritativeXY below).  Every "is this 180?" test in the
+// passes has to ask this, not `kind == Rotational180`: written the other way, the
+// alt flavour falls through to the LEFT-RIGHT branches and the coast comes out with
+// transpose partners instead of 180 partners.
+inline bool IsRotation180(MapSymmetry kind)
+{
+    return kind == MapSymmetry::Rotational180 || kind == MapSymmetry::Rotational180Alt;
+}
+
+// Which half of a mirrored pair is the AUTHORITATIVE one - the half the generator
+// fills first and the other half is copied from.  Every pass that has to decide
+// "once per pair" asks this; it is exactly the test that used to be written out
+// inline at each call site:
+//
+//     Magnitude order:  x < mx || (x == mx && y < my)      (mx, my) = the image cell
+//
+// For left-right that is x < y; for top-bottom x + y < k; for 180 it is x < k/2,
+// i.e. the half on the x side of the line x = k/2 - which in the rendered image is
+// the line running from the TOP-RIGHT to the BOTTOM-LEFT.  Rotational180Alt keeps
+// the y side of y = k/2 instead, the other diagonal.  Factoring it out is what
+// makes the second 180 flavour a one-line difference rather than 17 edits with a
+// chance of getting one of them the other way round.
+inline bool AuthoritativeXY(MapSymmetry kind, int x, int y, int mx, int my)
+{
+    if (kind == MapSymmetry::Rotational180Alt)
+        return y < my || (y == my && x < mx);
+    return x < mx || (x == mx && y < my);
+}
+
 // The number of cells in the diamond.  Same quantity as mg_rect_cells()
 // (wasm_entry.cpp) and as the IsoMapPack5 record count tools/decode.py reads
 // back; kept here so the mapping can be checked for being a bijection without
@@ -617,7 +658,7 @@ inline long long DiamondCellCount(int mapWidth, int mapHeight)
 // copied whole and the ramp tiles are then re-derived from the copied value.
 inline int ReflectSlope(MapSymmetry kind, int slope)
 {
-    if (kind != MapSymmetry::AxialLeftRight && kind != MapSymmetry::Rotational180
+    if (kind != MapSymmetry::AxialLeftRight && !IsRotation180(kind)
         && kind != MapSymmetry::AxialTopBottom)
         return slope;
     switch (slope)

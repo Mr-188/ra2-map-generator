@@ -108,25 +108,31 @@ def main() -> int:
             print("  env options  : 0/1/2/3 + 随机 (4 Mountainous not offered: "
                   "byte-identical to 3 Inland)")
 
-    # The 对称 select is one optional kind, by product decision: left-right (value 1).
-    # The engine also implements rotational 180 (2) and top-bottom (3) - mirror.h
-    # declares them, mgconsole/mg_generate accept them, and tools/verify_symmetry.py
-    # tests all three - so this is a UI contract, not an engine one.  Pinned because
-    # "the page grew a menu again" is exactly the change that would go unnoticed.
+    # The 对称 select offers every kind the engine can actually ship: 0 off, 1
+    # left-right, 2 and 4 the two 180 flavours (same cell map, opposite authoritative
+    # half - so 2's boundary runs top-right to bottom-left and 4's top-left to
+    # bottom-right), plus one "?" = 随机.  **3 top-bottom is NOT offered**: mirror.h's
+    # "WHY TOP-BOTTOM IS NOT OFFERED" records that the cell map works but the tileset
+    # has no art for it, so it was withdrawn.  mg_symmetry_max() is one number and
+    # cannot express that hole, so this list is where "not offered" lives - which is
+    # why it is pinned here and in tools/verify_browser.mjs (as behaviour).  The values
+    # are the engine's own enum, so a renumbering in mirror.h fails here.
+    # When top-bottom is finished (art supplied), put the option back and delete this
+    # exclusion - the failure message says so.
     sym_block = re.search(r'<select id="symmetry".*?</select>', page, re.S)
     if sym_block is None:
         failures.append("index.html has no #symmetry select")
     else:
         values = re.findall(r'<option value="([^"]*)"', sym_block.group(0))
-        if values != ["0", "1", "?"]:
+        if values != ["0", "1", "2", "4", "?"]:
             failures.append(
-                f"the #symmetry select offers {values}; it must be exactly 0 (off) and "
-                "1 (左右轴对称) - the page exposes a single optional kind by product "
-                "decision, and left-right is the kind it exposes (plus one '?' = 随机). "
-                "The engine keeps 180 and top-bottom for the CLI/API")
+                f"the #symmetry select offers {values}; it must be exactly 0 (off), "
+                "1 (左右), 2 and 4 (the two 180 flavours) plus one '?' = 随机 "
+                "- 3 (上下) is withdrawn in mirror.h (no art for it) and must not be "
+                "offered until it is finished")
         else:
-            print("  symmetry     : 0 (无) / 1 (左右轴对称) / ? (随机) - single "
-                  "optional kind, rollable")
+            print("  symmetry     : 0 (无) / 1 (左右) / 2, 4 (两种 180° 半场) "
+                  "/ ? (随机) - 上下 (3) 已撤回，不在列表里")
 
     # 地图类型 gets no 随机 entry and no roll: multiplayer (.yrm) is the layout the
     # game's skirmish list shows, single player (.map) is the campaign/editor layout.

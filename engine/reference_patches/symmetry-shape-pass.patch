@@ -1,6 +1,6 @@
 diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
---- a/MapGenerator/MapGen.cpp	2026-10-13 22:56:00.235367902 +0800
-+++ b/MapGenerator/MapGen.cpp	2026-10-13 22:53:03.334153801 +0800
+--- a/MapGenerator/MapGen.cpp	2026-10-14 08:42:50.499529320 +0800
++++ b/MapGenerator/MapGen.cpp	2026-10-14 08:42:50.533612324 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -51,8 +51,8 @@ diff -ruN a/MapGenerator/MapGen.cpp b/MapGenerator/MapGen.cpp
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
---- a/MapGenerator/MapGen.h	2026-10-13 22:56:00.235814354 +0800
-+++ b/MapGenerator/MapGen.h	2026-10-13 22:53:03.334356657 +0800
+--- a/MapGenerator/MapGen.h	2026-10-14 08:42:50.499460058 +0800
++++ b/MapGenerator/MapGen.h	2026-10-14 08:42:50.534976398 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -191,7 +191,30 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1720,6 +1820,14 @@
+@@ -1523,6 +1623,22 @@
+     // budget), false on failure (map already rolled back to all-land).
+     bool GenerateRiver(int* startXY, double initialAngle, bool isTributary);
+ 
++    // [移植侧] 180 对称的"缝墙"：河流不许跨过 x = (mapWidth + mapHeight) / 2 这条分界。
++    // 开河发生在形状镜像之前（WinMain.cpp:509 GenerateSpecialTerrain，522 GenerateTerrain
++    // 里的 MirrorShape），而 MirrorShape 是把权威半场 (x < (W+H)/2) 复制到镜像半场。一条
++    // 跨缝的河因此会被**从缝上切断**：留在权威半场的那截保留，另一截被替成对应格的 180
++    // 旋转副本（通常是陆地）—— 玩家看到的就是"河走到中间突然没了/接不上"的切口。
++    //
++    // 河是线状要素，必须连续才有意义，而瓦片集里没有互为 180° 旋转的水/岸件（只有互为
++    // 转置的件，所以左右对称没这个问题），跨缝的接合**做不平**。能做的只有不让它跨：
++    // 整条河留在权威半场，镜像就会把它完整复制到另一半。
++    //
++    // 只在两种 180 口味下生效（其它情况恒 true），所以"不设对称"与左右对称的出图逐字节
++    // 不变。判定只读坐标、不抽随机数，河以外的一切不受影响。
++    // [移植侧] 缝墙的**轴**跟着口味走：Rotational180 挡 x、Rotational180Alt 挡 y，
++    // 因为两者的权威分界线分别是 x = k/2 与 y = k/2（见 mirror.h 的 AuthoritativeXY）。
++    bool RiverSeamAllows(int x, int y) const;
++
+     // One river-mouth delta fan (replicates sub_59E740) - IMPLEMENTED.
+     // Called by the river main loop's delta trigger (0x59ddf5) after all
+     // six gates pass; carves a fan of water downstream of the river end
+@@ -1720,6 +1836,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -206,7 +229,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2110,54 @@
+@@ -2002,6 +2126,53 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -224,12 +247,11 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
 +
 +    // [移植侧] The OCCUPIED cells of that same footprint, as (col,row) pairs anchored at
 +    // the footprint's own top-left, in row-major order - exactly the (col,row) set
-+    // PlaceIsoTile stamps and the order it walks them in. TileFootprint alone is not
++    // PlaceIsoTile stamps and the order it walks them in.  TileFootprint alone is not
 +    // enough to complete a piece whose stamp aborted midway: that needs to know WHICH
 +    // cells the footprint covers, not just how many columns and rows it spans (the two
-+    // irregular pieces, 41 and 42, are not rectangles). Returns the count, or 0 when
-+    // the tile has no tabulated footprint or is a single 1x1 cell. Lives in
-+    // MapGenRiver.cpp, next to the tables it reads.
++    // irregular pieces, 41 and 42, are not rectangles).  Lives in MapGenRiver.cpp next
++    // to the tables it reads.
 +    int TileFootprintCells(int tile, int outCells[][2], int maxOut) const;
 +
 +    // [移植侧] The [Map] LocalSize top the visible rect is written with.  It is 5
@@ -261,7 +283,7 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2336,10 @@
+@@ -2180,6 +2351,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -273,8 +295,8 @@ diff -ruN a/MapGenerator/MapGen.h b/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
---- a/MapGenerator/MapGenCleanup.cpp	2026-10-13 22:56:00.236104598 +0800
-+++ b/MapGenerator/MapGenCleanup.cpp	2026-10-13 22:53:03.334210245 +0800
+--- a/MapGenerator/MapGenCleanup.cpp	2026-10-14 08:42:50.498595573 +0800
++++ b/MapGenerator/MapGenCleanup.cpp	2026-10-14 08:42:50.534106714 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -285,8 +307,8 @@ diff -ruN a/MapGenerator/MapGenCleanup.cpp b/MapGenerator/MapGenCleanup.cpp
      delete[] workCells_;
      workCells_ = nullptr;
 diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
---- a/MapGenerator/MapGenHills.cpp	2026-10-13 22:56:00.236192650 +0800
-+++ b/MapGenerator/MapGenHills.cpp	2026-10-13 22:53:03.334219505 +0800
+--- a/MapGenerator/MapGenHills.cpp	2026-10-14 08:42:50.498731809 +0800
++++ b/MapGenerator/MapGenHills.cpp	2026-10-14 08:42:50.534847823 +0800
 @@ -74,9 +74,12 @@
  {
      MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
@@ -333,7 +355,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +        if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                            x, y, &mx, &my))
 +            return true;
-+        return x < mx || (x == mx && y < my);
++        return mg::AuthoritativeXY(config_.symmetry, x, y, mx, my);
 +    };
 +
 +
@@ -392,7 +414,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                                x, y, &mx, &my))
 +                continue;
-+            if (x < mx || (x == mx && y < my))
++            if (mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
 +                continue;                              // canonical: it did the work
 +            const int src = mx + side * my;
 +            height(i) = height(src);
@@ -400,7 +422,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          }
      }
  
-@@ -434,6 +497,16 @@
+@@ -434,6 +497,29 @@
      { 15,  0, 15,  0 },     // 18
  };
  
@@ -414,10 +436,23 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +    0, 2, 1, 4, 3, 5, 8, 7, 6, 9, 12, 11, 10, 13, 16, 15, 14, 17, 18
 +};
 +
++// [移植侧] 对称：**180°** 的对应项。同一条推导法（角模式表 kSlopeCorners 在镜像下的
++// 置换），只是 180° 旋转的角置换是
++//     (c0, c1, c2, c3) -> (c2, c3, c0, c1)
++// 而不是转置的 (c0,c3,c2,c1)。逐项查表得：
++//     0→0  1↔3  2↔4  5↔7  6↔8  9↔12  10↔11  13↔15  14↔16  17,18 自对应
++// 表在这条置换下闭合 ✓。它是纯表推导（不靠渲染），但仍必须用渲染验收：上一轮把**转置**
++// 用在 180 上时，内部黑的像素从 0.40% 涨到 4.59%（21 处未覆盖台阶），所以启用后要盯
++// 暗像素与 1:1 图。
++static const int kSlopeCornerMirror180[19] =
++{
++    0, 3, 4, 1, 2, 7, 8, 5, 6, 12, 11, 10, 9, 15, 16, 13, 14, 17, 18
++};
++
  // ---------------------------------------------------------------------------
  // IsMorphableTile - the vanilla's morphable clause on an UNSIGNED index:
  //     tile < IsometricTileTypeClass::Array.Count || tile == 0xFFFF
-@@ -464,7 +537,26 @@
+@@ -464,7 +550,26 @@
      if (WorkAt(x, y).Byte(69) != 0)
          return false;
  
@@ -433,7 +468,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +    {
 +        int mx = 0, my = 0;
 +        if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, x, y, &mx, &my)
-+            && !(x < mx || (x == mx && y < my)))
++            && !mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
 +        {
 +            int backHeight = cell->Height;
 +            const int back = MirrorTile(cell->IsoTileTypeIndex, config_.symmetry, &backHeight);
@@ -445,7 +480,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
  }
  
  // Step 3 - BuildElevationGrid (sub_6B2A70, 0x6B2A70 - 0x6B2F28).
-@@ -564,6 +656,8 @@
+@@ -564,6 +669,8 @@
              }
          }
      }
@@ -454,7 +489,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
  }
  
  // ---------------------------------------------------------------------------
-@@ -907,6 +1001,43 @@
+@@ -907,6 +1014,71 @@
          const int16_t x = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
          const int16_t y = static_cast<int16_t>(
                                static_cast<uint32_t>(cell->MapCoords) >> 16);
@@ -477,13 +512,40 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +        // no second, independent decision exists for it.  Without symmetry the block
 +        // costs one branch and changes nothing.
 +        //
-+        // LEFT-RIGHT ONLY.  kSlopeCornerMirror is the transpose permutation, which is
-+        // what left-right needs; 180 and top-bottom need different permutations of the
-+        // same table and, measured, writing the transpose there takes the 180 Inland
-+        // map from 0.40% to 4.59% black (21 uncovered steps).  They keep the old
-+        // independent evaluation until their own table is derived and measured.
++        // LEFT-RIGHT 用转置置换 (kSlopeCornerMirror)；**180 用 kSlopeCornerMirror180**
++        // （同一张角模式表在 180° 角置换下的对应项，纯表推导）。两者都不能用对方的表：
++        // 实测把转置用在 180 上会把内陆图的黑像素从 0.40% 拉到 4.59%。上下对称还没有
++        // 自己的表，继续走旧的独立判定。
++        // [实测否决 2026-10-12] 试过把 180 也放进这条成对判定（用它自己那张
++        // kSlopeCornerMirror180，纯表推导）：**斜坡的配对确实变好了**（"两侧贴同一片"的
++        // 格子 102 → 28），但**暗像素 0.45% → 1.23%（2.7 倍）** —— 比上一轮误用转置的
++        // 4.59% 好得多，但仍高于基线，所以按"指标变差就撤"否决，180 继续走旧的独立判定。
++        // 根因与之前几次一致：180 的格映射**不是 8 邻域自同构**（对角邻居互换），角模式
++        // （4 个格点）因此在镜像下对不齐，成对写出去的坡与镜像侧实际的高程角不符。
++        // [移植侧/实测否决] 上下对称**不能**走这条成对判定，尽管它也是反射。
++        //
++        // 角块（2x2 格点）与格不是同一张格子：左右对称是转置 (x,y)->(y,x)，块映到块的
++        // **同一锚点**；上下对称是反对角翻转 (x,y)->(k-y,k-x)，块映到的是 (k-y-1,k-x-1)
++        // 那个块的锚点 —— 差一格（块跨 x..x+1，而反射中心落在格点上）。所以"把权威格的
++        // 角模式置换一下写给镜像格"给出的坡向与镜像格自己的角块对不上。
++        //
++        // 实测（内陆 size2 players2 seed 20260913，`--stop-after hills: FinalizeElevationSlopes`
++        // 之后整图渲染；判据：纯黑像素 / ≥150px 黑块，另附可见区族别不一致）：
++        //     成对（kSlopeCornerMirror180） 305976 / 1194 / 122   ✗
++        //     成对（改用左右那张转置表）     465028 /  638         ✗
++        //     独立判定（本条，各格按自己的角块决定）  474 / 0 / 503
++        // 全程（完整管线）：329232 / 1089 → 63406 / 28（左右对称同一把尺 45583 / 14）。
++        //
++        // 代价说清楚：独立判定把族别不一致从 122 抬到 503，换掉了 26 万纯黑像素。
++        // 两者不可兼得的根因就是上面那个"块比格差一格"——它不是实现 bug，`--diag-hills`
++        // 显示成对时 levelBad 71、独立时 444，但黑像素差了三个数量级。
++        //
++        // 2026-10-13 之前的记录把 TB 与 LR 归为"同类反射、可共用成对判定"，依据是族内一致率
++        // （51.8% → 49.8%）：那个指标对"片错但同族"不敏感，换成渲染纯黑块后结论是反的。
++        // 180 同样排除（它是旋转，角格同样错位，另有实测记录）。
++        const int kKindOk = (config_.symmetry == mg::MapSymmetry::AxialLeftRight);
 +        int mx = 0, my = 0;
-+        const bool paired = config_.symmetry == mg::MapSymmetry::AxialLeftRight
++        const bool paired = kKindOk
 +            && size_.mapWidth > 0
 +            && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                              x, y, &mx, &my);
@@ -492,13 +554,14 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +        // would never lay its slope (measured: 4 black patches of 330 px along the
 +        // diagonal of the Inland map when it did not).
 +        const bool selfPaired = paired && mx == x && my == y;
-+        if (paired && !selfPaired && !(x < mx || (x == mx && y < my)))
++        if (paired && !selfPaired
++            && !mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
 +            continue;                                     // the image side
 +
          const int indexA = (x - elevLeft_) + elevStride_ * (y - elevTop_);
          const int indexB = indexA + elevStride_;          // the row below
          const int index[4] = { indexA, indexA + 1, indexB + 1, indexB };
-@@ -1011,12 +1142,52 @@
+@@ -1011,12 +1183,52 @@
              }
          }
          if (slope < 0)
@@ -551,16 +614,16 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
      }
  
      // 0x6b3a68: the scratch grid is freed and dword_B0B6EC cleared.
-@@ -1055,6 +1226,19 @@
+@@ -1055,6 +1267,19 @@
          const int16_t x = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
          const int16_t y = static_cast<int16_t>(
                                static_cast<uint32_t>(cell->MapCoords) >> 16);
 +
 +        // [移植侧] 对称：锚点只由权威半场提供，镜像块跟着一起盖章（见下面那段）。
-+        // Left-right only, like FinalizeElevationSlopes: the block pattern this pairs
-+        // by is the transpose, which is what left-right means.
++        // 与 FinalizeElevationSlopes 一样：LR 与 TB（同为反射）成对处理，180 排除。
 +        int pairX = 0, pairY = 0;
-+        const bool paired = config_.symmetry == mg::MapSymmetry::AxialLeftRight
++        const bool paired = (config_.symmetry == mg::MapSymmetry::AxialLeftRight
++                          || config_.symmetry == mg::MapSymmetry::AxialTopBottom)
 +            && size_.mapWidth > 0
 +            && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                              x, y, &pairX, &pairY);
@@ -571,7 +634,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          const int anchor = cell->SlopeIndex;              // 0x5a375a
  
          // Only the two anchor slopes take part; everything else is skipped
-@@ -1126,6 +1310,15 @@
+@@ -1126,6 +1351,15 @@
  
          // Collapse the four cells into the multi-cell tile (0x5a382b - 0x5a3891):
          // 0xFFFF is the "no own tile" mark the delta corners use too.
@@ -587,15 +650,25 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          for (int k = 0; k < 4; ++k)
          {
              MapCell* c = CellAt(static_cast<int16_t>(x + kOffX[k]),
-@@ -1135,6 +1328,20 @@
+@@ -1135,6 +1369,30 @@
              c->Height = 0;                                // 0x5a387d
              c->SlopeIndex = 0;                            // 0x5a3884
              c->Level = bump + level;                      // 0x5a388b
 +
 +            if (paired && !selfPaired)
 +            {
-+                MapCell* m = CellAt(static_cast<int16_t>(y + kOffY[k]),
-+                                    static_cast<int16_t>(x + kOffX[k]));
++                // [移植侧/修 TB] 镜像格必须按**本格自己**的对称映射求，不能写死转置。
++                // 这里原来直接写 (y+dy, x+dx)，那是左右对称的镜像；上下对称的镜像是
++                // (k-y, k-x)，于是上下这张图上 0xFFFF 抹除与 Level+1 全落到了**别的格子**
++                // 上（实测 MergeSlopeBlocks 一步让 levelBad 71→175、markerBad 71→116，
++                // 正是渲染里那些没有美术覆盖的 4 级落差）。左右对称下两者恒等，行为不变。
++                int pmx = 0, pmy = 0;
++                if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                                    static_cast<int16_t>(x + kOffX[k]),
++                                    static_cast<int16_t>(y + kOffY[k]), &pmx, &pmy))
++                    continue;
++                MapCell* m = CellAt(static_cast<int16_t>(pmx),
++                                    static_cast<int16_t>(pmy));
 +                if (m != nullptr && m != c)
 +                {
 +                    const int mlevel = m->Level;
@@ -608,7 +681,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
          }
      }
  }
-@@ -1290,3 +1497,91 @@
+@@ -1290,3 +1548,91 @@
          }
      }
  }
@@ -670,7 +743,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +        return true;
 +    if (cellSlots_ == nullptr || workCells_ == nullptr)
 +        return true;
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +        return false;
 +
@@ -687,7 +760,7 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;
 +            WorkCell& src = WorkAt(static_cast<int16_t>(x), static_cast<int16_t>(y));
 +            WorkCell& dst = WorkAt(static_cast<int16_t>(mx), static_cast<int16_t>(my));
@@ -701,8 +774,8 @@ diff -ruN a/MapGenerator/MapGenHills.cpp b/MapGenerator/MapGenHills.cpp
 +    return true;
 +}
 diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
---- a/MapGenerator/MapGenLAT.cpp	2026-10-13 22:56:00.236361333 +0800
-+++ b/MapGenerator/MapGenLAT.cpp	2026-10-13 22:53:03.334241783 +0800
+--- a/MapGenerator/MapGenLAT.cpp	2026-10-14 08:42:50.498770530 +0800
++++ b/MapGenerator/MapGenLAT.cpp	2026-10-14 08:42:50.533111084 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1037,15 +1110,15 @@ diff -ruN a/MapGenerator/MapGenLAT.cpp b/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
---- a/MapGenerator/MapGenMaking.cpp	2026-10-13 22:56:00.236491196 +0800
-+++ b/MapGenerator/MapGenMaking.cpp	2026-10-13 22:53:03.334048936 +0800
+--- a/MapGenerator/MapGenMaking.cpp	2026-10-14 08:42:50.498827083 +0800
++++ b/MapGenerator/MapGenMaking.cpp	2026-10-14 08:42:50.534798741 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
  // MapGenMaking.cpp - the "Making regions" stage of the random map generator
  //
  //   MakeRegions             sub_598960 @ 0x598D44   stage body - the only
-@@ -78,8 +78,23 @@
+@@ -78,13 +78,44 @@
          // [SNAPSHOT-OFF] SaveStageSnapshot("RebuildRegionBodies");
          ReseedRegions();                            // 0x598d67  sub_58EF10
          // [SNAPSHOT-OFF] SaveStageSnapshot("ReseedRegions");
@@ -1063,15 +1136,36 @@ diff -ruN a/MapGenerator/MapGenMaking.cpp b/MapGenerator/MapGenMaking.cpp
 +        // 墙（L4 一侧 L8 一侧，崖面没东西盖住，渲染成黑）。在这里再平一次，PlaceCliffs
 +        // 起两半看到的就是同一套海拔。（PlaceCliffs 自己是不是还需要成对选片是另一件
 +        // 事：那一步决定的是"用哪张崖片"，不是"抬高到哪一层"。）
++        // [移植侧/两次实测否决] 试过把这条（FixCliffLevels 之后再平一次海拔）开给上下对称：
++        // 总类别率 49.5% → 52.6% 更差，且 ramp→land 从 1286 涨到 1369 —— 因为这一条是
++        // **整半场抄海拔**，而 TB 的海拔分歧本来就大，抄完会把**已经盖好的坡/崖美术**与海拔
++        // 弄脱节。LR 之所以需要且无害，是因为它在铺崖前只差 7 对海拔。已撤回，TB 保持不开。
++        // [移植侧/实测无改善] 给上下对称也开这条：`after MakeRegions` 的 levelBad 仍是 75 ✗
++        // —— 说明 MirrorLevels 只覆盖"可用带"内的格子，这 75 对不在它的作用范围里。
++        // 已知事实：TB 的 levelBad 在 MakeRegions 这一趟从 0 跳到 75（FixCliffLevels 把两半
++        // 拉开），而 LR 在同一趟保持 0。已撤回，TB 保持不开（LR 的行为不变）。
 +        if (config_.symmetry == mg::MapSymmetry::AxialLeftRight
 +            && !MirrorLevels(config_.symmetry))
 +            std::fprintf(stderr, "[symmetry] MirrorLevels failed after FixCliffLevels\n");
          PlaceCliffs();                              // 0x598d7b  sub_578E60
          // [SNAPSHOT-OFF] SaveStageSnapshot("PlaceCliffs");
          CorrectCliffTiles();                        // 0x598d82  sub_5A17F0
+         // [SNAPSHOT-OFF] SaveStageSnapshot("CorrectCliffTiles");
+         RepairCliffPieces();                        // port-only swallowed-piece repair
++        // [移植侧/本轮实测结论] FixCliffLevels 的 ∓4 修正分支是**方向相关**的（east/west/cell），
++        // 镜像半场走不同分支 → 实测 `--stop-after regions` 的 TB z 差分布恰为 ⟨-4:75, +4:75⟩（LR 为 0）。
++        // 试过两处事后抄平：① 紧跟 FixCliffLevels 之后（那时两半已相等，抄 0 格 ✗）；
++        // ② MakeRegions 末尾（抄 75 格、regions 后 z 差归零 ✓）—— 但**可见区类别不一致 1502→1519 没改善** ✗，
++        // 因为崖片是在 PlaceCliffs 里用**当时**的海拔盖的，事后抄平让"海拔与美术"脱节。
++        // 结论：要修必须让这三个阶段（PlaceCliffs / CorrectCliffTiles / RepairCliffPieces）里
++        // 那些方向相关的 ∓4 写入**成对**进行，而不是事后补平。已撤回。
++
+         // [SNAPSHOT-OFF] SaveStageSnapshot("RepairCliffPieces");
+     }
+ 
 diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
---- a/MapGenerator/MapGenMakingSub.cpp	2026-10-13 22:56:00.236699620 +0800
-+++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-13 22:53:03.334265715 +0800
+--- a/MapGenerator/MapGenMakingSub.cpp	2026-10-14 08:42:50.498844733 +0800
++++ b/MapGenerator/MapGenMakingSub.cpp	2026-10-14 08:42:50.533316312 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -1102,7 +1196,7 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 +            || !mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                               x, y, &mx, &my))
 +            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
-+        if (x < mx || (x == mx && y < my))
++        if (mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
 +            return (static_cast<unsigned long long>(x) << 32) | static_cast<unsigned>(y);
 +        return (static_cast<unsigned long long>(mx) << 32) | static_cast<unsigned>(my);
 +    };
@@ -1140,7 +1234,61 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
                  continue;
  
              west->Level -= 4;                             // 0x5a1b67
-@@ -4626,9 +4669,18 @@
+@@ -4218,6 +4261,25 @@
+     }
+ 
+     // ---- 5. Pass 2: one cliff piece per placeholder cell (sub_579620) -----
++    //
++    // [移植侧/修 TB] 上下对称时**成对铺**：本格与它的镜像格各铺一次。
++    //
++    // 这一段是 TB 整条链上唯一制造"镜像对不一致"的地方，实测（`--stop-after regions`
++    // 之后逐趟数镜像对，MG_STOP_REGION 逐阶段门）：这一趟之前 levelBad/markerBad 都是 0，
++    // 这一趟之后 150（= 75 对），而 CorrectCliffTiles / RepairCliffPieces / 其后每一趟都
++    // 一个都不改。也就是说渲染里的黑块、以及后面 CreateHills 里被放大的 444 对海拔分歧，
++    // 源头都在这里：两个半场的格子各抽各的签（roll），判决树走出来只有一半落了片、另一半
++    // 停在占位格，海拔也差 4 级（CliffPass 的 ±4 是对落片的那半写的）。
++    //
++    // 做法与其它成对判定一致：每对只从权威格发起，镜像格随后用**镜像的掩码**走同一棵树。
++    // 掩码（CliffMask：邻居比自己高一级的那些方向）在海拔对称时本就互为镜像，所以树给出的
++    // 就是对应件；左右对称不参与（`cpaired` 只认 TB），None 更不参与。
++    //
++    // 实测（内陆 size2 players2 seed 20260913；纯黑像素 / ≥150px 黑块 / 可见区族别不一致）：
++    //     不开    63406 /  28 / 503
++    //     开启    55304 /  21 / 274      ← 两项同时变好
++    // 只把两张表都试过的其它组合（共享同一次 roll、末尾 MirrorDivergedCells 收尾修补）
++    // 见 docs/SYMMETRY_STATUS.md：前者变差，后者把族别压到 49 却把黑块抬到 76121/67。
+     {
+         CellIterator it;
+         it.Reset(cellSlots_, size_.mapWidth);
+@@ -4226,7 +4288,27 @@
+             if (!pass)
+                 break;
+             if (cell->SlopeIndex == 0 && IsPlaceholderTile(cell))
++            {
++                const int cx = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
++                const int cy = static_cast<int16_t>(
++                                   static_cast<uint32_t>(cell->MapCoords) >> 16);
++                int cmx = 0, cmy = 0;
++                const bool cpaired = config_.symmetry == mg::MapSymmetry::AxialTopBottom
++                    && mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
++                                      cx, cy, &cmx, &cmy);
++                if (cpaired
++                    && !mg::AuthoritativeXY(config_.symmetry, cx, cy, cmx, cmy))
++                    continue;                             // the image half follows its pair
+                 pass = PlaceCliffPiece(cell, -1);         // sub_579620
++                if (pass && cpaired)
++                {
++                    MapCell* mc = CellAt(static_cast<int16_t>(cmx),
++                                         static_cast<int16_t>(cmy));
++                    if (mc != nullptr && mc != cell && mc->SlopeIndex == 0
++                        && IsPlaceholderTile(mc))
++                        pass = PlaceCliffPiece(mc, -1);
++                }
++            }
+         }
+     }
+ 
+@@ -4626,9 +4708,18 @@
      }
  
      // ---- 2. How many to fill (0x59b8xx) -----------------------------------
@@ -1159,7 +1307,7 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
  
      // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
      for (int n = 0; n < target; ++n)
-@@ -4654,5 +4706,30 @@
+@@ -4654,5 +4745,30 @@
              if (IsPlaceholderTile(nb))
                  pending.push_back(nb);
          }
@@ -1191,8 +1339,8 @@ diff -ruN a/MapGenerator/MapGenMakingSub.cpp b/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
---- a/MapGenerator/MapGenMapFile.cpp	2026-10-13 22:56:00.237006537 +0800
-+++ b/MapGenerator/MapGenMapFile.cpp	2026-10-13 22:53:03.333906034 +0800
+--- a/MapGenerator/MapGenMapFile.cpp	2026-10-14 08:42:50.499587113 +0800
++++ b/MapGenerator/MapGenMapFile.cpp	2026-10-14 08:42:50.534070272 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -1217,15 +1365,103 @@ diff -ruN a/MapGenerator/MapGenMapFile.cpp b/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
---- a/MapGenerator/MapGenRiver.cpp	2026-10-13 22:56:00.237224172 +0800
-+++ b/MapGenerator/MapGenRiver.cpp	2026-10-13 22:53:03.334398719 +0800
+--- a/MapGenerator/MapGenRiver.cpp	2026-10-14 08:42:50.499020730 +0800
++++ b/MapGenerator/MapGenRiver.cpp	2026-10-14 08:42:50.533867494 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
  // MapGenRiver.cpp - river / water-body subsystem of the random map generator
  //
  // Everything in this file was moved verbatim out of MapGen.cpp; the addresses
-@@ -2000,9 +2000,19 @@
+@@ -65,6 +65,23 @@
+ //   §5.7 mountainous canyon lift
+ //   §5.8 success path / §5.9 failure rollback
+ // ---------------------------------------------------------------------------
++// [移植侧] 180 缝墙 —— 见 MapGen.h 里 RiverSeamAllows 的说明。
++static constexpr int kRiverSeamMargin = 2;   // 与缝线保持 2 格的余量
++
++bool RandomMapGenerator::RiverSeamAllows(int x, int y) const
++{
++    if (!mg::IsRotation180(config_.symmetry))
++        return true;
++    const int seam = (size_.mapWidth + size_.mapHeight) / 2 - kRiverSeamMargin;
++    // [移植侧] 缝墙必须落在**这个口味自己的**权威分界线上：Rotational180 的权威半场是
++    // x < k/2，所以缝墙挡 x；Rotational180Alt 的权威半场是 y < k/2，缝墙就得挡 y ——
++    // 挡错了轴，河湖会落在会被镜像覆盖掉的那一半，整张图的水/岸在镜像那一步被抹平
++    // （实测 v4 修前：water 0 / shore 0，整张图没有湖）。
++    if (config_.symmetry == mg::MapSymmetry::Rotational180Alt)
++        return y <= seam;
++    return x <= seam;
++}
++
+ bool RandomMapGenerator::GenerateRiver(int* startXY, double initialAngle,
+                                        bool isTributary)
+ {
+@@ -149,6 +166,24 @@
+                 angle = rng_.Gaussian() * sigma + center;
+             } while (angle < lo);
+         } while (angle > hi);
++
++        // [移植侧] 180：抽到的起点若落在镜像半场，把它**反射**到权威半场，流向随之转
++        // 180°。反射不重新抽签，所以随机序列与 vanilla 一字不差 —— 河以外的地形不受影响。
++        // （指定起点的支流分支不反射：它的起点是调用方给的，反射会改变它的含义；那边由
++        // 开挖处的缝墙兜底。）
++        if (mg::IsRotation180(config_.symmetry))
++        {
++            const int sx = start & 0xFFFF;
++            const int sy = static_cast<uint32_t>(start) >> 16;
++            if (!RiverSeamAllows(sx, sy))
++            {
++                const int rx = size_.mapWidth + size_.mapHeight - sx;
++                const int ry = size_.mapWidth + size_.mapHeight - sy;
++                start = rx | (ry << 16);
++                angle += 3.14159265358979323846;   // 180°：流入方向跟着翻
++                DiagLog("RIVER-SEAM g=%d start=%d,%d reflected -> %d,%d", genCode_, sx, sy, rx, ry);
++            }
++        }
+     }
+ 
+     // Start cell must be a valid diamond cell (0x59d817 - 0x59d83e):
+@@ -215,7 +250,8 @@
+         //     (F2I64(cx), F2I64(cy)) must be a valid diamond cell; the four
+         //     asm branches (x+y <= W', |x-y| >= W' twice, x+y > W'+2H') plus
+         //     the alive test all jump past the loop.
+-        if (!CellExists(F2I64(cx), F2I64(cy)) || !alive)
++        if (!CellExists(F2I64(cx), F2I64(cy)) || !alive
++            || !RiverSeamAllows(F2I64(cx), F2I64(cy)))   // [移植侧] 180 缝墙
+             break;
+ 
+         // (2) Cross-section carve (0x59da10 - 0x59dc93): one row of cells
+@@ -248,7 +284,7 @@
+             int X = F2I64(px);   // 0x59dab9
+             int Y = F2I64(py);   // 0x59dac2
+ 
+-            if (CellExists(X, Y))
++            if (CellExists(X, Y) && RiverSeamAllows(X, Y))   // [移植侧] 180 缝墙
+             {
+                 WorkCell& wc   = workCells_[X + size_.workSide * Y];
+                 MapCell*  cell = cellSlots_[512 * Y + X];
+@@ -1210,8 +1246,8 @@
+     {
+         for (int x = bandX; x < bandX + bandSpanX; ++x)
+         {
+-            if (!CellExists(x, y))
+-                continue;                              // 0x59eb42
++            if (!CellExists(x, y) || !RiverSeamAllows(x, y))
++                continue;                              // 0x59eb42 (+[移植侧] 180 缝墙)
+             int variant;
+             do
+             {
+@@ -1587,6 +1623,8 @@
+     {
+         const int tx = tips[k].first;
+         const int ty = tips[k].second;
++        if (!RiverSeamAllows(tx, ty))                  // [移植侧] 180 缝墙
++            continue;
+ 
+         // Flatten the tip and make it real water of this body.
+         MapCell* tip = cellSlots_[512 * ty + tx];
+@@ -2000,9 +2038,19 @@
          return true;
  
      // 4a. Foreign-water pollution test.
@@ -1245,7 +1481,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  
      // 4b. Flatten and set the water base tile.
      cell->Height = 0;
-@@ -2171,8 +2181,39 @@
+@@ -2171,8 +2219,39 @@
  
  bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
  {
@@ -1286,7 +1522,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -3169,6 +3210,324 @@
+@@ -3169,6 +3248,374 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -1317,12 +1553,9 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +    return true;
 +}
 +
-+// [移植侧] The occupied cells of the same footprint, as (col,row) pairs anchored at its
-+// own top-left, row-major - the cell set PlaceIsoTile walks (its loop is `row` outer,
-+// `col` inner, and its Height for an occupied cell is col + row * fp->w).  Needed to
-+// complete a piece whose stamp aborted midway: TileFootprint gives only the span, and
-+// the two irregular pieces (41, 42 - 6x4 and 9x5 with sparse masks) are not rectangles,
-+// so a caller cannot infer the occupied set from w and h.
++// [移植侧] The OCCUPIED cells of a tabulated footprint, row-major - the (col,row) set
++// PlaceIsoTile stamps.  Returns 0 for a 1x1 piece or an unknown tile.
++// ---------------------------------------------------------------------------
 +int RandomMapGenerator::TileFootprintCells(int tile, int outCells[][2], int maxOut) const
 +{
 +    const IsoFootprint* fp = FindFamilyFootprint(
@@ -1454,6 +1687,21 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +    return s;
 +}
 +
++// ---------------------------------------------------------------------------
++// [移植侧] 180 的斜坡方向映射。
++//
++// 斜坡族（INI [General] RampBase -> TileSet "slope"，20 片）的片号与坡向一一对应：
++// `MapGen.h:1452` 与 `MapGenHills.cpp:1158` 都写着  tile = rampBaseIndex_ + SlopeIndex - 1，
++// 而坡向按 4 个一组轮转（`MergeSlopeBlocks` 合并的是"5/6/7/8 或 11/12/9/10"，后者写成
++// 11/12/9/10 正是 +2 循环）。所以 180° = 组内 +2：1↔3, 2↔4 | 5↔7, 6↔8 | 9↔11, 10↔12 | …
++// 与 ReflectSlope 已有的 1↔3 / 2↔4 一致（它只覆盖四个角坡）。
++//
++// 为什么单独做：斜坡片基本都是 1×1，MirrorTile 对 1×1 一律 `return -1`，五个族里也没有
++// 斜坡族 → 180 下整族不映射（实测一张内陆图 1954 个斜坡格中 96 格"自己配自己"、14 个源片
++// 全部配到多个伙伴，甚至配到平地）。LR 靠 MirrorDivergedCells 整格抄就对（左右对称是 8
++// 邻域自同构），180 不行（对角互换，实测暗像素 0.45%→3.58%），必须按坡向重新选片。
++// 只在 180 生效，LR / 上下对称不动。
++
 +int RandomMapGenerator::MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
 +                                   bool* approximate, bool* styleFallback) const
 +{
@@ -1488,7 +1736,11 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +    const int w = fp->w, h = fp->h;
 +    if (w * h <= 1)
 +        return -1;                                  // a single 1x1 piece
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    // [移植侧] 白名单必须用 IsRotation180：写死 Rotational180 时，180 的另一种半场
++    // (Rotational180Alt) 会在这里直接吃 -1 = "无对应件"，于是**镜像半场的岸件一片都不
++    // 被转向**（MirrorSpecialTerrain 的 turned 计数实测 0，而 180 是 270）—— 渲染出来
++    // 就是镜像半场那片湖没有绿色湖岸裙边、只剩硬锯齿边（用户实测）。
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +        return -1;
 +
@@ -1519,7 +1771,11 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +    // for a beach.  Measured before this was restricted: the decoded kind
 +    // distribution moved 474 cells from terrain to shore.
 +        // [移植侧] 对称：同族里若有多片共用这个转置足印，先按"外围水向"挑、再按风格偏好二级挑。
-+    if (shorePieces_ >= 0 && tile > shorePieces_ && tile < shorePieces_ + 43)
++    // [移植侧/修差一] 这里原来是 `tile > shorePieces_`，把岸族的**第一片**（tile == 基址，
++    // 也就是 Shore01.tem）排除在剖面搜索之外 —— 于是 #1 落到下面"取表里第一个同足印件"的
++    // 通用回退，镜像侧写成 #2（用户实测"01 的镜像本该是 17/18/19，结果放了 02"）。
++    // 同样的差一让候选筛选把 #1 也排除，于是 #17 只能配到 #2。改成 >= / <。
++    if (shorePieces_ >= 0 && tile >= shorePieces_ && tile < shorePieces_ + 43)
 +    {
 +        const int srcIdx = tile - shorePieces_ + 1;
 +        const unsigned char srcProf = kShoreWaterProfile[srcIdx];
@@ -1528,9 +1784,12 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +            // [移植侧] 修正：180 必须用 180 的剖面置换。之前这里无论 kind 都用转置的
 +            // MirrorWaterProfile，于是 180 挑出的"对应件"足印对、朝向错 —— 镜像侧岸线走样
 +            // 的根源。数据层核对：42 片里 38 片存在"足印+剖面都对"的 180 对应件。
-+            const bool rot180 = (kind == mg::MapSymmetry::Rotational180);
++            const bool rot180 = mg::IsRotation180(kind);
 +            const unsigned char want = rot180 ? Rot180WaterProfile(srcProf)
 +                                              : MirrorWaterProfile(srcProf);
++            // [移植侧] 180 试过"按候选集分组、组内同序对应"的配对表（从表的等距平移结构推出来），
++            // **实测没有改善**（#34↔#38 的水面掩膜 IoU 仍 0.01、整图中位 0.423→0.424、肉眼 A/B 无差别），
++            // 已撤回：那套指标对多格件不可靠，没有可靠测量就不改。180 这里保持"无偏好 → firstCand"。
 +            const int prefer = rot180 ? 0 : kShoreMirrorPreference[srcIdx];
 +            int firstCand = -1, prefCand = -1;
 +            for (int k = 0; k < runs[ownRun].count; ++k)
@@ -1539,10 +1798,18 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +                if (g.w != tw || g.h != th || g.mask != tmask)
 +                    continue;
 +                const int cand = runs[ownRun].base + k;
-+                if (cand <= shorePieces_ || cand >= shorePieces_ + 43)
++                if (cand < shorePieces_ || cand >= shorePieces_ + 43)
 +                    continue;
 +                if (kShoreWaterProfile[cand - shorePieces_ + 1] != want)
++                {
++                    // [移植侧] 180：这里曾经加过一条"没有精确对应件就取剖面最近的候选"
++                    // 的替换（针对 42 片里唯一没有 180 伙伴的 #4/#20）。**已实测否决并撤掉**：
++                    // 那两片互为最近件但并不互为 180 旋转（同格实例的水掩膜 IoU 只有
++                    // 0.31~0.43），替换之后镜像侧画出一块硬边的矩形沙滩，用户一眼就看出来了；
++                    // 撤掉之前（保留生成器自己选的片）那一处是正常的。教训：宁可留一条
++                    // "此处无法镜像"的差异，也不要用一片朝向不对的岸件去填。
 +                    continue;
++                }
 +                if (firstCand < 0)
 +                    firstCand = cand;
 +                if (prefer != 0 && cand - shorePieces_ + 1 == prefer)
@@ -1551,7 +1818,16 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +                    break;
 +                }
 +            }
-+            const int chosen = (prefCand >= 0) ? prefCand : firstCand;
++            int chosen = (prefCand >= 0) ? prefCand : firstCand;
++            // **实测记录（2026-10-12）**：用户看素材判定 Shore04.tem 与 Shore20.tem 互为 180
++            // 对称件，这一条已验证成立 —— 而且**引擎本来就把它们配成对**：剖面搜索失败后走下面
++            // 的通用回退（同足印、不看剖面），实测一张图上镜像对就是 (4,20)×8 与 (20,4)×8，
++            // 偏移也按 180 正确重映射（generic 路径里的 moved 计算）。我曾经在这里加过"强制
++            // 配对"的补丁，结果**什么都不改变**（配对/IoU/渲染全同），已删除。
++            // 那两格视觉上的硬边因此不是配对问题，而是"这两片自身的美术在两侧被画成不同样子"
++            // （待查：两侧格子的 z/height 是否一致）。
++            // 精确对应件不存在时**什么都不换**（返回 -1，调用方保留生成器自己选的片）。
++            // 42 片里只有 #4/#20 会走到这里；见上面撤掉那次替换的原因。
 +            if (chosen >= 0)
 +            {
 +                if (inoutHeight != nullptr)
@@ -1586,6 +1862,16 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +        const IsoFootprint& g = r.table[k];
 +        if (g.w != tw || g.h != th || g.mask != tmask)
 +            continue;
++        // [移植侧] 180：**跳过源片自己**。这条回退是"剖面搜索失败"后的兜底（同足印、不看
++        // 剖面），它按表序返回第一个同足印件 —— 而 1×2 里第一个永远是 #4，于是 #4 的镜像格
++        // 又拿到 #4（等于没换，用户看到的就是"另一边仍然放着 04"）。跳过自己之后 #4 只能落到
++        // #20、#20 落到 #4 —— 正是用户看素材判断的对称关系（Shore04.tem ↔ Shore20.tem）。
++        // 只对 180 生效：LR 的既有基线（实测 0.967）不动，这条留给单独验证。
++        // 只在岸族里跳过自己：通用回退是所有族共用的，崖/瀑布那些族没有验证过，
++        // 不在这里顺手改（它们的"自己配自己"另开一次验证）。
++        if (mg::IsRotation180(kind) && shorePieces_ >= 0
++            && r.base == shorePieces_ && r.base + k == tile)
++            continue;
 +        if (inoutHeight != nullptr)
 +        {
 +            const int idx = *inoutHeight;
@@ -1611,7 +1897,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4101,55 @@
+@@ -3742,6 +4189,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -1640,7 +1926,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
 +        int mx = 0, my = 0;
 +        if (mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry,
 +                           x, y, &mx, &my)
-+            && !(x < mx || (x == mx && y < my)))
++            && !mg::AuthoritativeXY(config_.symmetry, x, y, mx, my))
 +        {
 +            return (static_cast<unsigned long long>(mx) << 32)
 +                   | (static_cast<unsigned long long>(which) << 16)
@@ -1667,7 +1953,7 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4170,45 @@
+@@ -3762,36 +4258,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -1736,8 +2022,8 @@ diff -ruN a/MapGenerator/MapGenRiver.cpp b/MapGenerator/MapGenRiver.cpp
              const int packedCoords = cell->MapCoords;
 diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 --- a/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-13 22:53:03.334331546 +0800
-@@ -0,0 +1,1382 @@
++++ b/MapGenerator/MapGenSymmetry.cpp	2026-10-14 08:42:50.535118564 +0800
+@@ -0,0 +1,1368 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
 +// This is OUR code, not the reference implementation's: the vanilla random map
@@ -1783,6 +2069,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +// ===========================================================================
 +
 +#include <cstring>
++#include <set>
 +
 +#include "MapGen.h"
 +
@@ -1860,7 +2147,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        std::fprintf(stderr, "[symmetry] MirrorShape: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorShape: %s is not implemented\n",
@@ -1884,7 +2171,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                continue;                           // not a cell of the diamond
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;                           // its image handles this pair
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
@@ -1972,7 +2259,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +                int mx = 0, my = 0;
 +                if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                    continue;
-+                if (!(x < mx || (x == mx && y < my)))
++                if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                    continue;
 +                MapCell* b = cellSlots_[512 * my + mx];
 +                if (b == nullptr)
@@ -2075,7 +2362,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        std::fprintf(stderr, "[symmetry] MirrorMap: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorMap: %s is not implemented\n",
@@ -2322,7 +2609,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +                    int mx = 0, my = 0;
 +                    if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                        continue;
-+                    const bool canonical = (x < mx || (x == mx && y < my));
++                    const bool canonical = mg::AuthoritativeXY(kind, x, y, mx, my);
 +                    if (canonical)
 +                    {
 +                        ++can;
@@ -2340,18 +2627,13 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        }
 +    }
 +
-+    // ---- [实验] 上下：补完"盖章中途中断"的岸片 -------------------------------------
++    // ---- [移植侧] 补完"盖章中途中断"的岸片 -----------------------------------------
 +    // 实测：上下对称的镜像半场上有 14 处"一件没放完" —— 该件只写下了自己那几格，同一足印里
-+    // 剩下的格留在占位，渲染成 Clear01。例（seed20261013 的 size1/2p 图）：
-+    //   anchor(73,99) shore01（2x2）: (73,99)=shore01, (74,99)=shore04,
-+    //                                (73,100)=Clear01, (74,100)=shore04
-+    //   anchor(75,99) shore03（2x2）: 同上形状
-+    // 权威半场 0 处、无对称 0 处、左右对称 3 处。
++    // 剩下的格留在占位，渲染成 Clear01。权威半场 0 处、无对称 0 处、左右对称 3 处。
 +    // 成因：PlaceIsoTile 按行序往足印格写，撞上已被别人占的格就在循环中途 return false，
 +    // 已写的格不回滚、没写到的格保持占位。
 +    // 修法：给每件**自己**剩下的、仍是占位的足印格补上（片号 + 正确的片内偏移 Height = col +
-+    // row*w，见 PlaceIsoTile 与 CorrectCliffTiles）。只写占位格，绝不覆盖任何已有美术；
-+    // 因此也不会出现仓里四次否决的那类"事后搬瓦片"黑缝（那些是覆盖既有美术）。
++    // row*w）。只写占位格，绝不覆盖任何已有美术。
 +    // 放在最后这道 pass：早于 InitRegions/CreateHills/CreateLATs 的占位格状态是那些阶段的输入，
 +    // 在早处补会改掉它们的输入（实测 13005 格里 9487 格被改，布局全变）。
 +    if (shorePieces_ >= 0 && cellSlots_ != nullptr)
@@ -2382,7 +2664,6 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            const int sub = c->Height;
 +            if (sub < 0 || sub >= cols * rows)
 +                continue;
-+            // Anchor: this cell is the footprint's (col,row) = (sub % cols, sub / cols).
 +            const int ax = x - (sub % cols);
 +            const int ay = y - (sub / cols);
 +            int cellsOff[64][2];
@@ -2463,19 +2744,13 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        std::fprintf(stderr, "[symmetry] MirrorSpecialTerrain: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorSpecialTerrain: %s is not implemented\n",
 +                     mg::MapSymmetryName(kind));
 +        return false;
 +    }
-+
-+    // [实验] 上下对称也走左右对称那条岸片路径：岸片卸妆 -> 两半一起由官方的 SelectShoreTile
-+    // 成对重上妆（roll 经 shoreRoll_ 共享）。原来只有左右对称走这条；上下被下面的"岛屿做法"
-+    // 把岸片整个刷成绿地，所以湖岸没有沙滩。改这里是为了看"铺上真岸片到底什么样"。
-+    const bool shorePaired = (kind == mg::MapSymmetry::AxialLeftRight
-+                              || kind == mg::MapSymmetry::AxialTopBottom);
 +
 +    const int W = size_.mapWidth;
 +    const int H = size_.mapHeight;
@@ -2491,7 +2766,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;                           // `a` is the authoritative side
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
@@ -2521,12 +2796,12 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            const bool srcIsWater = IsWaterTile(a);
 +            const bool srcIsShore = !srcIsWater && shorePieces_ >= 0
 +                && tile >= shorePieces_ && tile < shorePieces_ + 42;
-+            if (shorePaired && srcIsWater)
++            if (kind == mg::MapSymmetry::AxialLeftRight && srcIsWater)
 +            {
 +                b->IsoTileTypeIndex = waterTileIndex_;
 +                b->Height = height;
 +            }
-+            else if (shorePaired && srcIsShore)
++            else if (kind == mg::MapSymmetry::AxialLeftRight && srcIsShore)
 +            {
 +                b->IsoTileTypeIndex = 0;
 +                b->Height = 0;
@@ -2610,13 +2885,25 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +    // 铺不上的格子要还原：卸妆之前先把每个岸格的 (片号, 片内偏移) 存一份，两趟跑完后仍是
 +    // 占位格的格子说明官方 pass 在这个位置铺不下（180 实测 45 格，左右对称 0 格），把原来的
 +    // 美术还回去 —— 否则那半场会留下"一边有美术、一边是空地"的镜像对，形状都不对称了。
-+    std::vector<std::pair<int, std::pair<int, int> > > shoreBackup;
-+    // 只做左右对称：180 的镜像格彼此远、成对盖章有 139 次失败，实测把它弄差（本函数末尾那段
-+    // 的注释有数）；180 的水沿片改由上面的"退回基础水片 + DecorateWaterTiles 重选"处理。
-+    if (shorePaired)
++    // 只做左右对称与上下对称：180 的镜像格彼此远、成对盖章有 139 次失败，实测把它弄差（本函数
++    // 末尾那段的注释有数）；180 的水沿片改由上面的"退回基础水片 + DecorateWaterTiles 重选"处理。
++    //
++    // [移植侧/修 TB] 上下对称原来**不**走这里，而是走下面那段"岛屿做法"（把 712 格岸件全换成
++    // 普通地面）。那样做的理由是当时认定"岸族的美术在反对角翻转下不闭合"；实测重新量过：
++    //   1. 岸族的**足印**闭合度和左右对称完全一样（都是 40/42，缺的同样是 slot 41/42）；引擎
++    //      自己的 MirrorTile 在这张图上把 360 片全部配到了精确对应件（0 片走"最近件"回退）；
++    //   2. 抹掉的代价是整张图**没有海岸**：湖岸只剩"水对沙"的硬锯齿，肉眼一眼能看出（用户看到
++    //      的就是这个）；
++    //   3. 不抹（只留着复制过来的岸件）更差：镜像半场一片黑阶梯（黑 55304 -> 64611、族别 274 ->
++    //      423），因为复制件的朝向是为**权威半场**的形状选的；
++    //   4. 走和左右对称同一条"卸妆 -> 成对重选"才两边都对：黑 62245、族别 226、未覆盖落差 0/2636。
++    // 所以 TB 改成走这一条。左右对称的行为一个字节都不变（下面那段本来就是它的路径）。
++    if (kind == mg::MapSymmetry::AxialLeftRight
++        || kind == mg::MapSymmetry::AxialTopBottom)
 +    {
 +        const int side = size_.workSide;
 +        long long undressed = 0, visited = 0, failed = 0, restored = 0;
++        std::vector<std::pair<int, std::pair<int, int> > > shoreBackup;
 +        for (int y = 0; y < slotRows_; ++y)
 +        {
 +            for (int x = 0; x < 512; ++x)
@@ -2633,7 +2920,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +                    c->Height = 0;
 +                    ++undressed;
 +                }
-+                else if (IsWaterTile(c) && shorePaired)
++                else if (IsWaterTile(c) && kind == mg::MapSymmetry::AxialLeftRight)
 +                {
 +                    c->IsoTileTypeIndex = waterTileIndex_;
 +                }
@@ -2652,7 +2939,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +                    int mx = 0, my = 0;
 +                    if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                        continue;
-+                    if (!(x < mx || (x == mx && y < my)))
++                    if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                        continue;                           // 每对只从权威格发起
 +                    MapCell* b = cellSlots_[512 * my + mx];
 +                    ++visited;
@@ -2682,35 +2969,11 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +                     mg::MapSymmetryName(kind), undressed, visited, failed, restored);
 +    }
 +
-+    // ---- [移植侧] 上下：岛屿做法（岸片 -> 普通地面） ------------------------------
-+    // 第 4 轮结论：这套 tileset 没有按"反对角翻转"画的岸片美术（足印闭合、美术不闭合），
-+    // 所以靠映射做不出与权威侧一致的上下海岸。用户为 180 认可过的"岛屿做法"正好绕开它：
-+    // 岸片族换成普通地面（逐格均匀美术，不需要任何"上下关系"），水格与水面一瓦不碰 ——
-+    // 效果见 build/render_test/diag-tb-shore-wiped.png（两个湖完全镜像、台阶消失）。
-+    // [实验] 这条兜底关掉（shorePaired 对上下为真）：上面那趟已经给上下铺上了真岸片，
-+    // 再走一遍会把它们重新刷成绿地。
-+    if (kind == mg::MapSymmetry::AxialTopBottom && shorePieces_ >= 0 && !shorePaired)
-+    {
-+        long long replaced = 0;
-+        for (int y = 0; y < slotRows_; ++y)
-+        {
-+            for (int x = 0; x < 512; ++x)
-+            {
-+                MapCell* c = cellSlots_[512 * y + x];
-+                if (c == nullptr)
-+                    continue;
-+                const int t2 = c->IsoTileTypeIndex;
-+                if (t2 >= shorePieces_ && t2 < shorePieces_ + 42)
-+                {
-+                    c->IsoTileTypeIndex = (greenTileIndex_ >= 0) ? greenTileIndex_ : 0;
-+                    c->Height = 0;
-+                    ++replaced;
-+                }
-+            }
-+        }
-+        std::fprintf(stderr, "[symmetry] coast-island: %s, %lld shore cells -> plain ground\n",
-+                     mg::MapSymmetryName(kind), replaced);
-+    }
++    // ---- [移植侧/修 TB] 已删除：上下对称的"岛屿做法"（岸片 -> 普通地面） ------------
++    // 它原来把整张图的 712 格岸件换成普通地面，理由是"这套 tileset 没有按反对角翻转画的岸片
++    // 美术"。重新实测后作废，理由见上面那段（足印闭合度与左右对称一致、引擎能配到精确对应件、
++    // 抹掉的代价是整张图没有海岸）。上下对称现在和左右对称走同一条成对重选。
++    // 保留这条注释是为了说明"为什么这里空着"：不要再把它加回来。
 +
 +    // Report, and check the result against itself - the rendered map cannot tell
 +    // whether a shape mirror worked (an unmirrored map scores 0.961 here by itself).
@@ -2730,7 +2993,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
@@ -2786,7 +3049,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        std::fprintf(stderr, "[symmetry] MirrorLevels: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorLevels: %s is not implemented\n",
@@ -2805,7 +3068,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;                           // `a` is the authoritative side
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
@@ -2850,6 +3113,15 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +{
 +    if (kind == mg::MapSymmetry::None)
 +        return true;
++    // [移植侧/实测否决] 试过对 180 也开放本函数（LR 一直靠它把斜坡族整格抄到镜像侧）。
++    // 结果**明确更差**：同一张内陆图上"自己配自己"的斜坡格 102 → 758，多伙伴源片仍是 22/22，
++    // 而**暗像素（黑缝）0.45% → 3.58%（8 倍）**。即 180 的格映射不是 8 邻域自同构（对角邻居
++    // 互换），整格拷贝会把为另一个对角形状选的艺术搬过去 → 撕缝。已撤回，180 保持不开放。
++    // 斜坡在 180 下的正确做法见 mirror.h 的记录：给斜坡族建**方向表**（20 片，方向可从
++    // 高程网格读出来——斜坡连接两层），按方向映射，而不是整格抄。
++    // [移植侧] 上下对称（反对角线）与左右对称同属**反射**，格映射保持邻域，所以这趟
++    // "整格抄家族不同的对"对它同样适用（180 是旋转，实测会撕黑缝，仍然排除）。加上它之后
++    // TB 的逐格随机美术（LAT/草地/沙地变体）才和 LR 一样被镜像过去。
 +    if (kind != mg::MapSymmetry::AxialLeftRight)
 +        return true;                                  // see the note above
 +    if (cellSlots_ == nullptr)
@@ -2886,7 +3158,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;                           // `a` is the authoritative side
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
@@ -2961,7 +3233,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +        std::fprintf(stderr, "[symmetry] MirrorOverlays: no cells allocated\n");
 +        return false;
 +    }
-+    if (kind != mg::MapSymmetry::AxialLeftRight && kind != mg::MapSymmetry::Rotational180
++    if (kind != mg::MapSymmetry::AxialLeftRight && !mg::IsRotation180(kind)
 +        && kind != mg::MapSymmetry::AxialTopBottom)
 +    {
 +        std::fprintf(stderr, "[symmetry] MirrorOverlays: %s is not implemented\n",
@@ -2982,7 +3254,7 @@ diff -ruN a/MapGenerator/MapGenSymmetry.cpp b/MapGenerator/MapGenSymmetry.cpp
 +            int mx = 0, my = 0;
 +            if (!mg::MirrorCell(W, H, kind, x, y, &mx, &my))
 +                continue;
-+            if (!(x < mx || (x == mx && y < my)))
++            if (!mg::AuthoritativeXY(kind, x, y, mx, my))
 +                continue;                           // `a` is the authoritative side
 +            MapCell* b = cellSlots_[512 * my + mx];
 +            if (b == nullptr)
