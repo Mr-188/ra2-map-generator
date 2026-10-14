@@ -847,6 +847,10 @@ TB 下前 21 片：`0→18, 1→17, 2→18, 3→18, 4→4, 5→4, 6→4, 7→17,
 （签名法在 180 下的排列与 TB 不同：180 = 旋转 180，Extra 做 `x'=60-ex-ew, y'=30-ey-eh`），
 把 180 的 7/72 也降到 0；(c) 若时间允许，把签名法补全到"自动生成表"（现在还是离线算好写死）。
 
+**轮 13 验收补齐：`verify_all.sh` 十二套全绿（exit 0，"every acceptance suite passed"）** ✓
+（含 `verify_browser` 真实浏览器生成+渲染、`verify_wasm` 与原生逐字节相同、`verify_oracle`、
+`verify_size`、`verify_sharebits`、`verify_symmetry` 等 —— 改动后全套通过，没有一条红。）
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
