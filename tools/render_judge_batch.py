@@ -43,6 +43,8 @@ def main() -> int:
     ap.add_argument('--maps', default='', help='逗号分隔的多张地图；给了就用它，聚合样例')
     ap.add_argument('--pieces', default='0-3', help='片号区间，如 0-4')
     ap.add_argument('--samples', type=int, default=1, help='每片最多用几个样例')
+    ap.add_argument('--min-gap', type=float, default=0.05,
+                    help='判定最小置信度：与次优 IoU 的差距，低于则判未定')
     args = ap.parse_args()
 
     lo, hi = (int(v) for v in args.pieces.split('-'))
@@ -130,7 +132,12 @@ def main() -> int:
         cands = [i for i, (w, h, mk) in enumerate(tab) if (w, h, mk) == (tw, th, want)]
         print(f'片{piece:2d}: {len(picked)} 个样例，候选 {cands}')
         score = defaultdict(list)
-        for ctx, (x, y), r, m, o in picked:
+        for si, (ctx, (x, y), r, m, o) in enumerate(picked):
+            # 成本控制：第一个样例把所有候选都测一遍，之后只测当时的前 3 名
+            if si == 1 and score:
+                keep = sorted(score, key=lambda q: sum(v[0] for v in score[q]) / len(score[q]))[:3]
+                cands[:] = [q for q in cands if q in keep]
+                print(f'    （剪枝：样例 1 之后只留候选 {cands}）')
             ax, ay = box(ctx, x, y, r[4]); bx, by = box(ctx, m[0], m[1], o[4])
             render = ctx['render']
             base = render({}, 'base')
@@ -155,11 +162,15 @@ def main() -> int:
             best = min(score, key=lambda q: sum(v[0] for v in score[q]) / len(score[q]))
             ious = {q: sum(v[1] for v in score[q]) / len(score[q]) for q in score}
             rank = sorted(ious.values(), reverse=True)
-            print(f'  → 片{piece} 判定对手件 = {best}（样例 {len(picked)}，IoU {ious[best]:.3f}，'
-                  f'次优 {rank[1]:.3f}）')
+            gap = ious[best] - rank[1]
+            verdict = best if gap >= args.min_gap else None
+            print(f'  → 片{piece} 判定对手件 = {verdict if verdict is not None else "未定"}'
+                  f'（样例 {len(picked)}，IoU {ious[best]:.3f}，次优 {rank[1]:.3f}，'
+                  f'差距 {gap:.3f} / 阈值 {args.min_gap}）')
             store = CACHE / 'verdicts.json'
             data = json.loads(store.read_text()) if store.is_file() else {}
-            data[str(piece)] = {'partner': best, 'samples': len(picked),
+            data[str(piece)] = {'partner': verdict, 'best': best, 'gap': round(gap, 4),
+                                'samples': len(picked),
                                 'iou': {str(q): round(v, 4) for q, v in ious.items()}}
             store.write_text(json.dumps(data, indent=1, sort_keys=True))
             assert store.is_file(), 'verdicts.json 没写成'
