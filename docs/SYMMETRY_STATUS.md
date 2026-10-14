@@ -1992,6 +1992,28 @@ id1/id2=高地 L8 ✓）：
 以及刻完坡之后 `RemoveCliffsOverRamps`（去掉压在坡上的崖 ✓）和 `MergeSlopeBlocks` 的
 "贴着 CliffRamps 就不合并"守卫 ✓ 是否让坡边上留下了没画完的格子 ✓。
 
+**新目标轮 4：摘掉 `MergeSlopeBlocks` 的"贴着 CliffRamps 不合并"守卫 —— 略好但不够** ✓✗
+
+按上一轮定的方向，在 owner 修正之上再摘掉一处移植侧守卫（`MapGenHills.cpp` 的 `touchesArt`
+分支："块旁边有 CliffRamps/CliffSet 就不合并" ✓）——同为"把移植侧自作聪明的判断摘掉、
+让官方算法整片处理" ✓。两处都放在 `MG_RAMPFIX=1` 门控后 ✓（默认逐字节不变 ✓）：
+
+| | CliffRamps | 未覆盖落差 | 纯黑 |
+|---|---|---|---|
+| 落地基线（默认） | 0 | **0/2473** | **0.394%** |
+| 只修 owner | 60 | 2 ✗ | 0.589% ✗ |
+| **owner + 摘 MergeSlopeBlocks 守卫** | 60 | **2** ✗ | **0.553%** ✗（比上一条略好 ✓） |
+
+→ **方向对但仍不合格** ✗（落差还是 2 ✓、黑还是高于 0.394% ✓）→ **已撤回** ✓。
+
+**过程中的一次"差点翻车"** ✗：撤回时我恢复的 `MapGenHills.cpp` 版本不对 ✓，
+**把已落地的 `MergeSlopeBlocks` 改动弄丢了** ✗ —— 是**补丁与源码逐行比对**抓出来的 ✓
+（差 5 行 ✓，正是那处 hunk ✓），补回后复查：补丁 3791 == 3791 ✓、CliffRamps 0 ✓、失配 1204 ✓。
+**这条再次证明"每次撤回后都比对补丁"这道工序必须留着** ✓（本会话它已经救过 3 次 ✓）。
+
+**下一轮**：坡自身的写法 —— `CliffRamps` 族的 tile 号/坡度/层号（对照 `sub_593AF0` 的
+"five stamp loops" ✓），以及刻完坡之后 `RemoveCliffsOverRamps` 那一步 ✓。
+
 **下一轮的第一步（按性价比排序）**
 
 1. 给斜坡族在 `MirrorTile`/`MergeSlopeBlocks` 那条路补**方向表**（规则有出处，不用猜），
