@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -51,10 +52,12 @@ def main() -> int:
     tab = parse_table(FOOTPRINTS_CPP.read_text(errors='replace'), 'kCliffFootprints')
     offsets = {r[0] * 100000 + r[1]: i for i, r in enumerate(recs)}
     CACHE.mkdir(parents=True, exist_ok=True)
-    dn, _env = dotnet_env(); game = find_game_dir()
+    dn, denv = dotnet_env(); game = find_game_dir()
+
+    map_fp = hashlib.md5(src.read_bytes()).hexdigest()[:8]   # 缓存键必须带地图指纹
 
     def render(mods: dict, tag: str) -> np.ndarray:
-        key = hashlib.md5(repr(sorted(mods.items())).encode()).hexdigest()[:12]
+        key = hashlib.md5((map_fp + repr(sorted(mods.items()))).encode()).hexdigest()[:12]
         png = CACHE / f'{key}.png'
         if not png.is_file():
             out = [list(t) for t in recs]
@@ -63,10 +66,16 @@ def main() -> int:
             dst = CACHE / f'{key}.yrm'
             write_records(sections, [tuple(r) for r in out], dst)
             p = dst.with_suffix('')
-            subprocess.run([dn, str(RENDERER), '-i', str(dst), '-m', str(game),
-                            '-p', '-o', str(p), '-Y'],
-                           capture_output=True, text=True, timeout=900)
+            for attempt in (1, 2):
+                subprocess.run([dn, str(RENDERER), '-i', str(dst), '-m', str(game),
+                                '-p', '-o', str(p), '-Y'],
+                               capture_output=True, text=True, timeout=900, env=denv)
+                if png.is_file():
+                    break
+                print(f'    [warn] 渲染 {key} 第 {attempt} 次没产出 PNG，重试')
+                time.sleep(2)
         return np.asarray(Image.open(png).convert('RGB')).astype(np.int16)
+
 
     def box(x: int, y: int, z: int) -> tuple[int, int]:
         return ((x - y + Wp) * 30 - 120, (x + y - Wp - 1 - z) * 15 - 75)
@@ -89,6 +98,9 @@ def main() -> int:
             if not ok:
                 break
         if ok:
+            ax, ay = box(x, y, r[4]); bx, by = box(m[0], m[1], o[4])
+            if ax < 0 or ay < 0 or bx < 0 or by < 0:
+                continue                    # 裁剪越界（菱形边缘），无法比对
             samples[r[2] - CLIFF].append(((x, y), r, m, o))
     print('样例分布（片号: 对数）:', {k: len(v) for k, v in sorted(samples.items())})
 
@@ -109,8 +121,6 @@ def main() -> int:
         score = defaultdict(list)
         for (x, y), r, m, o in picked:
             ax, ay = box(x, y, r[4]); bx, by = box(m[0], m[1], o[4])
-            if ax < 0 or ay < 0 or bx < 0 or by < 0:
-                continue
             base = render({}, 'base')
             noA = render({(x, y): EMPTY}, 'noA')
             noB = render({m: EMPTY}, 'noB')
