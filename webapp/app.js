@@ -157,6 +157,8 @@ let extractInFlight = false;   // an extraction (which also fills the cache) is 
 // The theatres the worker's tree currently holds (mg_extract accumulates, and a folder
 // pick asks for all of them).
 const extractedTheaters = new Set();
+// theatre -> error, for the theatres a pick could not extract (see assets-ready).
+const failedTheaters = new Map();
 const SETTINGS_KEY = 'ra2mg.settings';
 const rolledEl = el('rolled');
 
@@ -252,22 +254,39 @@ function syncSize() {
     return;
   }
 
-  if (!sizeMax) {                    // engine table not here yet (still booting)
+  if (!sizeMax && booted) {          // engine table missing after a successful boot
+    // Do NOT name `useful` here: it is computed below, from that table.  This
+    // branch used to reference it (a TDZ ReferenceError thrown while app.js was
+    // still evaluating, which killed the whole page - the "点生成毫无反应"
+    // report of 2026-10-21).  Before boot the widest useful size is the one the
+    // rollout text has always quoted: the table's maximum, read leniently.
     if (sizeMode === 'random') {
-    sizeOut.value = '随机';
-    sizeNote.textContent =
-      `地图大小：每次生成时在 0..${fmtSize(useful)} 之间随机取一个（步长 ${sizeStep}，`
-      + `按抽到的环境与玩家数决定上限）。`;
-    return;
-  }
-  sizeOut.value = fmtSize(sizeInput.value);
+      const ceiling = Number.isFinite(maxUseful()) ? maxUseful() : 0;
+      sizeOut.value = '随机';
+      sizeNote.textContent =
+        `地图大小：每次生成时在 0..${fmtSize(ceiling)} 之间随机取一个（步长 ${sizeStep}，`
+        + `按抽到的环境与玩家数决定上限）。`;
+      return;
+    }
+    sizeOut.value = fmtSize(sizeInput.value);
     return;
   }
 
+  // `sizeMax` arrives as JSON and can be an OBJECT keyed by land type rather
+  // than an array.  Indexing it with the numeric `land` then yields null, and the
+  // next line's `sizeMax[land][idx]` threw "Cannot read properties of null" on
+  // every land-type change (the reported jump between "0" and "1" messages is
+  // that null, read once by this function and once by the clamp inside it).
+  const pick = (table, i) => {
+    if (!table) return null;
+    const row = Array.isArray(table) ? table[i] : table[String(i)];
+    return row === undefined ? null : row;
+  };
+  const usable = (v) => (Number.isFinite(v) && v > 0 ? v : null);
   const useful = unknown ? maxUseful()
-    : (sizeMax[land] ? sizeMax[land][idx] : Number(sizeInput.max));
+    : (usable(pick(sizeMax, land)) ?? Number(sizeInput.max));
   const legal = unknown ? useful
-    : (sizeLimit && sizeLimit[land] ? sizeLimit[land][idx] : useful);
+    : (usable(pick(sizeLimit, land)) ?? useful);
 
   // Ceiling and step are both the engine's, so the slider cannot offer a value
   // the generator refuses, nor a position that changes nothing.
@@ -282,9 +301,15 @@ function syncSize() {
   // hundreds of steps above its useful one.  On Inland the two differ only by the
   // last quantisation step (0.2 at most).  Comparing on that gap is why this text
   // is not shown on a map that does have head-room.
-  sizeNote.textContent = (legal - useful) > 1
-    ? '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆没有这个上限。'
-    : '';
+  // Two different cases reach here:
+  //   * booted with the table  -> the ordinary case, decide from the table's numbers;
+  //   * NOT booted yet         -> sizeMax is empty, so `useful` fell back to the
+  //                               input's max and the comparison below would be
+  //                               meaningless (and used to print the clamped-land
+  //                               explanation for EVERY land type at start-up).
+  const clampedNote = '地图大小：此环境的最大档由引擎的尺寸插值上限决定；内陆没有这个上限。';
+  sizeNote.textContent = !booted ? clampedNote
+    : ((legal - useful) > 1 ? clampedNote : '');
 }
 
 // The page offers every kind the engine implements: 无 / 左右轴对称 / 上下轴对称 / the
@@ -372,6 +397,7 @@ worker.addEventListener('message', async (event) => {
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
       askCacheInfo(currentTheater());
       refreshGoButton();
+      if (pendingExtract) queueExtractAfterBusy();
       // A 参数集 out of the URL is applied HERE, not at boot: validating one needs
       // the tables just adopted (sizeMax / symmetryMax / rectMaxSum), and applying
       // it earlier would let syncSize() clamp the size into a different map.
@@ -418,11 +444,22 @@ worker.addEventListener('message', async (event) => {
       for (const th of (msg.theaters || [msg.theater])) {
         if (typeof th === 'number') extractedTheaters.add(th);
       }
+      // A theatre that failed extraction is remembered, not fatal: the one that
+      // worked stays usable (and gets cached), and asking for the missing one says
+      // so instead of failing silently at generate time.
+      failedTheaters.clear();
+      for (const f of (msg.failed || [])) failedTheaters.set(f.theater, f.error);
       if (cacheState === 'running') cacheState = 'idle';
       renderCacheNote();
-      setStatus(msg.fromCache
-        ? `素材已从浏览器缓存恢复（${theaterNames(msg.theaters)}）。`
-        : '素材已就绪（正在写缓存）。');
+      if (pendingExtract) { pendingExtract = false; queueExtractAfterBusy(); }
+      if (failedTheaters.size) {
+        setStatus(`素材部分就绪：${theaterNames([...extractedTheaters])}可用；`
+          + `${theaterNames([...failedTheaters.keys()])}提取失败（要这个剧场请再选一次目录）。`, 'err');
+      } else {
+        setStatus(msg.fromCache
+          ? `素材已从浏览器缓存恢复（${theaterNames(msg.theaters)}）。`
+          : '素材已就绪（正在写缓存）。');
+      }
       break;
     }
     case 'cache-unavailable':
@@ -492,6 +529,9 @@ worker.addEventListener('message', async (event) => {
       break;
     case 'error':
       endRenderWatch();
+      extractInFlight = false;
+      if (cacheState === 'running') cacheState = 'idle';
+      renderCacheNote();
       showError(msg.message);
       break;
   }
@@ -590,7 +630,10 @@ function applyPicked(byName, label) {
   // Extract (and cache) as soon as the folder is picked, not on the first generate:
   // "picked the folder, refreshed, had to pick again" was exactly the report this
   // answers.  The cache write follows the extraction on its own.
-  if (archives && booted) startExtract();
+  // A NEW pick while an extraction is still running must not be thrown away
+  // silently (the old code returned early and the second folder did nothing).
+  // The running job is finished first; this pick is extracted right after.
+  if (archives && booted) queueExtractAfterBusy();
   resultEl.style.display = 'none';
   errorEl.textContent = '';
 }
@@ -709,6 +752,15 @@ function renderCacheNote() {
   if (cacheState === 'running') {
     cacheEl.textContent = '正在提取素材（温和 + 雪地）并写入浏览器缓存……'
       + '（十几到几十秒，完成后以后不用再选目录，剧场随便换）';
+    cacheClearBtn.hidden = !man;
+    refreshGoButton();
+    return;
+  }
+  if (failedTheaters.size) {
+    const names = theaterNames([...failedTheaters.keys()]);
+    cacheEl.textContent = `素材部分缓存：${theaterNames([...extractedTheaters])}可用；`
+      + `${names}这次没提取成功（${[...failedTheaters.values()][0]}）。`
+      + '温和/雪地都能生成，但要用' + names + '请先再选一次游戏目录。';
     cacheClearBtn.hidden = !man;
     refreshGoButton();
     return;
@@ -875,8 +927,12 @@ function rollSeed() {
 // value 参数集 cannot carry, so the roll is snapped where it is made.
 function pickSize(land, players) {
   const idx = Math.max(0, Math.min(6, players - 2));
-  const useful = (sizeMax && sizeMax[land] && Number.isFinite(sizeMax[land][idx]))
-    ? sizeMax[land][idx] : maxUseful();
+  // Same table-shape tolerance as syncSize: an object keyed by land type, a row
+  // that is missing, or a not-yet-booted engine all fall back to the widest size
+  // instead of throwing inside a click handler.
+  const row = (t, i) => (t ? (Array.isArray(t) ? t[i] : t[String(i)]) : undefined);
+  const pickUseful = row(sizeMax, land);
+  const useful = (Number.isFinite(pickUseful) && pickUseful > 0) ? pickUseful : maxUseful();
   const steps = Math.max(1, Math.round(useful / sizeStep));
   const k = Math.min(steps, Math.round(Math.random() * steps));
   return sizeFromIndex(k, sizeStep);
@@ -1017,7 +1073,22 @@ goBtn.addEventListener('click', () => {
     const d = event.data || {};
     if (d.type === 'assets-ready') {
       worker.removeEventListener('message', onceReady);
+      // A theatre this pick could not extract: the tree has no tiles for it, so
+      // running the engine would produce a map with the wrong theatre's art (or
+      // nothing).  Say which one and what to do instead.
+      if (!extractedTheaters.has(params.theater)) {
+        showError(`${theaterNames([params.theater])}的素材没有提取成功，无法生成这个剧场的地图`
+          + '（换一个剧场，或再选一次游戏目录）。');
+        goBtn.disabled = false;
+        return;
+      }
       worker.postMessage({ type: 'generate', params });
+    } else if (d.type === 'error') {
+      // The extraction-less path can also fail (engine error).  Without this the
+      // status stayed on "处理中……" forever and the button stayed dead.
+      worker.removeEventListener('message', onceReady);
+      showError(d.message || '生成失败');
+      goBtn.disabled = false;
     } else if (d.type === 'cache-miss') {
       worker.removeEventListener('message', onceReady);
       showError('浏览器缓存已失效（可能被清理或换了浏览器），请重新选择一次游戏目录。');
@@ -1046,13 +1117,26 @@ goBtn.addEventListener('click', () => {
 
 // Extraction + cache write, started by picking a directory.  The generate handler
 // reuses the result: nothing is re-extracted when the tree already holds this theatre.
+// Extract as soon as the engine is idle-if-busy or immediately.  Kept small on
+// purpose: one pending request is enough, the newest pick wins.
+let pendingExtract = false;
+function queueExtractAfterBusy() {
+  if (!booted) { pendingExtract = true; return; }
+  if (extractInFlight) { pendingExtract = true; return; }
+  startExtract();
+}
+
 function startExtract() {
+  pendingExtract = false;
   const theater = Number(el('theater').value);
   // The theatre select can be on 随机: then there is no theatre to pre-extract, and
   // the generate path extracts the rolled one (and caches it) instead.
   if (!Number.isFinite(theater)) return;
   if (!archives || extractInFlight) return;
   if (extractedTheaters.has(0) && extractedTheaters.has(1)) return;
+  // A theatre that already failed extraction is retried on the next pick; clear the
+  // record so its new outcome (and only that) is reported.
+  failedTheaters.clear();
   extractInFlight = true;
   cacheState = 'running';
   renderCacheNote();
@@ -1612,8 +1696,9 @@ function applyDecodedShare(code) {
     // Checking it against the engine's table first is what keeps syncSize() from
     // clamping it into a different map.
     const idx = Math.max(0, Math.min(6, code.players - 2));
-    const useful = (sizeMax && sizeMax[code.land] && Number.isFinite(sizeMax[code.land][idx]))
-      ? sizeMax[code.land][idx] : maxUseful();
+    const row = (t, i) => (t ? (Array.isArray(t) ? t[i] : t[String(i)]) : undefined);
+    const pickUseful = row(sizeMax, code.land);
+    const useful = (Number.isFinite(pickUseful) && pickUseful > 0) ? pickUseful : maxUseful();
     const maxK = Math.round(useful / sizeStep);
     if (code.index > maxK) {
       throw new Error(`这串的尺寸（第 ${code.index} 档）超过本站引擎给这个环境的 ${maxK} 档`);

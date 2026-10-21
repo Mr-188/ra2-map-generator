@@ -336,6 +336,21 @@ try {
   // needs the cache to exist from the PICK alone, so the extraction (and the cache
   // write that follows it) starts when the folder is picked - not on the first
   // generate, which is how it used to work and why a fresh pick + reload had none.
+  // A failing run must say WHY, not just "the note never changed": the pick-time
+  // extraction is where the user's report ("选了目录不缓存，也生成不了") lands, and
+  // the page's own error / status text is the only place the reason appears.
+  const snapshot = async (tag) => {
+    const st = await page.evaluate(() => ({
+      status: document.getElementById('status')?.textContent?.trim() || '',
+      error: document.getElementById('error')?.textContent?.trim() || '',
+      picked: document.getElementById('picked')?.textContent?.trim() || '',
+      cache: document.getElementById('cache-note')?.textContent?.trim() || '',
+      done: document.getElementById('done')?.textContent?.trim() || '',
+    }));
+    console.log(`  [snapshot ${tag}] ${JSON.stringify(st)}`);
+    return st;
+  };
+
   // The note is a live status line: it says 正在提取… first and only becomes
   // 已缓存素材 when BOTH theatres are written.  The wait therefore polls for the
   // end state on the elements that can carry it, and on timeout reports where it
@@ -368,6 +383,7 @@ try {
     // A cache write that lost the pick cannot be repaired by this run: the injected
     // File handles die with the page, and every later block here reloads.  Stop
     // with the reason on screen rather than cascading into misleading failures.
+    await snapshot('after the pick-time wait');
     console.log(`\nBLOCKED: the pick-time cache write did not happen - ${cacheAfterPick}`);
     failures.push(`pick-time cache write failed: ${cacheAfterPick}`);
     throw new Error('pick-time cache write failed');

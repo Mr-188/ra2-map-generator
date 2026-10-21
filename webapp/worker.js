@@ -385,27 +385,47 @@ self.onmessage = async (event) => {
     if (msg.type === 'assets') {
       // msg.files: [{ name, file }] -- the archives the player picked.
       files.clear();
+      const handed = [];
       for (const entry of msg.files) {
         const id = nextId++;
         files.set(id, entry.file);
         engine.addFile(id, entry.name);
+        handed.push(entry.name);
       }
       engine.setRoot('/mg');
+      // The page's log gets the handover count.  Without it "extraction failed:
+      // no theater tiles could be extracted" cannot be told apart from "the files
+      // never reached the worker" - the two have the same symptom and different
+      // fixes.
+      mark(`worker: ${handed.length} archives handed over (${handed.join(', ')})`);
       self.postMessage({ type: 'progress', stage: 'extracting' });
       // A folder pick asks for ALL theatres (`all`): one extraction pass covers the
       // whole product, so 随机 in the 剧场 row can never land on "not cached yet".
       // mg_extract only adds files, so the tree accumulates and one cache holds both.
       const want = msg.all ? [0, 1] : [msg.theater | 0];
+      // Per-theatre outcomes.  A theatre that fails must NOT take the other one down
+      // with it: a pick used to be all-or-nothing, so one bad theatre left the page
+      // with no cache and no way to generate even for the theatre that worked
+      // (user report 2026-10-21: "选了目录不缓存，也生成不了").
+      const failed = [];
       for (const theater of want) {
+        mark(`worker: extracting theater ${theater}`);
         const rc = engine.extract(theater);
+        mark(`worker: theater ${theater} extract rc=${rc}${rc ? ' err=' + engine.error() : ''}`);
         if (rc !== 0) {
-          fail(`extraction failed: ${engine.error()}`);
-          return;
+          failed.push({ theater, error: engine.error() });
+          continue;
         }
         extractedTheaters.add(theater);
       }
+      if (extractedTheaters.size === 0) {
+        // Nothing usable: this is the only case that stops the pick.  Say WHY per
+        // theatre instead of the first error only.
+        fail('extraction failed: ' + failed.map((f) => `theater ${f.theater}: ${f.error}`).join('; '));
+        return;
+      }
       self.postMessage({ type: 'assets-ready', theater: msg.theater | 0,
-                         theaters: [...extractedTheaters].sort() });
+                         theaters: [...extractedTheaters].sort(), failed });
       // Written after the ready message so the first generation never waits for the
       // cache write: a failed one costs nothing but the next visit.
       saveAssetCache([...extractedTheaters].sort())
