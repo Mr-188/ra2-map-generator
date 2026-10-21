@@ -423,12 +423,21 @@ fi
 # is "what the site has served", and a preview build never served anybody.  The
 # archive is the same bytes that went out (see tools/versions.sh: it drops v/ so
 # the history cannot nest).
-if [ "$ENVNAME" = "production" ]; then
+#
+# OPT-IN since 2026-10-21 (user decision): nothing is kept unless asked, so the
+# drawer stays empty and every deploy ships ONLY the current tree (one copy of
+# the site, not one per kept version).  To keep a build as history, deploy with
+#   MG_KEEP_HISTORY=1 sh tools/deploy_edgeone.sh
+# (or move a copy into build/releases/<version>/ before the next deploy).
+if [ "$ENVNAME" = "production" ] && [ "${MG_KEEP_HISTORY:-0}" = "1" ]; then
     echo
     sh tools/versions.sh archive "$OUT" "$VERSION" || {
         echo "[deploy] WARNING: could not archive $VERSION; the deploy itself is live," >&2
         echo "         but this version will not appear in 历史版本." >&2
     }
+elif [ "$ENVNAME" = "production" ]; then
+    echo
+    echo "[deploy] (not archived -- MG_KEEP_HISTORY=1 keeps this build in 历史版本)"
 elif [ -n "$SITE_URL" ]; then
     echo
     echo "[deploy] (-e preview: not archived -- 历史版本 lists what production served)"
