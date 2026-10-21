@@ -217,7 +217,18 @@ fi
 # The version this build will carry.  Date-based (see tools/versions.sh for why)
 # and chosen here rather than typed by hand, so a release cannot forget it.  It
 # becomes the header badge and the entry in the 历史版本 drawer.
-VERSION=${MG_VERSION:-$(sh tools/versions.sh next)}
+# Ask the DEPLOYED manifest too, so the second release of a day is not given the
+# first one's number (see next_version in tools/versions.sh).  A site that cannot
+# be reached just leaves the check to the local archive, as before.
+DEPLOYED_MANIFEST=
+if [ -n "$SITE_URL" ] && command -v curl >/dev/null 2>&1; then
+    DEPLOYED_MANIFEST=$(mktemp)
+    curl -fsS --max-time 20 "${SITE_URL%/}/versions.json" -o "$DEPLOYED_MANIFEST" 2>/dev/null \
+        || rm -f "$DEPLOYED_MANIFEST"
+    [ -f "$DEPLOYED_MANIFEST" ] || DEPLOYED_MANIFEST=
+fi
+VERSION=${MG_VERSION:-$(sh tools/versions.sh next "$DEPLOYED_MANIFEST")}
+[ -n "$DEPLOYED_MANIFEST" ] && rm -f "$DEPLOYED_MANIFEST"
 export MG_VERSION=$VERSION
 echo "[deploy] packaging $VERSION"
 sh tools/package_webapp.sh "$OUT"

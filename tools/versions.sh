@@ -37,10 +37,33 @@ MANIFEST=$REL/versions.json
 
 # ---- next ------------------------------------------------------------------
 next_version() {
+    # The archive is written only AFTER a successful deploy (see
+    # tools/deploy_edgeone.sh), so on the second release of a day both
+    # "is today's archive there?" and "is today's version deployed?" are true
+    # before the new build has a name -- the loop below then finds $v free and
+    # the second build ships under the FIRST build's number (measured
+    # 2026-10-21: the fix went out as "2026.10.21" once more, and the history
+    # drawer listed the same version twice).  So ask the DEPLOYED manifest as
+    # well: the next number is past anything today already used there.
     today=$(date +%Y.%m.%d)
     v=$today
     n=1
-    while [ -d "$REL/$v" ]; do
+    taken_today() {
+        [ -d "$REL/$1" ] && return 0
+        [ -f "$2" ] && python3 - "$2" "$1" <<'PY'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+for e in doc.get("versions", []):
+    if e.get("version") == sys.argv[2]:
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    deployed="$2"
+    while taken_today "$v" "$deployed"; do
         n=$((n + 1))
         v="$today.$n"
     done
