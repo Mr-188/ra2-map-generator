@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>优秀地图画廊 · RA2 / YR 随机地图生成器</title>
+<!-- A separate page on purpose: the generator page is a tool, this is a catalogue.
+     Both read the same 参数集 (webapp/sharebits.js) -- an entry here IS a code, so
+     clicking one is the same thing as pasting a code there.
+
+     Nothing on this page is uploaded, and there are no thumbnails: see the footer. -->
+<link rel="icon" href="./ra2.ico">
+<style>
+:root {
+  color-scheme: dark;
+  --bg:      #0a0b0d;
+  --panel:   #101216;
+  --panel-2: #16181d;
+  --well:    #0c0d10;
+  --rule:    #23262c;
+  --rule-2:  #34383f;
+  --ink:     #e8e6e1;
+  --ink-2:   #b0aca3;
+  --ink-3:   #8d8a80;
+  --amber:   #e0a33a;
+  --amber-2: #f2c069;
+  --amber-d: #2a2013;
+  --ok:      #7fbf7a;
+  --warn:    #d8a83f;
+  --err:     #e0715f;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", "DejaVu Sans Mono",
+          Menlo, Consolas, monospace;
+  --sans: system-ui, "Helvetica Neue", "Noto Sans SC", "PingFang SC",
+          "Microsoft YaHei", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+/* 滚动条：跟页面同一套配色（扁平、方形、无阴影，只有一个琥珀强调色）。
+   Chromium/Safari 用 ::-webkit- 伪元素 —— 只有这套能把系统那两个箭头按钮去掉；
+   Firefox 不认这些伪元素，所以标准属性只写给 Firefox。
+   注意：Chrome 121 起，标准属性（scrollbar-width / scrollbar-color）会**压过**
+   ::-webkit-scrollbar。两边都写就会退回系统形状（连箭头一起回来）——正是这段要
+   消掉的那种"出戏"。规则与生成页逐字相同（两页是一站）。 */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--well); }
+::-webkit-scrollbar-thumb { background: var(--rule-2); border: 3px solid var(--well); }
+::-webkit-scrollbar-thumb:hover { background: var(--amber); }
+::-webkit-scrollbar-corner { background: var(--well); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-width: thin; scrollbar-color: var(--rule-2) var(--well); }
+}
+
+/* Same rule as the generator page: a class with an explicit `display` beats the UA's
+   [hidden] {display:none}, so anything that sets `display` and is toggled with the
+   attribute needs this.  (Learned the hard way: the © line once wore the card
+   button's .copy rule and was pinned to the top-right corner.) */
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 400 15px/1.6 var(--sans); padding: 0 24px 64px; }
+/* The catalogue uses the width it is given: 1240px left ~230px of dead gutter on each
+   side of an ordinary 1700px window, and pinned the cards at 255px.  Capped rather
+   than unbounded so a 4K screen does not turn four cards into eight tiny ones. */
+.wrap { max-width: 2100px; margin: 0 auto; }
+
+header { padding: 28px 0 18px; border-bottom: 1px solid var(--rule); }
+h1 { margin: 0; font: 400 22px/1.3 var(--sans); letter-spacing: .02em; }
+h1 b { color: var(--amber); font-weight: 400; }
+.head-row {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap;
+}
+.head-l { min-width: 0; }
+/* The door to the generator.  Same weight as the generator's own 优秀地图画廊
+   button: a site-level destination, not a line of prose. */
+.open-gen {
+  flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 9px 12px; border: 1px solid var(--amber); color: var(--amber-2);
+  text-decoration: none; font: 400 13px/1 var(--mono); letter-spacing: .06em;
+}
+.open-gen:hover { background: var(--amber-d); }
+.open-gen .k { color: var(--amber); }
+.sub { margin: 8px 0 0; font: 400 13px/1.7 var(--mono); color: var(--ink-2); max-width: 82ch; }
+.sub a { color: var(--amber); text-decoration: none; border-bottom: 1px solid var(--amber); }
+.sample {
+  margin: 14px 0 0; padding: 9px 11px; border: 1px solid var(--rule);
+  border-left: 2px solid var(--warn); background: var(--well);
+  font: 400 12px/1.7 var(--mono); color: var(--warn);
+}
+
+/* ---- filters ------------------------------------------------------------ */
+.filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: 18px 0 0; padding: 12px; border: 1px solid var(--rule); background: var(--well);
+}
+.field { display: flex; align-items: center; gap: 6px; }
+.field label { font: 400 11px/1 var(--mono); letter-spacing: .08em; color: var(--ink-3);
+               text-transform: uppercase; }
+select, input[type="search"] {
+  appearance: none; padding: 6px 8px; border: 1px solid var(--rule-2);
+  background: var(--panel); color: var(--ink); font: 400 13px/1.2 var(--mono);
+}
+select:focus, input:focus { outline: none; border-color: var(--amber); }
+input[type="search"] { min-width: 190px; }
+input[type="search"]::placeholder { color: var(--ink-3); }
+.count { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--ink-3); }
+.ghost {
+  padding: 6px 10px; border: 1px solid var(--rule-2); background: transparent;
+  color: var(--ink-2); font: 400 12px/1 var(--mono); cursor: pointer;
+}
+.ghost:hover { border-color: var(--amber); color: var(--amber); }
+
+/* ---- cards -------------------------------------------------------------- */
+.grid {
+  display: grid; gap: 12px; margin: 16px 0 0;
+  /* The track floor grows with the window, so a wide screen gets WIDER cards instead
+     of a fixed 300px column repeated forever.  22vw keeps the width monotonic: with a
+     smaller factor the column count jumps at ~1700px and the cards actually get
+     NARROWER as the window grows (measured: 339px at 1440, 321px at 1700).  The 400px
+     ceiling matters too: at 420px the floor no longer fits four tracks in the capped
+     container and the row collapses to three 559px cards.  Cards
+     then stretch to fill their row (1fr), so no row is left half empty while another
+     is crowded. */
+  grid-template-columns: repeat(auto-fill, minmax(clamp(280px, 22vw, 400px), 1fr));
+}
+.card { position: relative; border: 1px solid var(--rule); background: var(--panel); }
+.card:hover { border-color: var(--rule-2); }
+.hit { display: block; padding: 14px; color: inherit; text-decoration: none; }
+.hit:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--amber); }
+.title { margin: 0; padding-right: 72px; font: 400 16px/1.35 var(--sans); color: var(--ink); }
+.card:hover .title { color: var(--amber-2); }
+.code {
+  display: inline-block; margin: 9px 0 0; font: 400 15px/1 var(--mono);
+  letter-spacing: .14em; color: var(--amber); user-select: all;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 11px 0 0; }
+.chip {
+  padding: 4px 6px; border: 1px solid var(--rule); background: var(--well);
+  font: 400 11px/1 var(--mono); letter-spacing: .04em; color: var(--ink-2);
+}
+.chip.strong { border-color: var(--rule-2); color: var(--ink); }
+.note { margin: 11px 0 0; font: 400 13px/1.7 var(--mono); color: var(--ink-2); }
+.meta {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin: 12px 0 0; padding-top: 9px; border-top: 1px solid var(--rule);
+  font: 400 11px/1.4 var(--mono); color: var(--ink-3);
+}
+.tag { color: var(--warn); border: 1px solid var(--warn); padding: 3px 5px; }
+.tag.dim { color: var(--ink-3); border-color: var(--rule); }
+.copy {
+  position: absolute; top: 10px; right: 10px; padding: 5px 8px; cursor: pointer;
+  border: 1px solid var(--rule-2); background: var(--panel-2); color: var(--ink-2);
+  font: 400 11px/1 var(--mono); letter-spacing: .05em;
+}
+.copy:hover { border-color: var(--amber); color: var(--amber); }
+.copy.ok { border-color: var(--ok); color: var(--ok); }
+.empty {
+  margin: 24px 0 0; padding: 18px; border: 1px solid var(--rule); background: var(--well);
+  font: 400 13px/1.7 var(--mono); color: var(--ink-2); text-align: center;
+}
+
+/* ---- 加载更多 ------------------------------------------------------------
+   The grid grows a batch at a time: as you scroll near the button it loads by
+   itself (IntersectionObserver in gallery.js), and it is a real button for anyone
+   without that, or for anyone who would rather click.  It is NOT infinite: the
+   list is finite, so the last batch ends the page and the footer below is
+   reachable -- which it has to be, it carries the 备案号. */
+.more-wrap { display: flex; justify-content: center; margin-top: 14px; }
+.more {
+  padding: 10px 18px; border: 1px solid var(--rule-2); background: var(--well);
+  color: var(--ink-2); font: 400 12.5px/1 var(--mono); letter-spacing: .06em;
+  cursor: pointer;
+}
+.more:hover { border-color: var(--amber); color: var(--amber-2); }
+.more[hidden] { display: none; }
+
+/* The last tile in the grid: the same door as the header, but where a browsing
+   player actually is.  Dashed to read as "not a map" next to the real entries.
+   A column so the 投稿 line can sit BELOW the link: the click target has to mean one
+   thing (open the generator), and "mine is better than these" is the feeling the line
+   is there to catch. */
+.card.tile {
+  display: flex; flex-direction: column;
+  border-style: dashed; border-color: var(--rule-2); background: var(--well);
+}
+.card.tile:hover { border-color: var(--amber); }
+.card.tile .hit {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 7px; width: 100%; flex: 1 1 auto; padding: 24px 14px; text-align: center;
+}
+.tile-t { margin: 0; font: 400 15px/1.3 var(--sans); color: var(--amber-2); }
+.card.tile:hover .tile-t { color: var(--amber); }
+.tile-s { margin: 0; font: 400 12px/1.6 var(--mono); color: var(--ink-3); }
+.tile-tip {
+  margin: 0; padding: 8px 12px 10px; border-top: 1px dashed var(--rule-2);
+  font: 400 11.5px/1.6 var(--mono); color: var(--ink-3); text-align: center;
+}
+
+/* The footer is the generator's footer, verbatim in markup and CSS: the two pages
+   are one site, and compliance information should not exist in two versions.  The
+   numbers are pinned by tools/verify_deploy.sh and tools/verify_deployed.sh. */
+.foot {
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+  padding: 20px 0 30px;
+}
+.foot-in {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  text-align: center; max-width: 1240px; margin: 0 auto;
+}
+.foot p {
+  margin: 0; font: 400 12.5px/1.7 var(--mono);
+  letter-spacing: .03em; color: var(--ink-3);
+}
+.foot a {
+  color: var(--ink-2); text-decoration: none;
+  border-bottom: 1px solid var(--rule-2);
+}
+.foot a:hover { color: var(--amber); border-bottom-color: var(--amber); }
+.foot .grp { color: var(--ink-2); letter-spacing: .1em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="head-row">
+      <div class="head-l">
+        <h1>优秀地图画廊 <b>· RMG</b></h1>
+        <p class="sub">
+          每一条都是一个<strong>参数集</strong>：点进去，用你自己的游戏素材就能生成同一张地图。
+        </p>
+      </div>
+      <!-- Mirror of the generator's header: each page carries a door to the other.
+           This one leads in WITHOUT a code -- a player who would rather roll their
+           own than take someone else's. -->
+      <a class="open-gen" href="./index.html"
+         title="不用别人的参数集，直接打开生成器自己摇一张">
+        <span>打开生成器</span><span class="k">→</span>
+      </a>
+    </div>
+    <p class="sample" id="sample" hidden></p>
+  </header>
+
+  <div class="filters">
+    <div class="field"><label for="f-land">环境</label><select id="f-land"></select></div>
+    <div class="field"><label for="f-players">玩家数</label><select id="f-players"></select></div>
+    <div class="field"><label for="f-sym">对称</label><select id="f-sym"></select></div>
+    <div class="field"><label for="f-sort">排序</label>
+      <select id="f-sort">
+        <option value="random">随机</option>
+        <option value="new">最新</option>
+        <option value="old">最早</option>
+      </select>
+    </div>
+    <div class="field"><label for="f-q">搜索</label>
+      <input id="f-q" type="search" placeholder="标题 / 描述 / 参数集" autocomplete="off">
+    </div>
+    <button type="button" class="ghost" id="f-again" title="把顺序重新打乱一次">换一批</button>
+    <button type="button" class="ghost" id="f-reset">重置</button>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div class="more-wrap">
+    <button type="button" class="more" id="more" hidden></button>
+  </div>
+  <p class="empty" id="empty" hidden>没有符合筛选条件的条目。</p>
+
+  <!-- 页脚与生成页逐字相同（同一套备案号 + 同一个群 + 同一句非官方声明）：
+       两页是一站，合规信息只该有一份。号码由 tools/verify_deploy.sh 与
+       tools/verify_deployed.sh 的断言钉住，改号要一起改那两处。 -->
+  <footer class="foot">
+    <div class="foot-in">
+      <p>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">苏ICP备2023037209号-2</a>
+        ·
+        <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
+      </p>
+      <p>随机地图反馈与投稿：QQ 群 <span class="grp">1002834147</span>（在 QQ 里搜索该群号加入）</p>
+      <p>只受理本站随机地图相关的问题，其他问题请不要加群。</p>
+      <p>非官方作品，与 EA 无关。</p>
+    </div>
+  </footer>
+
+</div>
+<script type="module" src="./gallery.js"></script>
+</body>
+</html>

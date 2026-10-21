@@ -64,7 +64,18 @@ fi
 rm -rf "$OUT/_framework"
 cp -r "$BUNDLE/_framework" "$OUT/_framework"
 cp "$BUNDLE/CNCMaps.Renderer.runtimeconfig.json" "$OUT/" 2>/dev/null || true
-printf '{\n  "type": "module"\n}\n' > "$OUT/package.json"
+# The staging check at the bottom compares $OUT and the staged tree against the
+# bundle byte-for-byte, so this file has to come from the bundle when the bundle
+# has one.  Generating our own here made that check fail on every single run --
+# the reference project ships `{ "type":"module" }` (19 bytes) while this wrote
+# the same thing with different whitespace (23 bytes), which is a difference
+# diff(1) reports and a browser does not care about.  The printf stays as the
+# fallback for a bundle that does not carry one.
+if [ -f "$BUNDLE/package.json" ]; then
+    cp "$BUNDLE/package.json" "$OUT/package.json"
+else
+    printf '{\n  "type": "module"\n}\n' > "$OUT/package.json"
+fi
 
 # The page loads the renderer from webapp/render/, so stage it there.  These are
 # build output; webapp/ ignores them.

@@ -68,4 +68,24 @@ for p in "$DIR"/*.patch; do
 done
 
 [ "$found" = "1" ] || { echo "no patches in $DIR" >&2; exit 2; }
+
+# Verify, do not assume.  The skip logic above asks one question per patch --
+# "is this patch already applied?" -- and when two patches share a hunk, GNU
+# patch answers "Reversed (or previously applied)" for the WHOLE FILE and drops
+# every remaining hunk of it.  The script used to accept that silently: a fresh
+# checkout came out WITHOUT MapGenSymmetry.cpp (the only file one patch creates)
+# and still printed "matches this repository", and the build failed much later
+# with an unrelated-looking error.  So each patch must now be present in the
+# result in full: reverse-applying every one of them must be clean.
+for p in "$DIR"/*.patch; do
+    [ -f "$p" ] || continue
+    name=$(basename "$p")
+    if ! patch -p1 -R --dry-run --no-backup-if-mismatch -r /dev/null -d "$PARENT" \
+             < "$p" >/dev/null 2>&1; then
+        echo "  [FAIL]  $name did not apply completely" >&2
+        echo "          the result does NOT match this repository's reference sources" >&2
+        exit 1
+    fi
+done
+
 echo "[patch] the reference implementation matches this repository"

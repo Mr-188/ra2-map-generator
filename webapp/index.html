@@ -80,6 +80,22 @@
 
 * { box-sizing: border-box; }
 
+/* 滚动条：跟页面同一套配色（扁平、方形、无阴影，只有一个琥珀强调色）。
+   Chromium/Safari 用 ::-webkit- 伪元素 —— 只有这套能把系统那两个箭头按钮去掉；
+   Firefox 不认这些伪元素，所以标准属性只写给 Firefox。
+   注意：Chrome 121 起，标准属性（scrollbar-width / scrollbar-color）会**压过**
+   ::-webkit-scrollbar。两边都写就会退回系统形状（连箭头一起回来）——正是这段要
+   消掉的那种"出戏"。规则与画廊页逐字相同（两页是一站）。 */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--well); }
+::-webkit-scrollbar-thumb { background: var(--rule-2); border: 3px solid var(--well); }
+::-webkit-scrollbar-thumb:hover { background: var(--amber); }
+::-webkit-scrollbar-corner { background: var(--well); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-width: thin; scrollbar-color: var(--rule-2) var(--well); }
+}
+
 /* A class with an explicit `display` beats the UA's `[hidden] {display:none}`,
    so .btn[hidden] would stay visible.  Restore the attribute's meaning. */
 [hidden] { display: none !important; }
@@ -102,13 +118,24 @@ body {
 }
 .bar-l { display: flex; align-items: center; gap: 12px; padding: 14px 0; }
 .bar-r {
-  display: flex; align-items: center; gap: 0;
+  display: flex; align-items: stretch; gap: 0;
   font: 400 13px/1 var(--mono); letter-spacing: .08em; color: var(--ink-3);
   text-transform: uppercase;
 }
-.bar-r span { padding: 0 12px; border-left: 1px solid var(--rule); }
+/* display:flex so a separator rule spans the bar's full height (with plain centring the
+   borders were as short as the text). */
+.bar-r span {
+  display: flex; align-items: center;
+  padding: 0 14px; border-left: 1px solid var(--rule);
+}
 .bar-r span:first-child { border-left: 0; }
 .bar-r b { color: var(--ink-2); font-weight: 400; }
+
+/* The header's toolbar overrides live AFTER .minibtn / .gearbtn / .minibtn.hot below:
+   equal specificity means source order decides, and .minibtn.hot's display:inline-block
+   was silently winning here (measured: 优秀地图画廊's label stayed glued to the top edge
+   after the box was already stretched). */
+
 
 .glyph { width: 26px; height: 26px; flex: none; color: var(--amber); }
 .glyph svg, .glyph img { width: 100%; height: 100%; display: block; }
@@ -363,6 +390,13 @@ a.dl svg { width: 12px; height: 12px; }
 .share-note { margin: 9px 0 0; font: 400 12px/1.6 var(--mono); color: var(--ink-3); }
 .share-note.ok { color: var(--ok); }
 .share-note.err { color: var(--err); }
+/* 投稿的落点就在这里：投稿要发的东西正好是上面那串参数集，所以这句话只说一次，
+   而且只在"刚生成完、码就在眼前"的时候出现（#share 是生成后才显示的）。 */
+.share-tip {
+  margin: 11px 0 0; padding-top: 10px; border-top: 1px solid var(--rule);
+  font: 400 12.5px/1.75 var(--mono); color: var(--ink-2);
+}
+.share-tip b { color: var(--amber-2); font-weight: 400; }
 
 /* ---- 导入参数集 ---------------------------------------------------------- */
 .imp {
@@ -389,6 +423,56 @@ a.dl svg { width: 12px; height: 12px; }
   border-bottom: 1px solid var(--amber); padding-bottom: 2px;
 }
 #import-switch[hidden] { display: none; }
+/* 提示行里的画廊链接。这一行只在"还没有码"时是提示，所以链接是它的一部分——
+   "粘贴别人的码"和"去哪找码"本来就是一句话的两半，合成一行。一旦有输入/有码，
+   整行变成状态或错误（renderImportNote），链接一起让位。 */
+.share-note a {
+  color: var(--amber); text-decoration: none;
+  border-bottom: 1px solid var(--amber); padding-bottom: 1px;
+}
+.share-note a:hover { color: var(--amber-2); border-bottom-color: var(--amber-2); }
+
+/* ---- 画廊入口，以及"刚从画廊过来"的落地横幅 ----------------------------- */
+
+/* The header entry, next to 历史版本.  Same size as that button but carrying the
+   accent: both are site-level destinations, and this one is looked for more than once.
+   The other two ways in are contextual and live where they are true: the 导入参数集
+   hint ("没有码") and the gallery's own closing tile. */
+.minibtn.hot {
+  display: inline-block; text-decoration: none;
+  border-color: var(--amber); color: var(--amber-2);
+}
+.minibtn.hot:hover { background: var(--amber-d); }
+
+/* The landing banner: what a shared 参数集 (link or paste) just did, and what to
+   do next.  Deliberately loud -- without it, someone who clicked a card in the
+   gallery arrives on a page of controls with no idea why. */
+.landing {
+  position: relative; margin: 0 0 14px; padding: 11px 34px 11px 12px;
+  border: 1px solid var(--amber); background: var(--amber-d);
+  color: var(--ink); font: 400 13px/1.7 var(--mono);
+}
+.landing[hidden] { display: none; }
+/* The refusal form: this build cannot make the code (a symmetry the engine has
+   withdrawn, a size past its table), so the banner says why instead of claiming
+   something was loaded. */
+.landing.bad { border-color: var(--err); }
+.landing.bad #landing-lead { color: var(--err); }
+.landing b { color: var(--amber-2); font-weight: 400; }
+.landing .go { color: var(--amber-2); }
+.landing .warn { display: block; margin-top: 7px; color: var(--warn); }
+.landing .warn[hidden] { display: none; }
+.landing .switch {
+  display: inline-block; margin-top: 7px; color: var(--amber-2); text-decoration: none;
+  border-bottom: 1px solid var(--amber-2);
+}
+.landing .switch[hidden] { display: none; }
+.landing-x {
+  position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0;
+  border: 1px solid transparent; background: transparent; color: var(--ink-3);
+  font: 400 12px/1 var(--mono); cursor: pointer;
+}
+.landing-x:hover { color: var(--amber-2); border-color: var(--rule-2); }
 
 /* ---- preview band --------------------------------------------------------
    Full-bleed, below the two columns: a 4380px-wide map rendered into a 372px
@@ -462,6 +546,25 @@ a.dl svg { width: 12px; height: 12px; }
 .gearbtn:hover { border-color: var(--amber); color: var(--amber-2); }
 /* .bar-r spans carry a left rule; the button is not one of them. */
 .bar-r .gearbtn { border-left: 1px solid var(--rule-2); }
+
+/* 画廊 / 历史版本 / 设置 are one size and fill the bar top to bottom -- no vertical
+   inset, so the header is a toolbar and the three targets are as tall as it is.
+   inline-flex + centring because stretching the BOX is not enough: <a>/<button> leave
+   their text at the top of it (measured: 优秀地图画廊 sat against the top edge while the
+   neighbouring <button> was centred, because buttons centre their own content).
+   Scoped to .bar-r on purpose: .minibtn is ALSO the 全随机 button inside 生成参数,
+   which must keep its small pill shape. */
+.bar-r .minibtn, .bar-r .gearbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  align-self: stretch; margin: 0; padding: 0 16px;
+  border: 0; border-left: 1px solid var(--rule); border-radius: 0;
+  font: 400 13px/1 var(--mono); letter-spacing: .1em;
+}
+.bar-r .minibtn:hover, .bar-r .gearbtn:hover { background: var(--well); }
+.bar-r .minibtn:active, .bar-r .gearbtn:active { background: var(--panel-2); }
+.bar-r .minibtn.hot { color: var(--amber-2); }
+.bar-r .gearbtn { width: auto; height: auto; }
+.bar-r .gearbtn svg { width: 19px; height: 19px; display: block; }
 
 #settings-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
@@ -589,19 +692,29 @@ a.dl svg { width: 12px; height: 12px; }
     <h1>RA2 <b>/</b> YR 随机地图生成器</h1>
     <!-- Filled from version.json at publish time (empty in a source checkout). -->
     <span class="ver" id="ver" hidden></span>
-    <span class="tag">C++ → WASM · CNCMaps 渲染</span>
+    <!-- No build-toolchain badge here: 玩家不需要知道它是 C++ 还是 wasm 编的。
+         页头只说对玩家有意义的事（下面那两句），实现细节留在 README 里。 -->
   </div>
   <div class="bar-r">
-    <span>运行位置 <b>本机浏览器</b></span>
-    <span>素材上传 <b>无</b></span>
+    <span>在你的浏览器里运行 <b>不装任何东西</b></span>
+    <span>你的游戏文件 <b>不会上传</b></span>
+    <!-- A site-level destination, so it sits with 历史版本 rather than in the form.
+         Built entirely from 参数集: every card in there is one string, and clicking
+         it comes back here with #p=<code>. -->
+    <a class="minibtn hot" id="gallery-open" href="./gallery.html"
+       title="别人做好的图：每一条都是一串参数集，点进去就在你自己的机器上生成">优秀地图画廊</a>
     <button type="button" id="hist-open" class="minibtn" aria-haspopup="dialog"
             aria-controls="hist" title="历史版本">历史版本</button>
     <button type="button" id="settings-open" class="gearbtn" aria-haspopup="dialog"
             aria-controls="settings" title="设置">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-           aria-hidden="true">
-        <circle cx="12" cy="12" r="3.2"></circle>
-        <path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"></path>
+      <!-- A real cog (8 trapezoid teeth + centre hole), not the sun-like circle-and-rays
+           that used to sit here: it is the 设置 button, and it should look like one.
+           The outline is generated geometry (see docs/README note in the CSS comment),
+           traced as one stroked path so it stays legible at 19px. -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M9.98 5.40 L10.03 2.30 L13.97 2.30 L14.02 5.40 L14.33 5.51 L14.64 5.63 L14.94 5.76 L15.24 5.91 L17.46 3.74 L20.26 6.54 L18.09 8.76 L18.24 9.06 L18.37 9.36 L18.49 9.67 L18.60 9.98 L21.70 10.03 L21.70 13.97 L18.60 14.02 L18.49 14.33 L18.37 14.64 L18.24 14.94 L18.09 15.24 L20.26 17.46 L17.46 20.26 L15.24 18.09 L14.94 18.24 L14.64 18.37 L14.33 18.49 L14.02 18.60 L13.97 21.70 L10.03 21.70 L9.98 18.60 L9.67 18.49 L9.36 18.37 L9.06 18.24 L8.76 18.09 L6.54 20.26 L3.74 17.46 L5.91 15.24 L5.76 14.94 L5.63 14.64 L5.51 14.33 L5.40 14.02 L2.30 13.97 L2.30 10.03 L5.40 9.98 L5.51 9.67 L5.63 9.36 L5.76 9.06 L5.91 8.76 L3.74 6.54 L6.54 3.74 L8.76 5.91 L9.06 5.76 L9.36 5.63 L9.67 5.51 Z"></path>
+        <circle cx="12" cy="12" r="3.15"></circle>
       </svg>
       <span class="sr">设置</span>
     </button>
@@ -811,32 +924,29 @@ a.dl svg { width: 12px; height: 12px; }
                  title="0 = 每次随机（引擎用时钟取种子）；填一个数字即可复现同一张地图">
         </div>
 
-        <div class="cell"><label for="map-seed">地形种子 · 0 = 原版</label>
+        <div class="cell"><label for="map-seed">地形种子 · 0 = 随机</label>
           <input id="map-seed" type="number" value="0" min="0"
-                 title="0 = 原版固定种子 0；换一个数字可在其他参数不变时只换一份地形">
+                 title="0 = 每次生成都换一个（和其他参数不变时只换地形）；填一个数字即可固定这一份地形">
         </div>
 
         <div class="cell"><label for="symmetry">对称</label>
-          <!-- 引擎的枚举里是五种（mirror.h 的 MapSymmetry），页面给出四种：
-                0 无 / 1 左右 是两种"对折"；
+          <!-- 引擎的枚举里是五种（mirror.h 的 MapSymmetry），页面全都给出：
+                0 无 / 1 左右 / 3 上下 是三种"对折"；
                 2 与 4 都是**绕中心转半圈**（格映射完全相同），区别只在权威半场取哪一半，
                 于是"原始地形"和"它的旋转"之间那条分界是两条不同的对角线 ——
                 2 的分界在图上从右上到左下、4 的从左上到右下。
 
-              **3 上下对称不在列表里**：mirror.h 的 "WHY TOP-BOTTOM IS NOT OFFERED"
-              写明了原因 —— 格映射能实现（原型跑过），但图块素材没有对应的美术，
-              所以它不能发。mg_symmetry_max() 是一个数值上限，表达不了 3 这个洞，
-              因此"不给"这件事只能落在页面这张列表上；tools/verify_uicontract.py 与
-              tools/verify_browser.mjs 都钉着它，谁把选项加回来都会红。
-              真做完（补齐图块）时：这一档加回来，同时删掉那两处断言和 app.js 里
-              针对 3 的拒绝分支。
-
-              app.js 会按引擎的 mg_symmetry_max() 把超出范围的选项禁用，所以引擎若哪天少了
-              某一档，页面是灰掉而不是说谎。 -->
+              **3 上下对称现在给了**（用户 2026-10-21 看过成品图后决定）：mirror.h 的
+              "WHY TOP-BOTTOM IS NOT OFFERED" 那张表（崖件要 13 片、崖/水件要 10 片翻
+              朝向）说的是"多格件没有翻好的美术"，但轮廓、水陆、海拔都是对称的，实际
+              渲染出来只有内陆的崖线两半朝向对不上 —— 用户认为可接受。
+              这条决定钉在 tools/verify_uicontract.py 与 tools/verify_browser.mjs 里
+              （列表里有 3、并且能生成），mirror.h 的那张表是背景，不是禁令。 -->
           <select id="symmetry"
-                  title="左右轴对称：沿竖直中轴把两半对折重合。180° 两种：绕地图中心转半圈（镜像半场不一样，分界线分别在右上-左下 / 左上-右下）。">
+                  title="左右轴对称：沿竖直中轴把两半对折重合；上下轴对称：沿水平中轴对折。180° 两种：绕地图中心转半圈（镜像半场不一样，分界线分别在右上-左下 / 左上-右下）。">
             <option value="0" selected>无</option>
             <option value="1">左右轴对称</option>
+            <option value="3">上下轴对称</option>
             <option value="2">180°（分界：右上-左下）</option>
             <option value="4">180°（分界：左上-右下）</option>
             <option value="?">随机</option>
@@ -867,6 +977,19 @@ a.dl svg { width: 12px; height: 12px; }
 
   <!-- ======================= output ======================= -->
   <div class="col col-out">
+
+    <!-- Landing banner: a 参数集 that just arrived (a shared link, a gallery card, or
+         a paste) says what it was, so a visitor who came from the gallery is not
+         staring at a form wondering what happened.  Filled by app.js from the decoded
+         parameters -- the labels are read out of the page's own <select>s, and the
+         only reason it is ever hidden on arrival is a code this build cannot make. -->
+    <div class="landing" id="landing" hidden role="status">
+      <span id="landing-lead">已载入参数集</span> <b id="landing-what"></b>
+      <span class="go" id="landing-go">　点下面「生成地图」即可。</span>
+      <span class="warn" id="landing-warn" hidden></span>
+      <a class="switch" id="landing-switch" hidden></a>
+      <button type="button" class="landing-x" id="landing-close" aria-label="收起横幅">✕</button>
+    </div>
 
     <section class="sec">
       <h2 class="sec-h">输出</h2>
@@ -913,10 +1036,18 @@ a.dl svg { width: 12px; height: 12px; }
           <button type="button" id="share-code" class="code"
                   title="点击复制这串参数集。别人把它粘回来就能生成同一张地图（同样的游戏素材下逐字节相同）。"></button>
           <p class="share-note" id="share-note"></p>
+          <!-- 投稿的话就在这里说：它要发的东西就是上面那串码，别的都不用准备。
+               群号与页脚同一处来源，改号要一起改（tools/verify_deploy.sh 钉着它）。 -->
+          <p class="share-tip">
+            觉得自己这张值得收进<b>画廊</b>？加 QQ 群 <b>1002834147</b>，
+            把这串参数集和一句描述发进群就行。
+          </p>
         </div>
       </div>
 
-      <div class="log-h"><span>引擎日志</span><span>STDERR</span></div>
+      <!-- 出问题时的原始输出。标题用玩家看得懂的话；里面是英文堆栈也无所谓，
+           它本来就只在生成失败、需要找人问的时候才有用。 -->
+      <div class="log-h"><span>运行信息</span><span>出错时看这里</span></div>
       <pre id="log"></pre>
     </section>
 
@@ -954,7 +1085,9 @@ a.dl svg { width: 12px; height: 12px; }
       ·
       <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
     </p>
-    <p>反馈与交流：QQ 群 <span class="grp">1002834147</span>（在 QQ 里搜索该群号加入）</p>
+    <p>随机地图反馈与投稿：QQ 群 <span class="grp">1002834147</span>（在 QQ 里搜索该群号加入）</p>
+    <p>只受理本站随机地图相关的问题，其他问题请不要加群。</p>
+    <p>非官方作品，与 EA 无关。</p>
   </div>
 </footer>
 

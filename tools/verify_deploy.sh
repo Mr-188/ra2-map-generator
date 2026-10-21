@@ -23,7 +23,12 @@ set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+SRV_PIDS=
+cleanup() {
+    for p in $SRV_PIDS; do kill "$p" 2>/dev/null || true; done
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 pass=0
 fail=0
@@ -44,6 +49,36 @@ expect_no_grep() {
 
 echo "[deploy] 1. packaging contract (real tree)"
 # ---------------------------------------------------------------- real tree
+
+# The 备案号 have to be ON the published pages: 《非经营性互联网信息服务备案
+# 管理办法》 requires the ICP number at the bottom of the homepage with a link to
+# the filing system, and the 公安备案号 the same.  Checked against the source files
+# (not the packaged copy) so this also runs on a bare clone, and so a redesign
+# that drops the footer fails here rather than in front of 通管局.
+#
+# BOTH pages, with the SAME numbers: index.html and gallery.html are one site, and a
+# footer that exists in two versions drifts.  (The gallery first shipped placeholder
+# numbers -- this is the check that would have caught them.)
+for needle in "苏ICP备2023037209号-2" "https://beian.miit.gov.cn/" \
+              "苏公网安备32081202000454号" "beian.mps.gov.cn/#/query/webSearch?code=32081202000454" \
+              "1002834147" "与 EA 无关"; do
+    for page in index.html gallery.html; do
+        FOOT=$ROOT/webapp/$page
+        if grep -qF -- "$needle" "$FOOT" 2>/dev/null; then
+            ok "$page carries $needle"
+        else
+            bad "$page no longer carries $needle"
+        fi
+    done
+done
+for page in index.html gallery.html; do
+    FOOT=$ROOT/webapp/$page
+    if grep -q 'class="foot"' "$FOOT" 2>/dev/null; then
+        ok "$page: the filing numbers sit in the footer"
+    else
+        bad "$page: the filing numbers are not in a <footer class=\"foot\">"
+    fi
+done
 
 if [ -f "$ROOT/webapp/mg_engine.wasm" ] && [ -d "$ROOT/webapp/render/_framework" ]; then
     PKG=$WORK/pkg
@@ -72,11 +107,149 @@ if [ -f "$ROOT/webapp/mg_engine.wasm" ] && [ -d "$ROOT/webapp/render/_framework"
     if [ -n "$leak" ]; then bad "the build machine's home leaked into $leak"; else ok "no build-machine path in the published artifacts"; fi
 
     if [ -f "$PKG/mg_engine.wasm" ]; then ok "the engine wasm is present"; else bad "mg_engine.wasm is missing from the package"; fi
+
+    # version.json is what the header badge and a bug report are anchored to.
+    # The fingerprints identify the bytes; the version number alone does not.
+    if python3 - "$PKG/version.json" <<'PY'
+import json, re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        v = json.load(fh)
+except Exception as exc:
+    print("  FAIL  version.json missing or unreadable: %s" % exc); sys.exit(1)
+want = {"version": r"^\d{4}\.\d{2}\.\d{2}(\.\d+)?$", "builtAt": r"^\d{4}-\d{2}-\d{2}T",
+        "engine": r"^[0-9a-f]{16}$", "renderer": r"^[0-9a-f]{16}$"}
+bad = [k for k, pat in want.items() if not re.match(pat, str(v.get(k, "")))]
+if bad:
+    print("  FAIL  version.json has a wrong or missing %s: %s" % (bad, v)); sys.exit(1)
+print("  ok    version.json identifies the build (%s, engine %s, %s files)"
+      % (v["version"], v["engine"], v.get("files")))
+PY
+    then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+    fi
+
+    # A hand-uploaded package (no deploy script) must still have a manifest, or
+    # the drawer reports an unreadable list on a site that works fine.
+    if python3 - "$PKG/versions.json" <<'PY'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as exc:
+    print("  FAIL  versions.json missing or unreadable: %s" % exc); sys.exit(1)
+vs = doc.get("versions") or []
+ok = doc.get("current") and len(vs) >= 1 and vs[0].get("path") == "/"
+print("  %s  a plain package still ships a manifest (%s)"
+      % ("ok   " if ok else "FAIL ", [e.get("path") for e in vs]))
+sys.exit(0 if ok else 1)
+PY
+    then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+    fi
 else
     printf '  skip  (webapp/mg_engine.wasm or webapp/render/_framework is absent; build first)\n'
 fi
 
-echo "[deploy] 2. edgeone.json rules the host will actually accept"
+echo "[deploy] 2. the release history (versions.sh)"
+# ---------------------------------------------------------------- history
+# The 历史版本 drawer is only as good as this: a version has to be ARCHIVED when
+# it goes live, and put back into the tree under /v/<version>/ when the next one
+# is published.  Exercised in a temporary history directory so the real
+# build/releases/ is untouched.
+HREL=$WORK/releases
+mkdir -p "$HREL"
+VNEW=2099.01.01
+VOLD=2099.01.02
+for v in "$VNEW" "$VOLD"; do
+    d=$HREL/$v
+    mkdir -p "$d/render/_framework"
+    echo "<html>$v</html>" > "$d/index.html"
+    : > "$d/mg_engine.wasm"
+    # A DISTINCT engine fingerprint per version.  A 参数集 carries the top 10 bits of
+    # it, and the manifest has to carry it per version, or the page cannot turn "this
+    # code came from another build" into "switch to THAT version".
+    if [ "$v" = "$VNEW" ]; then eng=30a88bb1c0ffee00; else eng=9f1c02abdeadbeef; fi
+    printf '{"version":"%s","commit":"c0ffee1","builtAt":"2099-01-01T00:00:00+0800","engine":"%s"}' \
+        "$v" "$eng" > "$d/version.json"
+    printf '{"headers":[{"source":"/*.wasm","headers":[{"key":"Content-Type","value":"application/wasm"}]}]}' > "$d/edgeone.json"
+done
+
+# A package for VNEW: assemble must bring VOLD in under /v/ and never itself.
+HPKG=$WORK/hpkg
+mkdir -p "$HPKG"
+echo '<html>new</html>' > "$HPKG/index.html"
+cp "$HREL/$VNEW/version.json" "$HPKG/version.json"
+cp "$HREL/$VNEW/edgeone.json" "$HPKG/edgeone.json"
+MG_RELEASES_DIR=$HREL sh "$ROOT/tools/versions.sh" assemble "$HPKG" "$VNEW" \
+    > "$WORK/assemble.log" 2>&1 || true
+
+if [ -f "$HPKG/v/$VOLD/index.html" ]; then ok "assemble puts the kept version under /v/<version>/"; else bad "assemble did not copy $VOLD into v/"; fi
+if [ -e "$HPKG/v/$VNEW" ]; then bad "assemble copied the version being published into v/ (history would nest)"; else ok "assemble leaves the version being published at the root"; fi
+if python3 - "$HPKG/versions.json" "$VNEW" "$VOLD" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+cur, old = sys.argv[2], sys.argv[3]
+entries = {e["version"]: e for e in doc["versions"]}
+paths = {v: e["path"] for v, e in entries.items()}
+ok = doc.get("current") == cur and paths.get(cur) == "/" and paths.get(old) == "/v/%s/" % old
+# Every entry carries an engine fingerprint, and the historical one carries ITS OWN
+# (assemble reads it back out of the archived version.json).  Without it a code from
+# an old build could not be resolved to a version to switch back to.
+engines = {v: e.get("engine", "") for v, e in entries.items()}
+ok = ok and engines.get(cur) == "30a88bb1c0ffee00" and engines.get(old) == "9f1c02abdeadbeef"
+print("  %s  manifest: current=%s %s engines=%s"
+      % ("ok   " if ok else "FAIL ", doc.get("current"), paths, engines))
+sys.exit(0 if ok else 1)
+PY
+then ok "the manifest names the current version, the historical path, and both engines"; else bad "the manifest is wrong"; fi
+if python3 - "$HPKG/edgeone.json" "$VOLD" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+old = sys.argv[2]
+sources = {r["source"]: r for r in cfg.get("headers", [])}
+want = ["/v/%s/*.wasm" % old, "/v/%s/render/_framework/*.wasm" % old]
+missing = [s for s in want if s not in sources]
+multistar = [s for s in sources if s.count("*") > 1]
+ok = not missing and not multistar
+print("  %s  wasm rules for the historical version%s" %
+      ("ok   " if ok else "FAIL ", "" if ok else " (missing %s / bad %s)" % (missing, multistar)))
+sys.exit(0 if ok else 1)
+PY
+then ok "a historical .wasm gets its own Content-Type rule (one * per pattern)"; else bad "the historical wasm rules are wrong"; fi
+
+# Archive must not nest: v/ and versions.json stay out of the kept copy.
+cat > "$HPKG/versions.json" <<'JSON'
+{"current":"x","versions":[]}
+JSON
+mkdir -p "$HPKG/v/$VOLD"
+MG_RELEASES_DIR=$HREL sh "$ROOT/tools/versions.sh" archive "$HPKG" "$VNEW" \
+    > "$WORK/archive.log" 2>&1 || true
+if [ -e "$HREL/$VNEW/v" ]; then bad "archive nested v/ inside the kept version"; else ok "archive keeps v/ out (no nesting)"; fi
+if [ -e "$HREL/$VNEW/versions.json" ]; then bad "archive kept a stale versions.json"; else ok "archive drops the regenerated versions.json"; fi
+
+# The version scheme itself: a date, and a counter for a second release that day.
+if v=$(sh "$ROOT/tools/versions.sh" next) && printf '%s' "$v" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'; then
+    ok "the next version is a date ($v)"
+else
+    bad "versions.sh next printed '$v'"
+fi
+
+# The page has to have somewhere to SHOW all this, or the history is invisible.
+PAGE=$ROOT/webapp/index.html
+JS=$ROOT/webapp/app.js
+for needle in 'id="ver"' 'id="hist-open"' 'id="hist"' 'id="ver-list"' '历史版本'; do
+    if grep -qF -- "$needle" "$PAGE" 2>/dev/null; then ok "index.html has the version UI: $needle"; else bad "index.html lost $needle"; fi
+done
+for needle in "version.json" "versions.json"; do
+    if grep -qF -- "$needle" "$JS" 2>/dev/null; then ok "app.js reads $needle"; else bad "app.js no longer reads $needle"; fi
+done
+
+echo "[deploy] 3. edgeone.json rules the host will actually accept"
 # ------------------------------------------------------------- host config
 # `edgeone validate` accepted these patterns; the CLI's own validator allows at
 # most ONE `*` per pattern and rejects everything else.  A pattern it rejects
@@ -114,11 +287,15 @@ else
     fail=$((fail + 1))
 fi
 
-echo "[deploy] 3. what deploy_edgeone.sh refuses, and what it sends"
+echo "[deploy] 4. what deploy_edgeone.sh refuses, and what it sends"
 # --------------------------------------------------------------- sandbox
 FAKE=$WORK/fake
 mkdir -p "$FAKE/tools" "$FAKE/engine/src" "$FAKE/webapp/render/_framework"
+# versions.sh ships next to it: deploy_edgeone.sh asks it for the version and
+# for the assemble step, and a missing sibling makes the whole run fail before
+# any of the behaviour under test happens.
 cp "$ROOT/tools/deploy_edgeone.sh" "$FAKE/tools/"
+cp "$ROOT/tools/versions.sh" "$FAKE/tools/"
 
 # A stand-in for the real packager: it only has to place the same shape of tree.
 cat > "$FAKE/tools/package_webapp.sh" <<'STUB'
@@ -159,7 +336,11 @@ build_fake_tree() {
     # without it, or every later case looks stale as well.
     rm -f "$FAKE/engine/src/newer.cpp"
     : > "$FAKE/webapp/index.html"
-    : > "$FAKE/webapp/edgeone.json"
+    # Valid JSON, not an empty file: `versions.sh assemble` extends this config
+    # with the per-version wasm rules and refuses to guess when it cannot parse
+    # it (a corrupt host config should fail the deploy, not be silently ignored).
+    printf '{"headers":[{"source":"/*.wasm","headers":[{"key":"Content-Type","value":"application/wasm"}]}]}\n' \
+        > "$FAKE/webapp/edgeone.json"
     : > "$FAKE/engine/src/mix.cpp"
     head -c "$1" /dev/zero > "$FAKE/webapp/mg_engine.wasm"
     rm -f "$FAKE/webapp/render/_framework/"*
@@ -280,6 +461,28 @@ rc=$(run_deploy "$WORK/out.txt" --no-check-url)
 expect_grep "the CLI's own token variable name works in .env" "token=CLI-NAMED-TOKEN" "$STUB_LOG"
 rm -f "$FAKE/.env" "$WORK/out.txt"
 
+# A preview deployment is served from a temporary SIGNED url that only works
+# from the console session, so EDGEONE_URL (the production domain) says nothing
+# about it: checking production after a preview deploy reports the OLD site and
+# looks like the deploy failed.  Preview must be reported and checked at the URL
+# the CLI hands back, unless -u says otherwise.
+cat > "$FAKE/.env" <<'ENV'
+EDGEONE_PROJECT=proj
+EDGEONE_URL=https://prod.example/
+EDGEONE_API_TOKEN=TOK
+ENV
+rm -f "$STUB_LOG"
+rc=$(run_deploy "$WORK/out.txt" -e preview --no-check-url)
+expect_rc "a preview deploy succeeds" 0 "$rc"
+expect_grep "the preview is reported at the CLI's URL, not the production domain" \
+            "live at https://stub.example/" "$WORK/out.txt"
+expect_no_grep "the production domain is not reported for a preview" \
+               "live at https://prod.example/" "$WORK/out.txt"
+rc=$(run_deploy "$WORK/out.txt" --no-check-url)
+expect_grep "a production deploy is reported at EDGEONE_URL" \
+            "live at https://prod.example/" "$WORK/out.txt"
+rm -f "$FAKE/.env" "$WORK/out.txt"
+
 # A mistyped project name does not fail: the CLI silently creates a new
 # project, and the real site keeps serving the old build.  That has to be said
 # out loud rather than reported as a success.
@@ -298,6 +501,134 @@ set -e
 expect_rc "a newly created project still exits 0 (the CLI's behaviour)" 0 "$rc"
 expect_grep "but it is reported as a warning, not a success" "CREATED a new one" "$WORK/out.txt"
 rm -f "$WORK/out.txt"
+
+echo "[deploy] 5. the deployed checker, against a real server"
+# verify_deployed.sh is what decides whether a deployment is good, so it is
+# worth testing itself rather than trusting it: a wrong verdict here is what
+# lets a broken site through.  A local server serving exactly the 13 assets it
+# checks (with the Content-Types the host must use) is enough to pin three
+# things: a good deployment passes, a signed (query-string) URL is assembled
+# with the query after the path, and a .wasm served as octet-stream is caught --
+# the defect that makes the browser refuse to instantiate the engine.
+SRV=$WORK/srv
+for f in index.html ra2.ico app.js worker.js sharebits.js gallery.html gallery.js gallery.txt \
+         mg_engine.js mg_engine.wasm package.json \
+         render/package.json render/CNCMaps.Renderer.runtimeconfig.json \
+         render/_framework/dotnet.js render/_framework/dotnet.native.js \
+         render/_framework/dotnet.native.wasm render/_framework/CNCMaps.Engine.wasm \
+         render/_framework/System.Private.CoreLib.wasm; do
+    mkdir -p "$SRV/$(dirname "$f")"
+    : > "$SRV/$f"
+done
+# The homepage is not an empty file in reality: verify_deployed.sh also checks
+# that the 备案号 are actually SERVED (a build that lost the footer passes every
+# asset check), so this fixture has to carry them -- on BOTH pages, since the check
+# looks at both -- or "a correctly served site passes" fails for the right reason at
+# the wrong time.
+cat > "$SRV/index.html" <<'HTML'
+<!doctype html><html lang="zh-CN"><head><title>fixture</title></head><body>
+<h1>RA2 / YR 随机地图生成器 <span class="ver" id="ver" hidden></span></h1>
+<button type="button" id="hist-open">历史版本</button>
+<footer class="foot">
+  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">苏ICP备2023037209号-2</a>
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
+  反馈与交流：QQ 群 1002834147
+  非官方作品，与 EA 无关。
+</footer>
+</body></html>
+HTML
+cat > "$SRV/gallery.html" <<'HTML'
+<!doctype html><html lang="zh-CN"><head><title>fixture gallery</title></head><body>
+<footer class="foot">
+  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">苏ICP备2023037209号-2</a>
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=32081202000454" target="_blank" rel="noopener">苏公网安备32081202000454号</a>
+  反馈与交流：QQ 群 1002834147
+  非官方作品，与 EA 无关。
+</footer>
+</body></html>
+HTML
+# The version files, and the historical copy they point at: verify_deployed.sh
+# checks that every version the manifest lists actually answers, so the fixture
+# has to look like a real deployment (one current + one historical) rather than
+# a directory of empty files.
+printf '{"version":"2099.01.01","commit":"c0ffee1","builtAt":"2099-01-01T00:00:00+0800","engine":"0123456789abcdef","renderer":"fedcba9876543210"}\n' \
+    > "$SRV/version.json"
+mkdir -p "$SRV/v/2098.12.31"
+printf '<!doctype html><html lang="zh-CN"><body><span id="ver"></span>历史版本</body></html>\n' \
+    > "$SRV/v/2098.12.31/index.html"
+# Each served version carries its OWN engine id, and the manifest entry has to
+# agree with it: the page sends a player to a version on the strength of that
+# number, so a mismatch here would be a switch that lands somewhere the 参数集
+# still does not match.
+printf '{"version":"2098.12.31","commit":"beefbeef","builtAt":"2098-12-31T00:00:00+0800","engine":"fedcba9876543210"}\n' \
+    > "$SRV/v/2098.12.31/version.json"
+cat > "$SRV/versions.json" <<'JSON'
+{
+  "current": "2099.01.01",
+  "versions": [
+    { "version": "2099.01.01", "builtAt": "2099-01-01T00:00:00+0800", "commit": "c0ffee1", "path": "/", "engine": "0123456789abcdef" },
+    { "version": "2098.12.31", "builtAt": "2098-12-31T00:00:00+0800", "commit": "beefbeef", "path": "/v/2098.12.31/", "engine": "fedcba9876543210" }
+  ]
+}
+JSON
+cat > "$WORK/serve.py" <<'PY'
+import functools, http.server, socketserver, sys
+port, root, mode = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+types = {"application/wasm" if mode == "good" else "application/octet-stream":
+         [".wasm"], "text/javascript": [".js"],
+         "application/json": [".json"], "text/html": [".html"],
+         "image/x-icon": [".ico"], "text/plain": [".txt"]}
+class H(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {}
+    def log_message(self, *a): pass
+for ctype, exts in types.items():
+    for ext in exts:
+        H.extensions_map[ext] = ctype
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(("127.0.0.1", port), functools.partial(H, directory=root)) as s:
+    s.serve_forever()
+PY
+
+start_server() {   # start_server <port> <mode>; 1 if it never came up
+    python3 "$WORK/serve.py" "$1" "$SRV" "$2" &
+    p=$!
+    SRV_PIDS="$SRV_PIDS $p"
+    i=0
+    while [ "$i" -lt 60 ]; do
+        curl -sS -o /dev/null "http://127.0.0.1:$1/" 2>/dev/null && return 0
+        i=$((i + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+PORT=8931
+if start_server "$PORT" good; then
+    set +e
+    sh "$ROOT/tools/verify_deployed.sh" "http://127.0.0.1:$PORT/" > "$WORK/vd.txt" 2>&1; rc=$?
+    set -e
+    expect_rc "a correctly served site passes the deployed check" 0 "$rc"
+    set +e
+    sh "$ROOT/tools/verify_deployed.sh" "http://127.0.0.1:$PORT/?eo_token=abc&eo_time=1" \
+        > "$WORK/vd-signed.txt" 2>&1; rc=$?
+    set -e
+    expect_rc "a signed (query-string) url is checked, query after the path" 0 "$rc"
+    expect_grep "the signed check reports the assets it found" "mg_engine.wasm" "$WORK/vd-signed.txt"
+else
+    bad "a local test server could not be started on port $PORT"
+fi
+
+PORT=8932
+if start_server "$PORT" badwasm; then
+    set +e
+    sh "$ROOT/tools/verify_deployed.sh" "http://127.0.0.1:$PORT/" > "$WORK/vd-bad.txt" 2>&1; rc=$?
+    set -e
+    expect_rc "a .wasm served as octet-stream fails the deployed check" 1 "$rc"
+    expect_grep "and the failure names the wasm Content-Type" \
+                "want application/wasm" "$WORK/vd-bad.txt"
+else
+    bad "a local test server could not be started on port $PORT"
+fi
 
 echo
 if [ "$fail" != 0 ]; then

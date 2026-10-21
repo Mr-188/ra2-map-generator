@@ -128,9 +128,14 @@ def main() -> int:
         return 2
 
     # ---- 3. render twice, once per asset source --------------------------
-    def render(mixdir: Path, out: Path) -> Path:
+    def render(mixdir: Path, out: Path, markers: bool = True) -> Path:
+        # --mark-start-pos --start-pos-squared must match engine/render/WebEntry.cs:
+        # the page tells the user its preview is pixel-identical to a native CNCMaps
+        # render, and that is only true while both sides pass the same settings.
+        flags = ["--mark-start-pos", "--start-pos-squared"] if markers else []
         rc = run([dotnet, str(RENDERER), "-i", str(out_map), "-m", str(mixdir),
-                  "-p", "-o", str(out), "-Y"], env=env, cwd=str(scratch))
+                  "-p", "-o", str(out), "-Y"] + flags,
+                 env=env, cwd=str(scratch))
         png = out.with_suffix(".png")
         if rc.returncode != 0 or not png.exists():
             raise RuntimeError(f"render against {mixdir} failed:\n"
@@ -166,6 +171,47 @@ def main() -> int:
         failures.append("the two renders differ in size")
     elif not same_pixels:
         failures.append("the loose-file tree does not reproduce the .mix render")
+
+    # ---- 5. the start markers are on, and they are what the difference is ------
+    #
+    # The page enables CNCMaps's start markers, so the native path has to pass the same
+    # flags (above) - and this pins that they do something: the SAME map rendered with
+    # and without them must differ, and every differing pixel must be red in the marked
+    # one (DrawStartPositions paints 255,0,0 at alpha ~212).
+    try:
+        png_plain = render(game, scratch / "from_game_plain", markers=False)
+    except RuntimeError as exc:
+        print(f"FAILED: {exc}")
+        return 1
+    try:
+        from PIL import Image, ImageChops
+        m = Image.open(png_game).convert("RGB")
+        p = Image.open(png_plain).convert("RGB")
+        if m.size != p.size:
+            failures.append("the marked and unmarked renders differ in size")
+        else:
+            diff = ImageChops.difference(m, p)
+            box = diff.getbbox()
+            changed = 0
+            red_ok = True
+            md, pd = m.load(), p.load()
+            if box:
+                for y in range(box[1], box[3]):
+                    for x in range(box[0], box[2]):
+                        if md[x, y] != pd[x, y]:
+                            changed += 1
+                            r, g, b = md[x, y]
+                            if not (r > 240 and g < 40 and b < 40):
+                                red_ok = False
+            print(f"  markers  {changed} px differ, all red in the marked render: {red_ok}")
+            if changed < 1000:
+                failures.append(f"the start markers painted only {changed} px - "
+                                "the --mark-start-pos flags are not taking effect")
+            elif not red_ok:
+                failures.append("the marked and unmarked renders differ outside the "
+                                "red start markers")
+    except ImportError:                                    # pragma: no cover
+        pass
 
     if not args.keep:
         shutil.rmtree(scratch, ignore_errors=True)

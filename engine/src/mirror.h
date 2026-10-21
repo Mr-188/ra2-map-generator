@@ -337,7 +337,15 @@ constexpr int kMapSymmetryImplementedMax =
 // The cell map is implementable - flipping r (s = x+y) while holding c (d = x-y), with the
 // same parity stagger Rotational180 needs - and a prototype generated Inland maps whose
 // self-check reported 0 of 6996 pairs disagreeing about water, i.e. a symmetric SHAPE.
-// It still cannot ship, because the tileset has no art for it:
+// STATUS 2026-10-21: IT SHIPS ANYWAY, BY USER DECISION.  The user looked at the maps
+// the pass produces (outline, water and elevation symmetric; on Inland the cliff lines
+// keep their facing on one half) and asked for the kind to be offered, so it is: the
+// page lists 上下轴对称, tools/verify_uicontract.py and tools/verify_browser.mjs pin
+// that it is offered and can generate.  The table below is the REASON the art is not
+// mirrored one-to-one, not a ban - keep it as the explanation of what a top-bottom map
+// will look like, and of what finishing it would take.
+//
+// The tileset has no art for the orientations it needs:
 //
 //      family                          left-right   top-bottom   rotational-180
 //      kShoreFootprints                     2            2              2

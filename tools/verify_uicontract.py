@@ -108,31 +108,28 @@ def main() -> int:
             print("  env options  : 0/1/2/3 + 随机 (4 Mountainous not offered: "
                   "byte-identical to 3 Inland)")
 
-    # The 对称 select offers every kind the engine can actually ship: 0 off, 1
-    # left-right, 2 and 4 the two 180 flavours (same cell map, opposite authoritative
+    # The 对称 select offers every kind the engine implements: 0 off, 1 left-right,
+    # 3 top-bottom, 2 and 4 the two 180 flavours (same cell map, opposite authoritative
     # half - so 2's boundary runs top-right to bottom-left and 4's top-left to
-    # bottom-right), plus one "?" = 随机.  **3 top-bottom is NOT offered**: mirror.h's
-    # "WHY TOP-BOTTOM IS NOT OFFERED" records that the cell map works but the tileset
-    # has no art for it, so it was withdrawn.  mg_symmetry_max() is one number and
-    # cannot express that hole, so this list is where "not offered" lives - which is
-    # why it is pinned here and in tools/verify_browser.mjs (as behaviour).  The values
-    # are the engine's own enum, so a renumbering in mirror.h fails here.
-    # When top-bottom is finished (art supplied), put the option back and delete this
-    # exclusion - the failure message says so.
+    # bottom-right), plus one "?" = 随机.  Top-bottom was withheld until 2026-10-21
+    # (mirror.h's "WHY TOP-BOTTOM IS NOT OFFERED" describes the missing cliff art); the
+    # user asked for it after seeing the finished maps, so it is offered and the
+    # assertion below pins that.  The values are the engine's own enum, so a
+    # renumbering in mirror.h fails here.
     sym_block = re.search(r'<select id="symmetry".*?</select>', page, re.S)
     if sym_block is None:
         failures.append("index.html has no #symmetry select")
     else:
         values = re.findall(r'<option value="([^"]*)"', sym_block.group(0))
-        if values != ["0", "1", "2", "4", "?"]:
+        if values != ["0", "1", "3", "2", "4", "?"]:
             failures.append(
                 f"the #symmetry select offers {values}; it must be exactly 0 (off), "
-                "1 (左右), 2 and 4 (the two 180 flavours) plus one '?' = 随机 "
-                "- 3 (上下) is withdrawn in mirror.h (no art for it) and must not be "
-                "offered until it is finished")
+                "1 (左右), 3 (上下), 2 and 4 (the two 180 flavours) plus one '?' = 随机 "
+                "- dropping a kind the engine implements hides a feature the user asked "
+                "for on 2026-10-21 (see webapp/index.html)")
         else:
-            print("  symmetry     : 0 (无) / 1 (左右) / 2, 4 (两种 180° 半场) "
-                  "/ ? (随机) - 上下 (3) 已撤回，不在列表里")
+            print("  symmetry     : 0 (无) / 1 (左右) / 3 (上下) / 2, 4 (两种 180° 半场) "
+                  "/ ? (随机)")
 
     # 地图类型 gets no 随机 entry and no roll: multiplayer (.yrm) is the layout the
     # game's skirmish list shows, single player (.map) is the campaign/editor layout.
@@ -154,10 +151,11 @@ def main() -> int:
         else:
             print("  map type     : 0 (多人 .yrm, default) / 1 (单人 .map) - not rollable")
 
-    # The seed fields' defaults are product decisions too: the global seed defaults to
-    # 0, which the engine reads as "roll it from the clock" (wasm_entry.cpp:282), i.e.
-    # a fresh map per click exactly like the retail dialog; the terrain seed default 0
-    # is the vanilla constant.  Pinned so a stray edit cannot silently make every map
+    # The seed fields' defaults are product decisions too: BOTH default to 0, and the
+    # page reads 0 as "roll one" (rollSeed) for each of them - the global seed rolls the
+    # whole run, the terrain seed rolls the terrain sequence (the engine's own 0 means
+    # the fixed vanilla constant, which would give every map the same terrain, so the
+    # page never hands it a 0).  Pinned so a stray edit cannot silently make every map
     # reproducible (or every map the same).
     seed_defaults = {}
     for field in ("seed", "map-seed"):
@@ -166,9 +164,9 @@ def main() -> int:
     if seed_defaults["seed"] != "0" or seed_defaults["map-seed"] != "0":
         failures.append(
             f"seed defaults are {seed_defaults}; both must default to 0 "
-            "(global seed 0 = roll from the clock, terrain seed 0 = the vanilla seed)")
+            "(both seeds default to 0 and the page rolls a value for each of them)")
     else:
-        print("  seed defaults: 全局种子 0 (随机) / 地形种子 0 (原版)")
+        print("  seed defaults: 全局种子 0 (随机) / 地形种子 0 (随机)")
 
     print()
     if failures:

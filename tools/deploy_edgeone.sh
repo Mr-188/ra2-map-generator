@@ -82,6 +82,7 @@ DO_VERIFY=0
 DO_FORCE=0
 DRY=0
 CHECK_URL=1
+URL_GIVEN=0
 
 usage() {
     cat <<'EOF'
@@ -107,7 +108,7 @@ while [ $# -gt 0 ]; do
         -e|--env)    ENVNAME=${2:?$1 needs a value}; shift 2 ;;
         -a|--area)   AREA=${2:?$1 needs a value}; shift 2 ;;
         -t|--token)  TOKEN=${2:?$1 needs a value}; shift 2 ;;
-        -u|--url)    SITE_URL=${2:?$1 needs a value}; shift 2 ;;
+        -u|--url)    SITE_URL=${2:?$1 needs a value}; URL_GIVEN=1; shift 2 ;;
         --verify)    DO_VERIFY=1; shift ;;
         --force)     DO_FORCE=1; shift ;;
         --dry-run)   DRY=1; shift ;;
@@ -164,8 +165,14 @@ stale_check() {
         [ -e "$src" ] || continue
         # obj/ and bin/ are build output, not source: a renderer build rewrites
         # them, and dating the shipped bytes against them would fire every time.
+        # CNCMaps.Renderer/WebEntry.cs is the same story: build_render_web.sh
+        # copies engine/render/WebEntry.cs into the reference tree on every run,
+        # so after any build (verify_all builds with MG_RENDER_STAGE=0, which
+        # stages nothing) that copy is newer than webapp/render/ while the source
+        # it was copied from is unchanged -- which is checked on its own below.
         found=$(find "$src" -type f \
                     -not -path '*/obj/*' -not -path '*/bin/*' \
+                    -not -path '*/CNCMaps.Renderer/WebEntry.cs' \
                     -newer "$art" -print -quit 2>/dev/null || true)
         [ -n "$found" ] && { newer=$found; break; }
     done
@@ -207,7 +214,12 @@ else
 fi
 
 # ---- package --------------------------------------------------------------
-echo "[deploy] packaging"
+# The version this build will carry.  Date-based (see tools/versions.sh for why)
+# and chosen here rather than typed by hand, so a release cannot forget it.  It
+# becomes the header badge and the entry in the 历史版本 drawer.
+VERSION=${MG_VERSION:-$(sh tools/versions.sh next)}
+export MG_VERSION=$VERSION
+echo "[deploy] packaging $VERSION"
 sh tools/package_webapp.sh "$OUT"
 
 # ---- sanity: the exact failure modes this project has actually shipped ----
@@ -245,6 +257,13 @@ fi
 
 total=$(find "$OUT" -type f | wc -l | tr -d ' ')
 echo "[deploy] package ok: $total files, $(du -sh "$OUT" | cut -f1), engine $esize B"
+
+# ---- history ---------------------------------------------------------------
+# Every version that is being kept goes into the tree under /v/<version>/, and
+# the drawer's manifest is written from what is actually present (so it can
+# never list a version whose bytes are missing).  Done after the sanity checks
+# above, which measure the current build, not the history.
+sh tools/versions.sh assemble "$OUT" "$VERSION"
 
 # ---- the exact command ----------------------------------------------------
 # A dry run is allowed without a project name, so the printed command shows a
@@ -311,6 +330,15 @@ if grep -q 'Creating new project with name' "$LOG" 2>/dev/null; then
 fi
 
 # ---- what actually went live ---------------------------------------------
+# A preview deployment lives at a temporary, SIGNED URL that the CLI prints
+# (it carries an ?eo_token=... that the host requires).  EDGEONE_URL is the
+# production domain and says nothing about the preview, so checking it after a
+# preview deploy only ever reports the old production site as a failure.  Unless
+# -u said otherwise, a preview is verified at the URL the CLI hands back.
+if [ "$ENVNAME" = "preview" ] && [ "$URL_GIVEN" = 0 ] && [ -n "$SITE_URL" ]; then
+    echo "[deploy] (-e preview: verifying the preview URL from the CLI, not EDGEONE_URL=$SITE_URL)"
+    SITE_URL=
+fi
 if [ -z "$SITE_URL" ]; then
     SITE_URL=$(python3 - "$LOG" <<'PY'
 import json, sys
@@ -351,6 +379,25 @@ fi
 echo
 echo "[deploy] live at $SITE_URL"
 if [ "$CHECK_URL" = 1 ]; then
+    # A preview deployment is not public: the URL the CLI prints carries a signed
+    # ?eo_token= that the host only accepts from the console session that created
+    # the deployment, so from here the site answers 401.  That is not a failure
+    # of the build, and reporting it as one would train the reader to ignore the
+    # check -- so say what it is and stop, rather than printing FAILED.
+    if [ "$ENVNAME" = "preview" ]; then
+        root_code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 30 "$SITE_URL" \
+                        2>/dev/null || echo 000)
+        case "$root_code" in
+            401|403)
+                echo
+                echo "[deploy] the preview is access-controlled (http=$root_code), so its assets"
+                echo "         cannot be checked from here -- the signed URL only works from"
+                echo "         your console session. The deploy itself succeeded; open the URL"
+                echo "         above in a browser to look at it. Not a failure."
+                exit 0
+                ;;
+        esac
+    fi
     sh tools/verify_deployed.sh "$SITE_URL"
     echo
     echo "Now open it in a browser and generate + render once: a wrong"
@@ -358,4 +405,20 @@ if [ "$CHECK_URL" = 1 ]; then
     echo "there.  If you just updated worker.js/app.js and the page looks stale,"
     echo "hard-reload (Ctrl+Shift+R); they are served no-cache but the browser"
     echo "still keeps a copy."
+fi
+
+# ---- keep this version so the drawer can offer it later --------------------
+# Archived only after the deploy SUCCEEDED and only for production: the history
+# is "what the site has served", and a preview build never served anybody.  The
+# archive is the same bytes that went out (see tools/versions.sh: it drops v/ so
+# the history cannot nest).
+if [ "$ENVNAME" = "production" ]; then
+    echo
+    sh tools/versions.sh archive "$OUT" "$VERSION" || {
+        echo "[deploy] WARNING: could not archive $VERSION; the deploy itself is live," >&2
+        echo "         but this version will not appear in 历史版本." >&2
+    }
+elif [ -n "$SITE_URL" ]; then
+    echo
+    echo "[deploy] (-e preview: not archived -- 历史版本 lists what production served)"
 fi

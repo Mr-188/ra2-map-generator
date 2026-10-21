@@ -22,6 +22,16 @@ mkdir -p "$OUT/render"
 cp "$ROOT/webapp/index.html" "$OUT/"
 cp "$ROOT/webapp/app.js"     "$OUT/"
 cp "$ROOT/webapp/worker.js"  "$OUT/"
+# 参数集 (the share code) is imported by app.js as a module, so a deploy that
+# forgets it serves a page whose 生成地图 button never works.  Copied by name like
+# everything else here - see the note under ra2.ico.
+cp "$ROOT/webapp/sharebits.js" "$OUT/"
+# 画廊: a page plus the one file it reads.  The generator's header links to it, so a
+# deploy that forgets these ships a 404 behind that link (and a gallery that cannot
+# read its own list).
+cp "$ROOT/webapp/gallery.html" "$OUT/"
+cp "$ROOT/webapp/gallery.js"   "$OUT/"
+cp "$ROOT/webapp/gallery.txt"  "$OUT/"
 
 # The tab / header icon.  This one file IS a retail game asset and is here as an
 # explicit, authorised exception to AGENTS.md rule 1 (see the note there and in
@@ -71,6 +81,88 @@ find "$OUT" -name '*.js' -type f -exec \
 # runtime puts every one of its assemblies (`render/_framework`).  A 404 on 59
 # files that are plainly present in the branch is a confusing way to find out.
 : > "$OUT/.nojekyll"
+
+# ---- version.json ----------------------------------------------------------
+# What this build is, so a player can say which one they are on and so the page
+# can show it in the header.  The version is passed in by tools/versions.sh
+# (tools/deploy_edgeone.sh asks it for the next one); standing alone, this
+# script falls back to today's date, which is the same scheme.
+#
+# The fingerprints are the part that actually identifies the bytes: a version
+# number can be reused or forgotten, but "engine 30a88bb1" is either the wasm
+# that is deployed or it is not.  `dirty` records that the build came from a
+# working tree that is not exactly a commit -- which is the normal case here,
+# and worth knowing when a report does not reproduce from the repository.
+MG_VERSION=${MG_VERSION:-$(date +%Y.%m.%d)}
+MG_NOTE=${MG_NOTE:-}
+export MG_VERSION MG_NOTE
+python3 - "$OUT" "$ROOT" <<'PY'
+import hashlib, json, os, subprocess, sys, time
+
+out, root = sys.argv[1], sys.argv[2]
+
+def sha8(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except OSError:
+        return ""
+
+def git(*args):
+    try:
+        return subprocess.run(("git",) + args, cwd=root, capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+    except Exception:
+        return ""
+
+total = 0
+count = 0
+for base, _dirs, files in os.walk(out):
+    for name in files:
+        try:
+            total += os.path.getsize(os.path.join(base, name))
+        except OSError:
+            pass
+        count += 1
+
+info = {
+    "version": os.environ.get("MG_VERSION", ""),
+    "note": os.environ.get("MG_NOTE", ""),
+    "commit": git("rev-parse", "--short", "HEAD"),
+    "dirty": bool(git("status", "--porcelain")),
+    "builtAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    "engine": sha8(os.path.join(out, "mg_engine.wasm")),
+    "renderer": sha8(os.path.join(out, "render", "_framework", "CNCMaps.Engine.wasm")),
+    # The two metadata files this block is about to write are part of the
+    # package, so count them: a number that is off by two is the kind of detail
+    # somebody later trusts.
+    "files": count + 2,
+    "bytes": total,
+}
+with open(os.path.join(out, "version.json"), "w", encoding="utf-8") as fh:
+    json.dump(info, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+
+# A manifest with just this version, so a package that is uploaded by hand (the
+# console's drag-and-drop, without tools/deploy_edgeone.sh) still has a working
+# 历史版本 drawer instead of one that says the list is unreadable.  The deploy
+# path overwrites this with the full list in tools/versions.sh assemble -- which
+# is also why an archived version drops the file: it would be stale there.
+manifest = {
+    "current": info["version"],
+    "versions": [dict(info, path="/")],
+}
+with open(os.path.join(out, "versions.json"), "w", encoding="utf-8") as fh:
+    json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+print("[package] version %s%s (commit %s%s, engine %s)"
+      % (info["version"], " " + info["note"] if info["note"] else "",
+         info["commit"] or "?", ", dirty" if info["dirty"] else "",
+         info["engine"] or "?"))
+PY
 
 # Nothing may point back at this machine.
 #

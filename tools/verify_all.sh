@@ -153,6 +153,13 @@ fi
 # worked and the page showed nothing.
 step verify_uicontract python3 tools/verify_uicontract.py
 
+# 参数集 (the share code): every input to a run in 12 characters, and the promise
+# that the string cannot silently describe a different map -- every field and every
+# slider position round-trips, a seed of 0 (which the engine takes from the clock
+# and never reports) is refused, a changed character is caught, and the codec's
+# constants are the engine's rather than a copy.  No game directory needed.
+step verify_sharebits node tools/verify_sharebits.mjs
+
 # The deployment path.  Offline and credential-free: it packages the real site,
 # validates the host rules in webapp/edgeone.json, and drives deploy_edgeone.sh
 # with a stub `edgeone` to prove it refuses stale bytes, a truncated renderer
@@ -169,10 +176,24 @@ if [ -n "$CHROME_BIN" ] && [ -d node_modules/puppeteer-core ]; then
     GD=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}
     if [ -n "$GD" ]; then
         # The page fetches the archives itself; a webkitdirectory input cannot be
-        # populated from a test harness.  Same origin, so no CORS.
+        # populated from a test harness.  Same origin, so no CORS.  The suite opens
+        # its default URL (127.0.0.1:8017) unless something serves the page there, and
+        # it used to assume a server was already running: when none was, the whole
+        # run died on a navigation timeout instead of testing anything.  So start one
+        # for this step (and only this step).
         ln -sfn "$GD" webapp/game
+        if python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',8017))==0 else 1)"; then
+            BROWSER_URL=http://127.0.0.1:8017/
+        else
+            python3 -m http.server 8017 --bind 127.0.0.1 --directory webapp >/dev/null 2>&1 &
+            BROWSER_SRV=$!
+            sleep 1
+            BROWSER_URL=http://127.0.0.1:8017/
+        fi
         step verify_browser node tools/verify_browser.mjs \
-            --game "$GD" --gameurl /game/ --shot build/render_test/page.png
+            --game "$GD" --gameurl /game/ --url "$BROWSER_URL" \
+            --shot build/render_test/page.png
+        [ -n "${BROWSER_SRV:-}" ] && kill "$BROWSER_SRV" 2>/dev/null
     fi
 else
     echo "verify_browser   (skipped: no chromium or puppeteer-core; see tools/fetch_chromium.sh)"

@@ -53,6 +53,38 @@ either one.
 The renderer is booted lazily, on the first render, because it is 15 MB and a
 session that only generates maps should not pay for it.
 
+## 参数集 (the share code)
+
+A whole run -- every parameter plus the seed -- in one 13-character string
+(`sharebits.js`).  The player clicks the code to copy it; pasting it into 导入参数集
+(or opening `#p=<code>`) restores the controls and makes the same map.
+
+Three things about it are deliberate, and each of them is there because the obvious
+alternative silently produces a different map:
+
+* **It carries concrete values, never the 随机 placeholders.**  Re-deciding a roll on
+  the receiving side is exactly what changes the map, so the page settles every roll at
+  generate time -- including the global seed, which the engine would otherwise read as
+  "take GetTickCount()" and never report back.
+* **The size travels as a slider INDEX, not as a number.**  The engine reads
+  `sizeSlider` as a double in one place (`MapGenLAT.cpp:661`), and a rolled value
+  (`Math.round(...)*0.1`, e.g. `0.7000000000000001`) is not one the slider can hold:
+  measured, 2 of 200 seeds make a different map from `0.7`.  The page generates with
+  `sizeFromIndex(k)` and the code carries `k`.
+* **It refuses rather than clamps.**  A code asking for something this build cannot
+  make (a size past the engine's table, a symmetry kind this engine lacks) is rejected
+  with the reason, before any control is written -- a half-applied form would generate
+  a map neither side asked for.
+
+The code also carries the top 10 bits of this build's `engine` fingerprint
+(`version.json`), which is what the date version cannot do: a page-only release keeps
+the same engine, so the check does not fire on it.  The receiving page compares it with
+its own -- equal means the same parameters make the same map; different means it says
+so and offers the 历史版本 switch, carrying the code in the fragment so the older page
+comes up with the same 参数集.  It is a hint, not a proof (1/1024 of engines collide),
+and it cannot see the player's own game data differing, which changes the map just as
+surely.
+
 ## Serving
 
 `file://` will not work: the wasm module and the Worker cannot be loaded from a
@@ -77,6 +109,22 @@ python3 -m http.server 8000
   --render` performs the worker's exact flatten-and-render loop under node, and
   requires the preview to be **pixel-identical** to the reference render produced
   natively from the game's own `.mix` files.
+* The **参数集** is verified by `tools/verify_sharebits.mjs` (every field the page can
+  produce and every slider position round-trip exactly, a changed character is always
+  caught, and the codec's constants are read from `mgconsole` rather than copied) and
+  by `tools/verify_browser.mjs` (it appears with the map, decodes back to that run, a
+  click copies it, and a code from another build offers the right version switch).
+* The **画廊** (`gallery.html` + `gallery.js`) is the other half of 参数集: a catalogue
+  whose list is a hand-editable text file (`gallery.txt`, one line per map:
+  `参数集 | 作者 | 日期 | 标题 | 描述`, only the first field required) and whose every
+  tag is decoded from the code, so a card cannot claim something the generator would
+  not do.  The list is a **set, not a sequence**: every load shuffles it (「换一批」
+  re-shuffles in place; a filter change keeps the order, so nothing moves under a click),
+  which is why adding an entry is only ever adding a line.  `tools/verify_browser.mjs` covers it: the list is read line for line, the
+  chips are checked against the decoded parameters (and against the generator's own
+  wording), cards from another build are marked, the batch loading ends with the footer
+  reachable, a card click lands in the generator with the code loaded, and the cards
+  get wider with the window without overflowing.
 * What is **still untested** is only what needs a browser: `FileReaderSync`
   (the tests substitute `fs.readSync`), ES-module/worker loading, and the page
   itself.  `app.js` / `worker.js` are written against the verified interface, but

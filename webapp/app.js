@@ -8,6 +8,13 @@
 // against the interface webapp/worker.js exposes; the engine it drives is the
 // one tools/verify_wasm.py proves byte-identical to the native oracle.
 
+// 参数集 (the share code) is a pure codec with no DOM, so it lives in its own
+// module where node can exercise it: tools/verify_sharebits.mjs.  A static import
+// is fine HERE -- this file is loaded as a module; only the WORKER has to stay a
+// classic script (the .NET runtime detects its host with `typeof importScripts`).
+import { encodeParams, decodeParams, enginePrefix, sizeFromIndex, indexFromSize }
+  from './sharebits.js';
+
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
 // Stage labels for the worker's progress messages.  Missing this table used to
@@ -43,6 +50,26 @@ let mapUrl = null;
 let previewUrl = null;
 let mapBytes = null;      // the renderer runs on this thread and reads these
 let rendererRuntime = null;
+
+// The 参数集 of the run that is in flight, and of the map currently on screen.  It
+// is built from the CONCRETE values decided at click time (never from the controls,
+// whose 随机 entries would be re-decided elsewhere), and revealed together with the
+// map -- a failed run must not leave a code behind.
+let pendingShare = '';
+
+// What THIS page is, from version.json (tools/package_webapp.sh writes it into a
+// packaged site).  A source checkout has no version.json, so all three stay empty
+// and every version check below degrades to "cannot tell" instead of guessing.
+//   ownVersion  "2026.10.13.2"        -- what the header badge shows
+//   ownEngine   the 10 bits a 参数集 carries (sharebits.js enginePrefix)
+//   versionList versions.json entries -- {version, path, engine}, what 历史版本 lists
+let ownVersion = '';
+let ownEngine = 0;
+let versionList = [];
+// A #p= code seen before the engine reported its tables.  It is applied on `ready`,
+// because validating one needs the engine's own numbers: applying it earlier could
+// let syncSize() silently clamp the size into a different map.
+let pendingHashCode = '';
 
 // NOT { type: 'module' }: the .NET runtime detects its host with
 // `typeof importScripts`, which a module worker does not have, and stalls.
@@ -260,12 +287,13 @@ function syncSize() {
     : '';
 }
 
-// The page offers 无 / 左右轴对称 (one optional kind, by product decision; the engine
-// also implements 180 and top-bottom and the CLI/API still take them, and
-// tools/verify_symmetry.py keeps testing all three).  Anything above what the engine
-// reports gets disabled rather than offered and then refused - so if left-right were
-// ever not implemented the option would grey out instead of producing a map it cannot
-// make.
+// The page offers every kind the engine implements: 无 / 左右轴对称 / 上下轴对称 / the
+// two 180° halves.  Top-bottom used to be held back because mirror.h's "WHY TOP-BOTTOM
+// IS NOT OFFERED" records that multi-cell cliff pieces have no art for that
+// orientation; the user looked at the finished maps on 2026-10-21 and asked for it
+// anyway (the outline, water and elevation are symmetric; only inland cliff lines keep
+// their original facing on one half).  This function still only greys out what the
+// ENGINE refuses, so the list and mg_symmetry_max() can never disagree visibly.
 function syncSymmetry() {
   const sel = el('symmetry');
   for (const opt of sel.options) {
@@ -311,10 +339,18 @@ worker.addEventListener('messageerror', (event) => {
 });
 
 // If the worker never reports ready, say so rather than leaving a dead button.
+//
+// Wording matters here, and it was wrong until now: this fires on a 20 s timer, which a
+// perfectly healthy start can exceed -- 692 KB of wasm compiled on a loaded machine
+// (measured 2026-10-14: a false alarm left 失败 + a disabled button on screen while the
+// engine was still coming up, and the message pointed at the MIME type).  So it leads
+// with the usual cause, then says the honest alternative, and states that the page is
+// still waiting -- which it is: `ready` clears this and enables the button (case 'ready').
 const bootWatchdog = setTimeout(() => {
   if (!booted) {
-    showError('引擎在 20 秒内没有就绪。打开浏览器控制台（F12）能看到具体报错；'
-              + '常见原因是 mg_engine.js / mg_engine.wasm 没有被正确提供。');
+    showError('引擎 20 秒还没就绪。常见原因是 mg_engine.js / mg_engine.wasm 没有被正确提供'
+              + '（F12 → Network：这两个文件是不是 200，wasm 的类型是不是 application/wasm）。'
+              + '如果它们都正常，那就是机器太慢：页面会继续等，就绪后这条会自己消失。');
   }
 }, 20000);
 
@@ -336,6 +372,10 @@ worker.addEventListener('message', async (event) => {
       setStatus('引擎已就绪。选好游戏目录和参数后点生成。');
       askCacheInfo(currentTheater());
       refreshGoButton();
+      // A 参数集 out of the URL is applied HERE, not at boot: validating one needs
+      // the tables just adopted (sizeMax / symmetryMax / rectMaxSum), and applying
+      // it earlier would let syncSize() clamp the size into a different map.
+      applyUrlShareCode();
       break;
     case 'cache-info': {
       delete cacheInfo.__pending;
@@ -415,6 +455,9 @@ worker.addEventListener('message', async (event) => {
       // step rather than something that happens behind the user's back.
       renderBtn.disabled = false;
       renderBtn.textContent = '渲染预览';
+      // The map exists, so the 参数集 that describes it may be shown.  They are
+      // revealed together on purpose: see pendingShare.
+      showShareCode(pendingShare);
       if (autoRender) {
         mark('settings: 自动渲染地图已开启，生成完成后直接开始渲染');
         startRender();
@@ -422,6 +465,7 @@ worker.addEventListener('message', async (event) => {
       break;
     }
     case 'preview': {
+      endRenderWatch();
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       previewUrl = URL.createObjectURL(new Blob([msg.bytes], { type: 'image/png' }));
       previewImg.src = previewUrl;
@@ -429,7 +473,7 @@ worker.addEventListener('message', async (event) => {
       previewEl.style.display = 'block';
       previewCap.textContent =
         `用你自己的游戏素材渲染：${msg.assets} 个文件，耗时 ${msg.ms} ms。` +
-        `与 CNCMaps 本机渲染逐像素一致。`;
+        `与 CNCMaps 本机渲染逐像素一致。红方块＝出生点（每名玩家一个，来自地图的起点）。`;
       // The preview is full width and sits below the two columns, so the first
       // render can finish entirely below the fold.  Bring it into view, but do
       // not animate for users who asked for reduced motion.
@@ -447,6 +491,7 @@ worker.addEventListener('message', async (event) => {
       await renderOnMainThread(msg);
       break;
     case 'error':
+      endRenderWatch();
       showError(msg.message);
       break;
   }
@@ -506,11 +551,17 @@ async function renderOnMainThread(msg) {
     previewEl.style.display = 'block';
     previewCap.textContent =
       `用你自己的游戏素材渲染：${copied} 个文件，耗时 ` +
-      `${Math.round(performance.now() - started)} ms。与 CNCMaps 本机渲染逐像素一致。`;
+      `${Math.round(performance.now() - started)} ms。与 CNCMaps 本机渲染逐像素一致。`
+      + '红方块＝出生点。';
     setStatus('渲染完成。', 'ok');
     renderBtn.disabled = false;
     renderBtn.textContent = '重新渲染';
+    // This path (the main-thread renderer) is what actually runs; it used to leave
+    // the 120 s watchdog armed, so a finished image was reported as "渲染超时"
+    // two minutes later, on top of the picture.
+    endRenderWatch();
   } catch (err) {
+    endRenderWatch();
     showError(`渲染失败：${(err && err.stack) || err}`);
     renderBtn.disabled = false;
   }
@@ -796,14 +847,39 @@ function labelOf(id, value) {
   return o ? o.textContent.trim() : String(value);
 }
 
+// 全局种子's own 随机.  It has to be rolled HERE rather than left to the engine:
+// the engine reads seed 0 as "take GetTickCount()" (wasm_entry.cpp:282) and never
+// reports which value it used, so a 参数集 built from the controls could not
+// reproduce the map.  Rolling it on this side is what every other 随机 control
+// already does, and it lets #rolled show the value.
+function rollSeed() {
+  const buf = new Uint32Array(1);
+  for (let i = 0; i < 8; ++i) {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(buf);
+    } else {
+      buf[0] = (Math.random() * 0x100000000) >>> 0;     // no WebCrypto: still a u32
+    }
+    if (buf[0] !== 0) return buf[0];                    // 0 means "roll one" again
+  }
+  return 1;                                            // unreachable, but never 0
+}
+
 // A size inside the range the engine reports for this (land, players): the roll
 // cannot ask for a map the size slider itself could not reach.
+//
+// The returned value is SNAPPED to the slider's own grid.  Math.round(...)*step
+// carries float noise (7*0.1 is 0.7000000000000001), the engine reads sizeSlider
+// as a double in one place (MapGenLAT.cpp:661), and the two are different maps on
+// some seeds -- measured: 2 of 200.  A value the slider cannot hold is also a
+// value 参数集 cannot carry, so the roll is snapped where it is made.
 function pickSize(land, players) {
   const idx = Math.max(0, Math.min(6, players - 2));
   const useful = (sizeMax && sizeMax[land] && Number.isFinite(sizeMax[land][idx]))
     ? sizeMax[land][idx] : maxUseful();
   const steps = Math.max(1, Math.round(useful / sizeStep));
-  return Math.min(useful, Math.round(Math.random() * steps) * sizeStep);
+  const k = Math.min(steps, Math.round(Math.random() * steps));
+  return sizeFromIndex(k, sizeStep);
 }
 
 function rollParams() {
@@ -847,6 +923,8 @@ goBtn.addEventListener('click', () => {
   logEl.textContent = '';
   resultEl.style.display = 'none';
   setStatus('正在准备……');
+  // The banner asked for exactly this click; it has done its job.
+  hideLanding();
 
   // Everything the user left on 随机 is decided HERE, once per click, and reported
   // in #rolled (the controls themselves stay on 随机, so the next click rolls again).
@@ -854,24 +932,47 @@ goBtn.addEventListener('click', () => {
   const single = el('kind').value === '1';      // never rolled, see ROLL_IDS
   const outPath = `/mg/out.${single ? 'map' : 'yrm'}`;
   const rect = (roll.size === null && sizeMode === 'rect') ? clampedRect() : { w: 0, h: 0 };
+
+  // 全局种子 0 = "random", and it is decided here (see rollSeed).  A non-zero value
+  // the user typed is used as-is, so typing a seed still reproduces that map.
+  const seedInput = Number(el('seed').value) >>> 0;
+  const seed = seedInput !== 0 ? seedInput : rollSeed();
+  if (seedInput === 0) roll.notes.push(`全局种子=${seed}`);
+
+  // The slider can only hold step multiples, but a dragged value reaches the engine
+  // through no arithmetic while a rolled one does; snapping both to the grid makes
+  // the value the engine gets the value 参数集 stores (see sharebits.js).
+  const size = roll.size !== null
+    ? roll.size
+    : sizeFromIndex(indexFromSize(Number(el('size').value), sizeStep), sizeStep);
+
+  // 地形种子 0 = 随机, decided here for the same reason as 全局种子: the engine's 0 is
+  // "take the fixed vanilla constant 0" and it never reports which value it used, so a
+  // 参数集 built from the controls would either not reproduce the map or always
+  // reproduce the SAME terrain.  A non-zero value the user typed is used as-is.
+  const mapSeedInput = Number(el('map-seed').value) >>> 0;
+  const mapSeed = mapSeedInput !== 0 ? mapSeedInput : rollSeed();
+  if (mapSeedInput === 0) roll.notes.push(`地形种子=${mapSeed}`);
+
   const params = {
     land: Number(roll.chosen.land),
     theater: Number(roll.chosen.theater),
     time: Number(roll.chosen.time),
-    // A rolled size wins over the slider; the slider is disabled in 随机 mode.
-    size: roll.size !== null ? roll.size : Number(el('size').value),
+    size,
     players: Number(roll.chosen.players),
     ore: Number(roll.chosen.ore),
     water: WATER_FROM_GLOBAL_ROLL,
-    seed: Number(el('seed').value) >>> 0,
-    mapSeed: Number(el('map-seed').value) >>> 0,
+    seed,
+    mapSeed,
     single,
     // 0/0 tells the engine to use `size`; anything else is an explicit rectangle.
     width: rect.w,
     height: rect.h,
-    // 0 = none, 1 = left-right axial symmetry (the page's single optional kind).  The
-    // engine also implements 180 (2) and top-bottom (3) for the CLI/API;
-    // syncSymmetry() disables anything above what the engine reports.
+    // mirror.h's MapSymmetry as the page offers it: 0 none, 1 left-right, 2/4 the two
+    // 180° halves.  3 (top-bottom) is NOT offered -- mirror.h withdrew it because the
+    // tileset has no art for it -- so a 参数集 carrying it is refused below instead of
+    // being mapped onto some other kind.  syncSymmetry() disables anything above what
+    // the engine reports, so this can only be a kind the run can use.
     symmetry: Number(roll.chosen.symmetry) || 0,
     outPath,
   };
@@ -879,6 +980,24 @@ goBtn.addEventListener('click', () => {
   // Everything the user set is remembered from here (the rolled values are the note
   // above, which is remembered with it).
   saveParams();
+
+  // 参数集: built from the values just decided, so it always describes the run that
+  // is about to happen.  It stays hidden until the map exists (the 'map' case), so
+  // a failed run cannot leave a code that points at nothing.
+  try {
+    // `engine` is this build's id (0 = unknown, in a source checkout): it is what
+    // lets the receiving page say "this came from another version" before spending
+    // a generation, and resolve which version to 历史版本-switch to.
+    pendingShare = encodeParams({ ...params, engine: ownEngine },
+                                { step: sizeStep, rectMaxSum }).code;
+  } catch (err) {
+    // Unreachable for the inputs this page can produce -- tools/verify_sharebits.mjs
+    // pins every option the <select>s offer.  If it ever happens it is a page bug,
+    // and the log says so instead of a code that would not reproduce the map.
+    pendingShare = '';
+    mark('参数集生成失败: ' + ((err && err.message) || err));
+  }
+  showShareCode('');            // hoisted; a stale code must not sit next to a new run
 
   // The picked directory wins when there is one (the user may have switched games);
   // otherwise the cached extraction is rehydrated, which needs no permission at all.
@@ -1019,11 +1138,43 @@ restoreParams();
 worker.postMessage({ type: 'boot' });
 setStatus('正在加载引擎……');
 
+// A render that never produces an image used to look like nothing happening: the status
+// sat on "正在准备渲染……" and no error ever appeared.  The usual cause is a stale
+// renderer bundle in the HTTP cache - the loader and the wasm files are not
+// content-hashed, so after an update the page can pair an old dotnet.js with a new
+// payload (or the other way round) and the .NET runtime fails to start *silently*.
+// (Deployments used to pin /render/_framework/* for 7 days, which made that easy; the
+// cache policy is fixed, and this is the belt to that pair of braces.)
+const RENDER_WATCHDOG_MS = 120000;
+let renderWatchdog = null;
+let renderInFlight = false;
+
+// Called by EVERY way a render can finish (the worker's preview message, the
+// main-thread renderer, an error).  One definition on purpose: a path that
+// finishes without calling this leaves the watchdog to fire later.
+function endRenderWatch() {
+  renderInFlight = false;
+  clearTimeout(renderWatchdog);
+}
+
 function startRender() {
   renderBtn.disabled = true;
   errorEl.textContent = '';
+  renderInFlight = true;
   mark('renderer: asking the worker for the extracted assets');
   setStatus('正在准备渲染……');
+  clearTimeout(renderWatchdog);
+  renderWatchdog = setTimeout(() => {
+    if (!renderInFlight) return;                  // it finished while we were waiting
+    renderInFlight = false;
+    renderBtn.disabled = false;
+    showError(
+      '渲染器 120 秒没有出图。最常见的原因是浏览器缓存里新旧渲染器混用（页面刚更新过就会'
+      + '这样）：按 Ctrl+Shift+R 强制刷新，或在开发者工具 Network 里勾上 "Disable cache"'
+      + ' 再刷新。另外首次渲染本身要先下载约 15 MB 的渲染器。'
+      + '若强制刷新后仍然没有图，请把 F12 控制台里的报错发出来。');
+    setStatus('渲染超时。');
+  }, RENDER_WATCHDOG_MS);
   worker.postMessage({ type: 'collect' });
 }
 renderBtn.addEventListener('click', startRender);
@@ -1067,3 +1218,532 @@ backdropEl.addEventListener('click', () => openSettings(false));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !settingsEl.hidden) openSettings(false);
 });
+
+// ---- version badge and the 历史版本 drawer ---------------------------------
+// version.json (what this build is) and versions.json (every version the site
+// has served) are written at publish time by tools/package_webapp.sh and
+// tools/versions.sh.  Neither file exists when the page is opened straight from
+// the source tree, so both places degrade to "nothing known" instead of an
+// error: a developer's checkout has to be a working page too.
+const histEl = el('hist');
+const histBackdropEl = el('hist-backdrop');
+
+function openHist(open) {
+  histEl.hidden = !open;
+  histBackdropEl.hidden = !open;
+  if (open) el('hist-close').focus();
+}
+el('hist-open').addEventListener('click', () => openHist(true));
+el('hist-close').addEventListener('click', () => openHist(false));
+histBackdropEl.addEventListener('click', () => openHist(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !histEl.hidden) openHist(false);
+});
+
+async function readJson(url) {
+  try {
+    const r = await fetch(url, { cache: 'no-cache' });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;                       // offline, file://, or a source checkout
+  }
+}
+
+// "2026-10-13T14:12:38+0800" -> "10-13 14:12".  The manifest is written by our
+// own tooling, but it is still text off the network: parse it defensively and
+// fall back to the raw string rather than printing NaN.
+function shortTime(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
+  return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (iso || '');
+}
+
+(async () => {
+  const info = await readJson('./version.json');
+  if (info && info.version) {
+    const badge = el('ver');
+    badge.textContent = info.version;
+    badge.title = [
+      info.builtAt && `构建于 ${info.builtAt}`,
+      info.commit && `提交 ${info.commit}${info.dirty ? '（含未提交改动）' : ''}`,
+      info.engine && `引擎 ${info.engine}`,
+      info.renderer && `渲染器 ${info.renderer}`,
+    ].filter(Boolean).join(' · ');
+    badge.hidden = false;
+  }
+  // What this page IS, for the 参数集 version check: the label the player sees and
+  // the 10 bits a code carries.  A source checkout has no version.json, so both stay
+  // empty and the check says "cannot tell" instead of guessing.
+  ownVersion = (info && info.version) || '';
+  ownEngine = enginePrefix(info && info.engine);
+
+  // The manifest lives at the root of the deployment.  A page served from
+  // /v/<version>/ therefore does not find it next to itself (archived versions
+  // deliberately drop their own copy), which is what the second try is for.
+  const man = (await readJson('./versions.json')) || (await readJson('/versions.json'));
+  const listEl = el('ver-list');
+  const noteEl = el('hist-note');
+  // Each entry carries `engine` (tools/versions.sh writes it), which is how a code
+  // from another build is turned into "switch to THAT version".
+  versionList = (man && Array.isArray(man.versions)) ? man.versions : [];
+  // The import note may have been rendered before any of this arrived; re-render it
+  // now that the page knows its own engine and the list of published versions.
+  shareVersionInfoReady();
+
+  if (!man || !Array.isArray(man.versions) || man.versions.length === 0) {
+    noteEl.textContent = '版本列表读不到 —— 本地开发环境没有 versions.json，'
+      + '线上会显示已发布过的版本。';
+    return;
+  }
+  if (man.versions.length === 1) {
+    noteEl.textContent = `目前只有 ${man.current || man.versions[0].version} 这一个版本；`
+      + '下次发布后，这里会出现可以退回去的历史版本。';
+    return;
+  }
+  noteEl.textContent = `共 ${man.versions.length} 个版本，当前 ${man.current || '?'}。`;
+
+  const norm = (p) => (p.endsWith('/') ? p : `${p}/`);
+  const here = norm(location.pathname);
+  for (const v of man.versions) {
+    const a = document.createElement('a');
+    a.href = v.path || `/v/${encodeURIComponent(v.version)}/`;
+    // Carry the 参数集 across the switch.  Without this the fragment (the code the
+    // player is holding) is dropped by the navigation, and the older page comes up
+    // with nothing to check -- which is exactly the flow this drawer is being used
+    // for.  Done on click, not at build time, because the code can arrive later.
+    a.addEventListener('click', () => {
+      const hash = location.hash || '';
+      const href = a.getAttribute('href') || '';
+      if (hash && !href.endsWith(hash)) a.setAttribute('href', href + hash);
+    });
+    const left = document.createElement('span');
+    const title = document.createElement('span');
+    title.textContent = v.version;
+    left.appendChild(title);
+    if (norm(a.pathname) === here) {
+      const cur = document.createElement('span');
+      cur.className = 'v-cur';
+      cur.textContent = '当前';
+      left.appendChild(cur);
+    }
+    if (v.note) {
+      const note = document.createElement('span');
+      note.className = 'v-note';
+      note.textContent = v.note;
+      left.appendChild(note);
+    }
+    const meta = document.createElement('span');
+    meta.className = 'v-meta';
+    meta.textContent = [shortTime(v.builtAt), v.commit].filter(Boolean).join(' · ');
+    a.appendChild(left);
+    a.appendChild(meta);
+
+    const li = document.createElement('li');
+    li.appendChild(a);
+    listEl.appendChild(li);
+  }
+})();
+
+// ---- 参数集: one string that reproduces the map on screen --------------------
+//
+// webapp/sharebits.js owns the layout (12 characters for a square map); what lives
+// here is the two DOM halves: showing the code of the map that was just made, and
+// copying it when it is clicked.  Nothing is uploaded and nothing is stored -- the
+// string only leaves the page when the user copies it (red line 2).
+//
+// Reading a code back (pasting one in) is the next step: the decoder and its tests
+// already exist, but no UI is wired to them yet.
+const shareEl = el('share');
+const shareCodeEl = el('share-code');
+const shareNoteEl = el('share-note');
+const SHARE_HINT = '点一下复制这串参数集';
+let shareNoteTimer = null;
+
+function setShareNote(text, ok = false) {
+  shareNoteEl.textContent = text;
+  shareNoteEl.classList.toggle('ok', ok);
+}
+
+// An empty code hides the block: that is the state before the first map, and the
+// state after a run whose parameters could not be encoded (see pendingShare).
+function showShareCode(code) {
+  const text = String(code || '');
+  clearTimeout(shareNoteTimer);
+  if (!text) {
+    shareEl.hidden = true;
+    return;
+  }
+  shareCodeEl.textContent = text;
+  shareEl.hidden = false;
+  setShareNote(SHARE_HINT);
+}
+
+// document.execCommand is deprecated, but it is the only fallback left when the
+// Clipboard API is absent or refused (a page served over plain http on a LAN
+// address is not a secure context).  Claiming "已复制" without having copied is the
+// one thing this block must not do, so the result is checked and the fallback
+// tells the user to press Ctrl+C.
+function copyViaSelection(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (err) {
+    return false;
+  }
+}
+
+function selectShareCode() {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(shareCodeEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (err) { /* the code is still on screen; selecting it is only a courtesy */ }
+}
+
+async function copyShareCode() {
+  const text = shareCodeEl.textContent || '';
+  if (!text) return;
+  let ok = false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (err) {
+    ok = false;                  // refused: insecure context, or no permission
+  }
+  if (!ok) ok = copyViaSelection(text);
+  if (ok) {
+    setShareNote('已复制。发给别人，粘回来就是同一张地图。', true);
+  } else {
+    selectShareCode();
+    setShareNote('这个浏览器不允许自动复制，已帮你选中：按 Ctrl+C 复制。');
+  }
+  clearTimeout(shareNoteTimer);
+  shareNoteTimer = setTimeout(() => setShareNote(SHARE_HINT), 3000);
+}
+
+shareCodeEl.addEventListener('click', copyShareCode);
+
+// ---- 导入参数集: paste someone else's code ----------------------------------
+//
+// Reading a code is the other half of sharing it.  Two entry points, one function:
+// the #p=<code> fragment (a link someone sent) and the paste box below the generate
+// button.  Both go through the same validation, and neither may silently change a
+// value: a code that asks for something this build cannot do is REFUSED with the
+// reason, because quietly clamping would hand the player a different map.
+//
+// The version check is what the engine field is for (sharebits.js): the code says
+// which engine made it, this page knows its own from version.json, and when they
+// differ the page offers the 历史版本 switch that already exists -- carrying the
+// code along in the fragment, so the older page comes up with the same 参数集.
+const importCodeEl = el('import-code');
+const importNoteEl = el('import-note');
+const importSwitchEl = el('import-switch');
+
+// The banner that says a 参数集 just arrived.
+const landingEl = el('landing');                // top of the output column
+const landingLeadEl = el('landing-lead');
+const landingWhatEl = el('landing-what');
+const landingGoEl = el('landing-go');
+const landingWarnEl = el('landing-warn');
+const landingSwitchEl = el('landing-switch');
+// What the import box currently describes.  Kept so the note can be RENDERED AGAIN
+// when the version information arrives: at boot the page does not yet know which
+// engine it is (version.json is a fetch), and a note that said "cannot tell" would
+// otherwise stay wrong for the rest of the session.
+let lastImported = null;
+
+function setImportNote(text, cls = '') {
+  importNoteEl.textContent = text || '';
+  importNoteEl.className = `share-note ${cls}`.trim();
+}
+
+// The empty-box state, and the only state whose text carries a link.
+//
+// "Paste the code you were sent" and "where would I get one" are two halves of one
+// thought, so they are ONE line: the gallery link lives inside this hint and goes away
+// with it.  Every other state (已载入 / 本页做不出来 / 读不出来) replaces the whole line
+// with status text -- which is also why the link cannot be a sibling element: its
+// visible-conditions would have differed from the hint's (measured: it stayed up under
+// "参数集读不出来", next to an error, as if the box were still empty).
+//
+// Built as nodes rather than innerHTML: this text is constant, and the rule that user
+// data never goes through innerHTML is easier to keep than to audit.
+const IMPORT_HINT_TAIL = '挑一张现成的：点开哪张，它就带着参数集回到这里。';
+function setImportHint() {
+  importNoteEl.textContent = '';
+  importNoteEl.className = 'share-note';
+  importNoteEl.append('粘贴别人发来的参数集，点「载入」还原成同一套参数。没有码？去');
+  const a = document.createElement('a');
+  a.href = './gallery.html';
+  a.textContent = '画廊';
+  importNoteEl.append(a, IMPORT_HINT_TAIL);
+}
+function setImportSwitch(version, path, code) {
+  // Two places want the switch: the note under the paste box (where the code was
+  // pasted) and the landing banner (where a shared link lands).  One function paints
+  // both so they cannot disagree about which version to offer.
+  const href = (version && path) ? path + (code ? `#p=${code}` : '') : '';
+  const text = version ? `切到 ${version}` : '';
+  importSwitchEl.hidden = !href;
+  if (href) { importSwitchEl.href = href; importSwitchEl.textContent = text; }
+  landingSwitchEl.hidden = !href;
+  if (href) { landingSwitchEl.href = href; landingSwitchEl.textContent = text; }
+}
+
+// "内陆 · 8 人 · 左右对称 · 尺寸 20" -- labels read out of the page's OWN <select>s
+// (labelOf), so the banner cannot drift from the controls the code just filled in.
+//
+// One exception: the <select> says 无 for 对称 0, which reads fine with the field label
+// in front of it but is ambiguous in a standalone list ("... 2 人 · 无 · 尺寸 1" -- 无
+// what?).  The gallery's chips spell it 无对称, and the two pages describing the same
+// parameters with the same words is worth more than reusing the option text here.
+function describeParams(code) {
+  const size = code.width > 0 ? `${code.width} × ${code.height}` : `尺寸 ${fmtSize(code.size)}`;
+  const sym = code.symmetry === 0 ? '无对称' : labelOf('symmetry', String(code.symmetry));
+  return [labelOf('land', String(code.land)), `${code.players} 人`, sym, size].join(' · ');
+}
+
+function setLandingWarn(origin) {
+  const warn = origin && (origin.kind === 'other' || origin.kind === 'other-pruned')
+    ? origin.text : '';
+  landingWarnEl.textContent = warn;
+  landingWarnEl.hidden = !warn;
+}
+
+function hideLanding() {
+  landingEl.hidden = true;
+}
+
+// Shown whenever a 参数集 was applied (a shared link, a gallery card, or a paste).
+function showLanding(code, origin) {
+  landingEl.classList.remove('bad');
+  landingLeadEl.textContent = '已载入参数集';
+  landingWhatEl.textContent = describeParams(code);
+  landingGoEl.hidden = false;
+  setLandingWarn(origin);
+  landingEl.hidden = false;
+}
+
+// A code this build cannot make is the case that most needs to be LOUD.  The reason
+// belongs where the eye is, not only in the small note under the paste box -- and the
+// one way out (an older build that could still make it) is what the switch is for.
+// This is not a "loaded" banner: nothing was loaded, so it does not say so.
+function showLandingRefusal(reason, origin) {
+  landingEl.classList.add('bad');
+  landingLeadEl.textContent = `这条参数集本站做不出来：${reason}`;
+  landingWhatEl.textContent = '';
+  landingGoEl.hidden = true;
+  setLandingWarn(origin);
+  landingEl.hidden = false;
+}
+
+/** The version whose engine hash starts with this prefix, or null. */
+function versionForEngine(prefix) {
+  if (!prefix) return null;                   // 0 = "the sender could not say"
+  return versionList.find((v) => v && enginePrefix(v.engine) === prefix) || null;
+}
+
+// Is this code from the engine that is running here?  Returns what to say about it,
+// and never claims "same" unless it knows: a page without version.json (a source
+// checkout) cannot tell, and says so.
+function describeShareOrigin(code) {
+  if (!ownEngine) {
+    return { kind: 'unknown-self', text: '（本站没有 version.json，无法核对引擎版本）' };
+  }
+  if (!code.engine) {
+    return { kind: 'unknown-theirs', text: '（发送方没带版本信息，无法核对）' };
+  }
+  if (code.engine === ownEngine) {
+    return { kind: 'same', text: `引擎与本站 ${ownVersion || ''} 相同，参数一样就能生成同一张地图。` };
+  }
+  const target = versionForEngine(code.engine);
+  const mine = ownVersion ? `本页是 ${ownVersion}，` : '';
+  if (!target) {
+    return { kind: 'other-pruned',
+             text: `${mine}而这串来自另一个引擎版本（本站已不再保留它）：生成的图可能不一样。` };
+  }
+  return { kind: 'other', target,
+           text: `${mine}而这串来自 ${target.version}（引擎不同）：直接生成可能不是同一张地图。` };
+}
+
+// Write a decoded code into the controls.  Throws (and changes NOTHING) when this
+// build cannot produce what the code asks for.
+//
+// Two phases on purpose: a half-applied form is worse than a refusal, because it
+// would then generate a map that neither side asked for -- and the player has no way
+// to see that it happened.  (Measured: written the other way round, a refused code
+// left land/players/seed from the code and the size from before.)
+function applyDecodedShare(code) {
+  const selects = [
+    ['land', code.land], ['theater', code.theater], ['time', code.time],
+    ['players', code.players], ['ore', code.ore], ['symmetry', code.symmetry],
+    ['kind', code.single ? 1 : 0],
+  ];
+
+  // ---- 1. validate ---------------------------------------------------------
+  if (code.symmetry > symmetryMax) {
+    throw new Error(`这串用的对称是 ${code.symmetry}，本站的实现只到 ${symmetryMax}`);
+  }
+  for (const [id, value] of selects) {
+    const wanted = String(value);
+    if (![...el(id).options].some((o) => o.value === wanted)) {
+      throw new Error(`${id} 的这个取值（${wanted}）本页没有`);
+    }
+  }
+  if (code.width > 0) {
+    if (code.width + code.height > rectMaxSum) {
+      throw new Error(`这串的长宽 ${code.width}x${code.height} 超过本站引擎的 ${rectMaxSum}`);
+    }
+  } else {
+    // The code stores the slider INDEX, so this is exact: the value it decodes to is
+    // the value the range input itself holds for that index (sharebits.js header).
+    // Checking it against the engine's table first is what keeps syncSize() from
+    // clamping it into a different map.
+    const idx = Math.max(0, Math.min(6, code.players - 2));
+    const useful = (sizeMax && sizeMax[code.land] && Number.isFinite(sizeMax[code.land][idx]))
+      ? sizeMax[code.land][idx] : maxUseful();
+    const maxK = Math.round(useful / sizeStep);
+    if (code.index > maxK) {
+      throw new Error(`这串的尺寸（第 ${code.index} 档）超过本站引擎给这个环境的 ${maxK} 档`);
+    }
+  }
+
+  // ---- 2. commit -----------------------------------------------------------
+  for (const [id, value] of selects) el(id).value = String(value);
+  el('seed').value = String(code.seed);          // never 0: the codec refuses that
+  el('map-seed').value = String(code.mapSeed);
+  if (code.width > 0) {
+    rectW.value = String(code.width);
+    rectH.value = String(code.height);
+    setSizeMode('rect');
+  } else {
+    setSizeMode('square');
+    sizeInput.value = String(code.size);
+  }
+  syncSize();
+  syncSymmetry();
+  saveParams();          // a refresh keeps the imported setup
+}
+
+// Paint the import note and the 切换 link from lastImported.  Split out from
+// applyShareCode so it can run again when version.json arrives (shareVersionInfoReady).
+function renderImportNote() {
+  if (!lastImported) {
+    setImportHint();          // the one state whose line carries the gallery link
+    setImportSwitch('', '', '');
+    return;
+  }
+  const { code, raw, fromLink, refusal } = lastImported;
+  const origin = describeShareOrigin(code);
+  if (refusal) {
+    setImportNote(`参数集读出来了，但本页做不出它要的参数：${refusal}`, 'err');
+  } else {
+    setImportNote(`已载入参数集${fromLink ? '（来自链接）' : ''}。${origin.text}`
+                  + (origin.kind === 'same' ? '点「生成地图」即可。' : ''));
+  }
+  // Offer the switch whenever the code came from another engine -- and especially
+  // when this build refused its parameters, which is the case that other build can
+  // very likely handle.
+  if (origin.kind === 'other') setImportSwitch(origin.target.version, origin.target.path, raw);
+  else setImportSwitch('', '', '');
+  // The banner may be up already, and version.json can land AFTER it was painted;
+  // then the warning it shows would say "cannot tell" for the rest of the session.
+  if (!landingEl.hidden) setLandingWarn(origin);
+}
+
+/** Called once version.json / versions.json have landed (see the loader at the end). */
+function shareVersionInfoReady() {
+  if (lastImported) renderImportNote();
+}
+
+// Returns true when the code was applied.
+function applyShareCode(raw, { fromLink = false } = {}) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    lastImported = null;
+    renderImportNote();
+    hideLanding();
+    return false;
+  }
+  let code = null;
+  try {
+    code = decodeParams(text, { step: sizeStep, rectMaxSum });
+  } catch (err) {
+    lastImported = null;
+    setImportSwitch('', '', '');
+    setImportNote(`参数集读不出来：${(err && err.message) || err}`, 'err');
+    hideLanding();
+    return false;
+  }
+  importCodeEl.value = text;
+  try {
+    applyDecodedShare(code);
+  } catch (err) {
+    // Nothing was changed: applyDecodedShare validates before it writes.  Say why in
+    // both places -- the small note (next to the box, where the switch link lives for
+    // a paste) and the banner (where a shared link lands).
+    const refusal = (err && err.message) || String(err);
+    lastImported = { code, raw: text, fromLink, refusal };
+    renderImportNote();
+    showLandingRefusal(refusal, describeShareOrigin(code));
+    return false;
+  }
+  lastImported = { code, raw: text, fromLink, refusal: '' };
+  renderImportNote();
+  // The loud half: what was loaded, and that one click is all that is left.
+  showLanding(code, describeShareOrigin(code));
+  // The map on screen (if any) belongs to the PREVIOUS controls, so its code must
+  // not keep sitting there as if it described what is now in the form.
+  showShareCode('');
+  return true;
+}
+
+function applyUrlShareCode() {
+  if (!pendingHashCode) return;
+  const code = pendingHashCode;
+  pendingHashCode = '';
+  applyShareCode(code, { fromLink: true });
+}
+
+function readHashCode() {
+  // #p=<code>.  Kept in the fragment on purpose: a query string would be sent to
+  // the host and land in its logs (red line 2 -- nothing leaves the machine).
+  const m = /(?:^|[#&])p=([A-Za-z0-9_-]+)/.exec(location.hash || '');
+  return m ? m[1] : '';
+}
+
+el('import-go').addEventListener('click', () => applyShareCode(importCodeEl.value));
+importCodeEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); applyShareCode(importCodeEl.value); }
+});
+importCodeEl.addEventListener('paste', () => {
+  // The pasted text lands after this event returns; one task later is soon enough
+  // to load it without the user also having to press 载入.
+  setTimeout(() => {
+    const v = importCodeEl.value.trim();
+    if (v.length >= 13) applyShareCode(v);      // shorter than the layout: not a code
+  }, 0);
+});
+window.addEventListener('hashchange', () => {
+  const code = readHashCode();
+  if (code) { importCodeEl.value = code; applyShareCode(code, { fromLink: true }); }
+});
+
+// The fragment is read at boot but APPLIED on `ready` (see the ready case), so the
+// validation above has the engine's tables to check against.
+pendingHashCode = readHashCode();
+if (pendingHashCode) importCodeEl.value = pendingHashCode;
+setImportHint();
+el('landing-close').addEventListener('click', hideLanding);

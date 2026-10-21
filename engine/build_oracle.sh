@@ -62,12 +62,12 @@ done
 echo "[oracle] linking the CLIs"
 $CXX $FLAGS -o "$OUT/mgconsole" \
     "$ROOT/engine/tools/mgconsole.cpp" \
-    "$OUT"/obj/*.o -lm
+    $(ls "$OUT"/obj/*.o | grep -v 'ref_WinMain\.o') -lm
 $CXX $FLAGS -o "$OUT/mgextract" \
     "$ROOT/engine/tools/mgextract.cpp" \
-    "$OUT"/obj/*.o -lm
+    $(ls "$OUT"/obj/*.o | grep -v 'ref_WinMain\.o') -lm
 $CXX $FLAGS -o "$OUT/mixinfo" \
     "$ROOT/engine/tools/mixinfo.cpp" \
-    "$OUT"/obj/*.o -lm
+    $(ls "$OUT"/obj/*.o | grep -v 'ref_WinMain\.o') -lm
 
 echo "[oracle] built mgconsole, mgextract, mixinfo"

@@ -29,11 +29,14 @@
     {
       "source": "/package.json",
       "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+    },
+    {
+      "source": "/mg_engine.wasm",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+    },
+    {
+      "source": "/render/_framework/*",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
     }
-  ],
-
-  "caches": [
-    { "source": "/mg_engine.wasm", "cacheTtl": 604800 },
-    { "source": "/render/_framework/*", "cacheTtl": 604800 }
   ]
 }

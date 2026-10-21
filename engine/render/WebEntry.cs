@@ -33,6 +33,18 @@ namespace CNCMaps {
 				MixFilesDirectories = new List<string> { mixDir },
 				Engine = EngineType.YurisRevenge,
 				SavePNG = true,
+				// Mark the start positions, as the renderer's own CLI does with
+				// `--mark-start-pos --start-pos-squared` (red squares, 2x2 cells at the
+				// default marker size).  tools/verify_render.py passes the same two flags
+				// to the native renderer, so the page's "pixel-identical to a native
+				// CNCMaps render" caption stays true - turning this on in only one of the
+				// two paths would break exactly that claim.  The markers come from
+				// [Waypoints] / the map's starting points, so a map with fewer than 8
+				// players gets one square per real start and none for the 0,0 padding
+				// (DrawStartPositions skips nothing, but the padding entries all land on
+				// the same corner tile - kept as upstream draws them).
+				MarkStartPos = true,
+				StartPositionMarking = StartPositionMarking.Squared,
 			};
 			var engine = new RenderEngine();
 			if (!engine.ConfigureFromSettings(settings)) return -1;

@@ -78,6 +78,9 @@ git clone https://github.com/zzattack/ccmaps-net reference_impl/ccmaps-net
 # 4b. 把本仓库对参考实现的补丁打上去（**必须**，否则编译不过：
 #     我们的驱动调用 RandomMapGenerator::SizeSliderRange，干净版没有）
 sh tools/apply_reference_patches.sh
+#     （两个补丁有先后：size-limits 在前，symmetry 在后且对着"上游+前一个"生成；
+#      全新 clone 曾因整文件跳过而缺 MapGenSymmetry.cpp，现在脚本会反向校验每个补丁）
+#     改过参考实现后：sh tools/regen_reference_patches.sh  （会自证回环）
 
 # 5. 【可选】Chromium + puppeteer，用于真实浏览器自测
 sh tools/fetch_chromium.sh
@@ -264,6 +267,25 @@ WebAssembly**，页面会永远卡在"引擎加载中"。
 
 ---
 
+## 八点二、不要给不带内容哈希的文件设长缓存（踩过的坑）
+
+`edgeone.json` 曾经把 `/mg_engine.wasm` 与 `/render/_framework/*` 缓存 7 天
+（`"caches": [{ "cacheTtl": 604800 }]`）。这是**过期运行时的坑**：这些文件名**都不带内容哈希**
+（`dotnet.js`、`dotnet.boot.js`、`dotnet.native.wasm`、`CNCMaps.Engine.wasm`……），
+而 `index.html` / `app.js` 是 `no-cache`。于是重建一次渲染器之后，回访的浏览器会拿到
+**新的页面 + 旧的运行时** —— .NET 运行时直接起不来，页面停在"正在准备渲染……"，
+**一个错都不报**。本机就复现过一次（改了 `WebEntry.cs` 重建渲染器之后）。
+
+现在这些路径一律 `Cache-Control: no-cache`（每次带条件请求重新校验；没变的返回 304，
+只重新下载真正变了的文件）。代价是首次打开多几十个条件请求，换来"永远不会新旧混用"。
+
+要长缓存也行，但必须先把产物发布到**带内容哈希的目录名**下（例如
+`render/<hash>/_framework/...` + 一个指针文件），再对那个不可变路径设长 TTL。
+在那之前不要再加 `cacheTtl`。
+
+另外页面本身也加了兜底：渲染超过 120 秒没有出图，会把这条原因直接显示在错误栏里
+（含"按 Ctrl+Shift+R 强制刷新"），不再静默等下去。
+
 ## 八、以后怎么更新（一条命令）
 
 ✅ 脚本实测通过（离线部分 32 项断言；上传本身需要你的账号，见下）。
@@ -316,9 +338,61 @@ sh tools/deploy_edgeone.sh --force         # 明知产物比源码旧也要发�
 
 ### 8.3 关于缓存
 
-`webapp/edgeone.json` 已经写好了规则：`*.wasm` 一律 `Content-Type: application/wasm`，
-`index.html` / `app.js` / `worker.js` / `mg_engine.js` 不缓存，14 MB 的渲染器缓存 7 天。
-如果浏览器里看着还是旧的（改完 `worker.js` 之后尤其容易），**Ctrl+Shift+R 硬刷新一次**。
+`webapp/edgeone.json` 已经写好了规则：`*.wasm` 一律 `Content-Type: application/wasm`；
+`index.html` / `app.js` / `worker.js` / `mg_engine.js` 以及 14 MB 的渲染器都是 **`no-cache`**
+（每次带条件请求重新校验，没变就是 304 —— 原因是长缓存会让"新页面配旧运行时"，见下面的八点二）。
+如果浏览器里看着还是旧的，**Ctrl+Shift+R 硬刷新一次**。
+
+### 8.4 多版本与历史版本
+
+页头右侧有个 **「历史版本」** 按钮，点开是抽屉，列出发过的每一版；点一条就切到 `/v/<版本>/`
+下的那一份。**旧版是完整可用的页面**（页面全程用相对路径，复制到子目录就能跑），不是死档 ——
+这正是能让玩家退回去的原因。
+
+**版本号怎么定**：`YYYY.MM.DD`；同一天第二次发布是 `YYYY.MM.DD.2`。理由：玩家人群看
+"2026.10.13" 一眼就知道新旧，而 `1.4.2` 还得有人解释；日期完全自动生成，不需要谁判断
+"这算大版本还是小版本"。精确性由 `version.json` 保证 —— 里面还有 git 提交、构建时间，以及
+**引擎和渲染器的指纹**（`engine: 30a88bb1…`）：指纹才是真正能判断"你手里是不是这份字节"的东西。
+页头徽标显示版本号，悬停可以看到这些细节。
+
+```sh
+sh tools/versions.sh list        # 已经发布过哪些版本
+```
+
+**发布时自动发生的事**（`sh tools/deploy_edgeone.sh`）：
+
+1. `tools/versions.sh next` 算出这一版的版本号，写进 `version.json`（页头徽标读它）；
+2. 打包 + 体检；
+3. `tools/versions.sh assemble`：把 `build/releases/` 里保留的每一版复制进发布树的
+   `/v/<版本>/`，生成根清单 `versions.json`，并给每个历史版本补上 `/v/<版本>/*.wasm`
+   的 `Content-Type` 规则（模式里只允许一个 `*`，所以是每版两条）；
+4. 上传；
+5. `tools/verify_deployed.sh` 线上核对，**包括逐个打开清单里的历史版本** —— 清单列了却打不开
+   会当场红（"抽屉指向一个死版本"比没有历史更糟）；
+6. **只有生产发布成功才归档**到 `build/releases/<版本>/`（预览发布不归档：历史记录的是
+   "线上服务过什么"）。
+
+给这一版配一句说明（显示在抽屉里）：
+
+```sh
+MG_NOTE="加了起始位标记" sh tools/deploy_edgeone.sh
+```
+
+**代价与清理**：每次上传的是「当前 + 所有保留的历史」，每版约 16 MB。免费版是 5 GB 存储、
+单项目 2 万文件，保留 3–5 版毫无压力。不想要某一版就删掉它的归档，下次发布起不再带上：
+
+```sh
+rm -rf build/releases/2026.10.01       # 下一次发布生效
+```
+
+上限提醒：`edgeone.json` 最多 100 条 header 规则，每历史版本占 2 条，所以实际可保留约 50 版。
+
+**两条诚实的边界**：
+
+- 抽屉里的历史**从第一次用这个机制发布开始**。在此之前发出去的版本没有留档，找不回来
+  （真要找只能把线上那棵树整个抓下来）。
+- 不同版本的浏览器缓存格式可能不同（`worker.js` 的 `CACHE_VERSION`）。这种情况下切回旧版会
+  请你重新选一次游戏目录 —— 缓存不能跨格式复用；抽屉里已经对用户说明了这一点。
 
 ---
 

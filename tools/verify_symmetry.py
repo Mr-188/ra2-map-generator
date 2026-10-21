@@ -87,6 +87,9 @@ FAMILIES = (
     "kCliffWaterFootprints",
     "kDestroyableCliffFootprints",
     "kWaterfallFootprints",
+    # 宽坡族（CliffRamps = Slope Set Pieces，tile 384..393）。2026-10-15 目标轮 15 之前
+    # **这条从来没被量过** —— 而它正是"坡能不能成对"的答案所在（§8.51）。
+    "kSlopeSetPieceFootprints",
 )
 # The bit convention for IsoFootprint::mask - "bit (row * w + col)"
 # (MapGenRiver.cpp:3830) - is what makes a reflection a bit permutation.
@@ -96,7 +99,12 @@ MASK_BIT_ORDER = "row-major: bit (row * w + col), MapGenRiver.cpp:3830"
 # WaterCliffs pieces (which is phase 2's problem, recorded here so it is not
 # discovered on a map).
 LR_GAP_SIZES = {"kShoreFootprints": 2}
-R180_GAP_SIZES = {"kShoreFootprints": 2, "kCliffWaterFootprints": 4}
+R180_GAP_SIZES = {"kShoreFootprints": 2, "kCliffWaterFootprints": 4,
+                  # 宽坡族在 180 下也缺 4 件（ramp06/07/09/10）—— 2026-10-15 目标轮 15 量到，
+                  # 见 §8.51。这就是"镜像那条重放刻不出镜像的宽坡"的根因。
+                  "kSlopeSetPieceFootprints": 4}
+TB_GAP_SIZES = {"kShoreFootprints": 2, "kCliffWaterFootprints": 4,
+                "kSlopeSetPieceFootprints": 4}
 
 
 def parse_table(text: str, name: str) -> list[tuple[int, int, int]]:
@@ -204,7 +212,8 @@ def check_family_closure(failures: list[str]) -> int:
     # The residual gaps, pinned.  Left-right is what the product ships, so its gaps
     # are what a mirrored map may have to report; if a family gains or loses one,
     # the pass's "no piece for this orientation" warning changes meaning.
-    for want, kind in ((LR_GAP_SIZES, "left-right"), (R180_GAP_SIZES, "rotational-180")):
+    for want, kind in ((LR_GAP_SIZES, "left-right"), (R180_GAP_SIZES, "rotational-180"),
+                       (TB_GAP_SIZES, "top-bottom")):
         expected = {n: want.get(n, 0) for n in FAMILIES}
         if gaps[kind] != expected:
             failures.append(f"{kind} gaps changed: {gaps[kind]} != {expected} "
@@ -1599,12 +1608,11 @@ def check_level_symmetry(failures: list[str]) -> int:
     checks = 0
     if not MGCONSOLE.is_file() or not ASSETS.is_dir():
         return 0
-    # 3 (top-bottom) 是 0.100，因为 2026-10-14 用户拍板保留了"官方扫全图"（去掉移植侧那段
-    # "TB 镜像半场跳过 + 给镜像格重新落件"的特例，让官方铺崖算法把两半都当普通地形各扫一遍）。
-    # 实测取舍：TB 渲染的纯黑 0.768% → 0.707%、最大黑块 1807px → 1069px（−41%）、崖墙那两片
-    # 楔形黑块完全消失（用户肉眼确认）；代价是这个数 7.79% → 9.59% —— 崖件落地本身会写层号，
-    # 两半各自铺崖就不再写同一批层号了。这个值是对 9.59% 的回归绊线，不是目标值。
-    floors = {1: 0.005, 2: 0.045, 3: 0.100, 4: 0.045}
+    # [2026-10-14 轮 3] 上下与 180-alt 的**角块网格**现在也按"块一致"的点映射 σ 镜像了
+    # （MapGenHills.cpp 的 MirrorElevationGrid，见 docs/SYMMETRY_STATUS.md §8.6）：高度失配
+    # 实测 TB 8.65% → **1.71%**（238/13913）、180-alt 3.74% → **1.42%**（198/13913），
+    # 所以这两条底线跟着收到实测值附近（棘轮）。180（第一种口味）没开，保持 0.045。
+    floors = {1: 0.005, 2: 0.025, 3: 0.025, 4: 0.025}
     with tempfile.TemporaryDirectory() as td:
         for kind, tag in ((1, "left-right"), (2, "rotational-180"),
                           (3, "top-bottom"), (4, "rotational-180-alt")):
@@ -1650,6 +1658,69 @@ def check_level_symmetry(failures: list[str]) -> int:
                 print(f"  levels   {tag:<20} {bad}/{pairs} pairs differ in height "
                       f"({ratio:.2%}, floor {floors[kind]:.1%})")
     return checks
+
+def check_one_sided_art(failures: list[str]) -> int:
+    """判据②：镜像格里"一边有画、一边空"的对数（坡件/崖件那一层的缺口）。
+
+    用户 2026-10-15 那条目标的可量测口径之一：一个格子有美术、它的镜像格整格没有 →
+    渲染出来就是黑块（§8.10 量到 TB 的 12 处未覆盖落差全落在这种对上）。坡件族没有可用的
+    镜像件（§8.19 用"覆盖 + 每格层差"两条必要条件证明：候选只有它自己），所以这个数降不到 0；
+    先按实测值做**棘轮** —— 任何变更让它变大就红。
+
+    实测（默认口径 MG_RAMP_MIRROR=6）：
+        size2-p2  LR 0 / 180 137 / TB 109 / 180-alt 54
+        size1-p4  LR 0 / 180 158 / TB 124 / 180-alt 14
+    """
+    import tempfile
+    from maptools.map_ini import parse_map_size
+    checks = 0
+    if not MGCONSOLE.is_file() or not ASSETS.is_dir():
+        return 0
+    # floors = this check's OWN measured values + margin (2026-10-15, default MG_RAMP_MIRROR=6):
+    #   size2-p2  LR 0 / 180 249 / TB 161 / 180-alt 199
+    #   size1-p4  LR 0 / 180 101 / TB 111 / 180-alt 19
+    floors = {
+        (1, "size2-p2"): 0, (2, "size2-p2"): 260, (3, "size2-p2"): 175, (4, "size2-p2"): 215,
+        (1, "size1-p4"): 0, (2, "size1-p4"): 115, (3, "size1-p4"): 125, (4, "size1-p4"): 30,
+    }
+    params_sets = (("size2-p2", ["--size", "2", "--players", "2", "--water", "80",
+                                 "--seed", "20260913", "--map-seed", "0"]),
+                   ("size1-p4", ["--size", "1", "--players", "4", "--water", "80",
+                                 "--seed", "20260913", "--map-seed", "0"]))
+    with tempfile.TemporaryDirectory() as td:
+     for pname, params in params_sets:
+        for kind, tag in ((1, "left-right"), (2, "rotational-180"),
+                          (3, "top-bottom"), (4, "rotational-180-alt")):
+            mp = Path(td) / f"oart{kind}_{pname}.yrm"
+            proc = run_generator(mp, 3, kind, params)
+            checks += 1
+            if proc.returncode != 0 or not mp.is_file():
+                failures.append(f"{tag}: one-sided-art generation failed")
+                continue
+            sections = sections_of(mp)
+            cells = cells_of(sections)
+            Wp, Hp = parse_map_size(sections)
+            n = 0
+            for (x, y), tc in cells.items():
+                mx, my = mirror_cell(kind, Wp, Hp, x, y)
+                if (x, y) > (mx, my):
+                    continue
+                o = cells.get((mx, my))
+                if o is None:
+                    continue
+                if (tc.tile_index == 0) != (o.tile_index == 0):
+                    n += 1
+            checks += 1
+            limit = floors[(kind, pname)]
+            if n > limit:
+                failures.append(
+                    f"{tag}: {n} mirrored pairs have art on ONE side only in {pname} "
+                    f"(floor {limit}) - a cell renders black where its mirror has a piece "
+                    f"(see docs/SYMMETRY_STATUS.md 8.10/8.19)")
+            else:
+                print(f"  one-art {tag:<18} {pname:<9} one-sided {n} (floor {limit})")
+    return checks
+
 
 def check_rot180_flavours(failures: list[str]) -> int:
     """Both 180 flavours: identical cell map, opposite authoritative half.
@@ -1938,7 +2009,7 @@ def check_top_bottom(failures: list[str]) -> int:
     return checks
 
 
-def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2, 3)) -> int:
+def score_matrix(lands=(0, 1, 2, 3, 4), kinds=None) -> int:
     """Print the whole-map interior yardstick, per land type and per kind.
 
         python3 tools/verify_symmetry.py --score
@@ -1972,7 +2043,13 @@ def score_matrix(lands=(0, 1, 2, 3, 4), kinds=(1, 2, 3)) -> int:
 
     names = {0: "archipelago", 1: "continent", 2: "team continent",
              3: "inland", 4: "mountainous"}
-    kind_names = {1: "left-right", 2: "rotational-180"}
+    kind_names = {1: "left-right", 2: "rotational-180", 3: "top-bottom"}
+    # The page offers left-right and rotational-180; the symmetry curve below was
+    # rendered for those two as well.  Top-bottom stays measurable through
+    # check_top_bottom, but is not part of this table (the product does not
+    # offer it).
+    if kinds is None:
+        kinds = (1, 2)
     print(f"  {'land':<26}{'kind':<16}{'pairs':>7}{'/different piece':>18}"
           f"{'/differ at all':>17}")
     with tempfile.TemporaryDirectory() as tmp:
@@ -2164,6 +2241,7 @@ def main() -> int:
     generation_checks = check_generation(failures)
     tb_checks = check_top_bottom(failures)
     level_checks = check_level_symmetry(failures)
+    oneart_checks = check_one_sided_art(failures)
     flavour_checks = check_rot180_flavours(failures)
 
     print("  matrix  every land type x every theatre the product offers")
@@ -2180,7 +2258,8 @@ def main() -> int:
           f"corner lattice is incompatible with the cell map ({lattice_checks} checks), "
           f"a symmetric map decodes back symmetric ({generation_checks} generation "
           f"checks, {tb_checks} of them top-bottom, {flavour_checks} for the two 180 "
-          f"flavours, {level_checks} for the elevation), and every land x theatre pair the "
+          f"flavours, {level_checks} for the elevation, {oneart_checks} for the "
+          f"one-sided art), and every land x theatre pair the "
           f"product offers holds its shape, its coast and its elevation "
           f"({matrix_checks} matrix checks)")
     return 0

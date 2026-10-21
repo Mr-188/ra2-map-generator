@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { decodeParams, encodeParams, enginePrefix, sizeFromIndex } from '../webapp/sharebits.js';
 
 const ROOT = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
 
@@ -107,7 +108,10 @@ try {
   });
 
   console.log(`  open     ${args.url}`);
-  await page.goto(args.url, { waitUntil: 'networkidle2', timeout: 60000 });
+  // domcontentloaded, not networkidle2: the engine keeps a wasm/worker stream open, so
+  // the network never goes idle and the whole suite stalled here (measured 2026-10-21).
+  // Readiness is the explicit waitForFunction('就绪') right below.
+  await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   check('page loaded', true, await page.title());
 
   // Wait for the engine to report ready.
@@ -117,20 +121,17 @@ try {
   check('engine ready', true);
   check('worker is classic', workers.length > 0, workers.join(','));
 
-  // The 对称 select is a PRODUCT decision, not "everything the engine can do".
+  // The 对称 select offers every kind mirror.h implements -- 0 none, 1 left-right,
+  // 3 top-bottom, 2/4 the two 180° halves -- plus one 随机, all ENABLED: the ready
+  // message's mg_symmetry_max() is what greys out a kind the engine would refuse, so a
+  // disabled option means the page and the engine disagree.  Each offered kind must be
+  // enabled; the values are compared as a SET (reordering the menu is not a failure)
+  // while hiding a kind, or offering one the engine refuses, still is.
   //
-  // The page offers exactly three values: 0 (off), 1 (left-right axial symmetry) and
-  // ? (随机 - rolled at generate time).  The engine also implements 180 and top-bottom
-  // and verify_symmetry.py keeps testing all three; the page exposes the one the user
-  // asked for.
-  // The engine still implements left-right (1) and top-bottom (3) - mirror.h declares
-  // the max, and the CLI/API accept them - but the page deliberately exposes one
-  // optional kind, and it must be the one that actually works: the option has to be
-  // ENABLED (the ready message's mg_symmetry_max() is what disables a kind the engine
-  // would refuse) and 180 is what the generate call below then exercises.
-  //
-  // A page that hid 180 (or offered a kind the engine refuses) is the failure this
-  // pins; "the page offers all four" is no longer the contract.
+  // Top-bottom (3) is offered since 2026-10-21: the user asked for it after looking at
+  // the maps it produces (outline, water and elevation symmetric; inland cliff lines keep
+  // their facing on one half).  This is where that promise is pinned -- removing the
+  // option again fails here first.
   const sym = await page.evaluate(() => {
     const s = document.getElementById('symmetry');
     if (!s) return null;
@@ -141,10 +142,15 @@ try {
     };
   });
   const declaredMax = declaredSymmetryMax();
-  check('the page offers exactly 无 / 左右轴对称 / 随机 for 对称, all enabled',
-        sym !== null && sym.values.join(',') === '0,1,?'
-          && sym.disabled.every((d) => d === false) && sym.value === '0'
-          && declaredMax !== null && declaredMax >= 1,
+  const concrete = sym ? sym.values.filter((v) => v !== '?').map(Number) : [];
+  const wildcards = sym ? sym.values.filter((v) => v === '?').length : 0;
+  const expected = declaredMax === null ? null
+    : Array.from({ length: declaredMax + 1 }, (_, k) => k);
+  const everyKind = expected !== null && concrete.length === expected.length
+    && expected.every((k) => concrete.includes(k));
+  check(`the page offers every 对称 kind mirror.h ships (${expected ? expected.join('/') : '?'}) + 随机, all enabled`,
+        sym !== null && everyKind && wildcards === 1
+          && sym.disabled.every((d) => d === false) && sym.value === '0',
         sym ? `options ${sym.values.join('/')}, disabled ${sym.disabled.join('/')}, `
               + `selected ${sym.value} (mirror.h declares 0..${declaredMax})`
             : 'no #symmetry select');
@@ -152,7 +158,8 @@ try {
   // ---- the 随机 entries, 全随机, and the 设置 drawer ---------------------------
   //
   // Every parameter the generator takes can be left to a roll, one at a time or all
-  // at once, and the rolled values are printed rather than written back (app.js), so
+  // at once, and the rolled values are printed rather than written back (app.js) -
+  // including BOTH seeds (全局种子 and 地形种子, each rolled when its box holds 0) - so
   // what is checked here is the state the user sees.  Done BEFORE the archives are
   // injected, because the drawer's switch is persisted and this reloads the page to
   // prove it; the switch is turned back off afterwards so the rest of the suite -
@@ -286,9 +293,29 @@ try {
   const landed = await page.evaluate(async (base, names) => {
     const dt = new DataTransfer();
     for (const n of names) {
+      // The archives are hundreds of MB, so this is a STREAM (a pause, not a
+      // re-read) rather than r.blob(): a half-finished multi-hundred-MB response
+      // fails silently in the page and looks like a CORS problem when it is a
+      // transport one.  Chunks are counted into the console so a stalled upload
+      // says where it stopped instead of just "Failed to fetch".
       const r = await fetch(base + n);
       if (!r.ok) return { error: `${n}: HTTP ${r.status}` };
-      dt.items.add(new File([await r.blob()], n));
+      const walk = r.body.getReader();
+      const chunks = [];
+      let got = 0;
+      // Yield to the event loop between chunks: a tight read loop inside one
+      // evaluate keeps the main thread busy for the whole ~470 MB, so the page's own
+      // progress text (提取中…) is painted, then replaced by the result without the
+      // waiters below ever seeing it - which read as "the cache never filled".
+      for (;;) {
+        const { done, value } = await walk.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.byteLength;
+        await new Promise((res) => setTimeout(res, 0));
+      }
+      console.log(`[upload] ${n}: ${got} bytes`);
+      dt.items.add(new File(chunks, n));
     }
     const input = document.getElementById('dir');
     input.files = dt.files;
@@ -309,13 +336,42 @@ try {
   // needs the cache to exist from the PICK alone, so the extraction (and the cache
   // write that follows it) starts when the folder is picked - not on the first
   // generate, which is how it used to work and why a fresh pick + reload had none.
-  await page.waitForFunction(
-    () => /已缓存素材/.test(document.getElementById('cache-note')?.textContent || ''),
-    { timeout: 180000 }).catch(() => {});
-  const cacheAfterPick = await page.$eval('#cache-note', (e) => e.textContent.trim());
+  // The note is a live status line: it says 正在提取… first and only becomes
+  // 已缓存素材 when BOTH theatres are written.  The wait therefore polls for the
+  // end state on the elements that can carry it, and on timeout reports where it
+  // stopped instead of quietly reading whatever the line said mid-extraction.
+  //
+  // The extraction END is not the cache END: #cache-note says 正在提取… while the
+  // OPFS write runs and the failure arrives later as cache-failed.  Waiting only for
+  // 已缓存素材 therefore failed on the write (with the page's own honest
+  // "写缓存失败" text) instead of on the extraction.  Both end states are accepted
+  // here, and the failure is reported verbatim.
+  const cacheFilled = await page.waitForFunction(
+    () => {
+      const a = document.getElementById('cache-note')?.textContent || '';
+      const b = document.getElementById('picked')?.textContent || '';
+      const t = a + ' ' + b;
+      if (/已缓存素材|写缓存失败|已清除浏览器缓存/.test(t)) return t;
+      if (/未找到游戏目录|提取失败/.test(t)) return 'error:' + t;
+      return false;
+    },
+    { timeout: 300000, polling: 500 }).then((h) => h.jsonValue()).catch(() => '');
+  const cacheAfterPick = cacheFilled || (await page.evaluate(() => [
+    document.getElementById('cache-note')?.textContent || '',
+    document.getElementById('picked')?.textContent || '',
+    document.getElementById('error')?.textContent || '',
+  ].join(' | ').trim()));
   check('picking a folder alone fills the cache for BOTH theatres (no generate needed)',
         /已缓存素材/.test(cacheAfterPick) && /温和/.test(cacheAfterPick)
           && /雪地/.test(cacheAfterPick), cacheAfterPick);
+  if (!/已缓存素材/.test(cacheAfterPick)) {
+    // A cache write that lost the pick cannot be repaired by this run: the injected
+    // File handles die with the page, and every later block here reloads.  Stop
+    // with the reason on screen rather than cascading into misleading failures.
+    console.log(`\nBLOCKED: the pick-time cache write did not happen - ${cacheAfterPick}`);
+    failures.push(`pick-time cache write failed: ${cacheAfterPick}`);
+    throw new Error('pick-time cache write failed');
+  }
 
   console.log('  generate');
   await page.click('#go');
@@ -351,6 +407,35 @@ try {
       w: e.naturalWidth, h: e.naturalHeight, src: e.src.slice(0, 30),
     }));
     check('preview image decoded', img.w > 100, `${img.w}x${img.h}`);
+
+    // The start positions have to be ON the preview: the render settings enable
+    // CNCMaps's start markers (WebEntry.cs), so the page's own renderer must produce
+    // the red squares.  Counted on a canvas from the decoded preview - the marker is
+    // drawn at alpha 212 over terrain, which still leaves r>240 and g,b<40.
+    const marks = await page.evaluate(() => {
+      const img = document.getElementById('preview-img');
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let red = 0;
+      let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] > 240 && d[i + 1] < 40 && d[i + 2] < 40) {
+          ++red;
+          const p = i / 4, x = p % c.width, y = Math.floor(p / c.width);
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+      return { red, box: [minX, minY, maxX, maxY] };
+    });
+    check('the preview marks the start positions (red squares)',
+          marks.red >= 1000, `${marks.red} red px, box ${JSON.stringify(marks.box)}`);
     if (args.shot) {
       await page.screenshot({ path: path.resolve(args.shot), fullPage: true });
       console.log(`  shot     ${path.resolve(args.shot)}`);
@@ -494,7 +579,8 @@ try {
     },
     { timeout: args.timeout, polling: 1000 }).then((h) => h.jsonValue()).catch((e) => 'timeout:' + e.message);
   check('随机 rolls every parameter and prints what it used',
-        /本次随机/.test(rollNote) && /环境=/.test(rollNote) && /地图大小=/.test(rollNote),
+        /本次随机/.test(rollNote) && /环境=/.test(rollNote) && /地图大小=/.test(rollNote)
+          && /全局种子=\d+/.test(rollNote) && /地形种子=\d+/.test(rollNote),
         `#rolled = "${rollNote}"`);
   check('自动渲染地图 renders by itself after a generation',
         autoImg === 'ok', String(autoImg));
@@ -522,7 +608,10 @@ try {
     document.getElementById('symmetry').value = '0';
     document.getElementById('kind').value = '0';
     document.getElementById('seed').value = '20260913';
-    document.getElementById('map-seed').value = '0';
+    // A FIXED terrain seed since 2026-10-21 (the box's 0 now means "roll one", and a
+    // rolled value differs between runs by design).  The two runs compared below must
+    // describe the same map, so the seed that would differ is pinned.
+    document.getElementById('map-seed').value = '4242';
     document.getElementById('size').value = '1';
     document.querySelector('#size-mode button[data-mode="square"]').click();
   });
@@ -542,6 +631,47 @@ try {
   await setFixed();
   await page.click('#go');
   await page.waitForFunction(() => window.__mapBlob !== null, { timeout: args.timeout });
+
+  // 参数集: the page has to show, for the map it just made, a code that decodes back
+  // to the parameters of that run.  The codec itself is proven exact by
+  // tools/verify_sharebits.mjs (every field, every slider position, every changed
+  // character); this is the WIRING, where a code built from the wrong value would
+  // still look perfectly fine on screen.  A regression here is silent, which is
+  // exactly what this suite exists for.
+  const shareCode = await page.$eval('#share-code', (e) => e.textContent.trim());
+  const shareBlockShown = await page.$eval('#share', (e) => !e.hidden);
+  let decoded = null;
+  try { decoded = decodeParams(shareCode); } catch (err) { decoded = { error: String(err.message || err) }; }
+  check('参数集 appears with the map and decodes to the run that made it',
+        shareBlockShown && shareCode.length === 13
+          && decoded.land === 1 && decoded.theater === 0 && decoded.time === 0
+          && decoded.players === 2 && decoded.ore === 1 && decoded.single === false
+          && decoded.symmetry === 0 && decoded.seed === 20260913
+          // 地形种子 0 = 随机 since 2026-10-21: the box holds 0, the page rolls a
+          // non-zero value for each run (the engine's own 0 would freeze the terrain
+          // to the vanilla constant).  So the code carries SOMETHING non-zero here,
+          // and the reproducibility itself is checked in the two runs below.
+          && decoded.mapSeed > 0
+          && decoded.mapSeed <= 0xFFFFFFFF
+          // The size travels as the slider's index, not as a double: this is the
+          // value the codec refuses to guess (sharebits.js's header explains why).
+          && decoded.size === 1 && decoded.index === 10,
+        `${shareCode} -> ${JSON.stringify(decoded)}`);
+
+  // Clicking it must copy, and must say what actually happened -- the page falls
+  // back to selecting the text when the Clipboard API is refused, so both outcomes
+  // are honest and both are accepted here.  The wait is for the OUTCOME, not for
+  // "the note is non-empty": it starts out holding the hint, and the clipboard call
+  // is asynchronous (waiting on the hint reads it before the copy has resolved).
+  await page.click('#share-code');
+  const shareNote = await page.waitForFunction(
+    () => {
+      const t = document.getElementById('share-note').textContent.trim();
+      return /已复制|Ctrl\+C/.test(t) ? t : false;
+    },
+    { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
+  check('clicking the code reports a copy (or offers the manual one)',
+        shareNote !== null, shareNote === null ? 'the note never changed from the hint' : shareNote);
   const withDir = await readBlob();
   // The cache write is posted as `cache-saved` once OPFS is done; wait for the note
   // to say so rather than guessing a delay.
@@ -633,6 +763,718 @@ try {
           && restored.rectW === '200' && restored.rectH === '150',
         wrong.length ? `restored wrong: ${JSON.stringify(wrong)}`
                      : JSON.stringify(restored));
+
+  // ---- 参数集: importing a code, and the version it came from ----------------
+  //
+  // The export half is checked above (the code appears with the map and decodes back
+  // to that run).  This is the receiving half: a code made by ANOTHER build has to
+  // restore its parameters and say so, offering the 历史版本 switch that already
+  // exists -- carrying the code in the fragment, or the player lands on the old page
+  // with nothing to check.
+  //
+  // The page's own version.json / versions.json are served by interception: this
+  // runs from a source checkout, where neither file exists, and publishing a build
+  // is not something a test may do.
+  console.log('  参数集  importing a code from an older build');
+  {
+    const OWN_ENGINE = '30a88bb1c0ffee00';
+    const OLD_ENGINE = '9f1c02abdeadbeef';
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const u = new URL(req.url());
+      if (u.pathname === '/version.json') {
+        return req.respond({ contentType: 'application/json', body: JSON.stringify({
+          version: '2026.10.13.2', engine: OWN_ENGINE }) });
+      }
+      if (u.pathname === '/versions.json') {
+        return req.respond({ contentType: 'application/json', body: JSON.stringify({
+          current: '2026.10.13.2',
+          versions: [{ version: '2026.10.13.2', path: '/', engine: OWN_ENGINE },
+                     { version: '2026.10.11', path: '/v/2026.10.11/', engine: OLD_ENGINE }] }) });
+      }
+      return req.continue();
+    });
+
+    const code = encodeParams({
+      land: 1, theater: 0, time: 0, players: 2, ore: 1, single: false, symmetry: 4,
+      size: 1, width: 0, height: 0, seed: 424242, mapSeed: 0,
+      engine: enginePrefix(OLD_ENGINE),
+    }).code;
+
+    // A shared link is a real page load: set the fragment and RELOAD.  Navigating to
+    // the same path with only a different fragment is a same-document navigation --
+    // it fires hashchange but does not re-run the page, so version.json is not
+    // fetched again (which is how this check first failed, the page reporting "no
+    // version.json" while the interception above was serving one).
+    await page.evaluate((c) => { location.hash = `p=${c}`; }, code);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+    await waitForReady();
+    await page.waitForFunction(
+      () => /2026\.10\.11/.test(document.getElementById('import-note')?.textContent || ''),
+      { timeout: 30000 }).catch(() => {});
+    const imported = await page.evaluate(() => ({
+      note: document.getElementById('import-note').textContent.trim(),
+      noteIsError: /err/.test(document.getElementById('import-note').className),
+      switchHidden: document.getElementById('import-switch').hidden,
+      switchHref: document.getElementById('import-switch').getAttribute('href') || '',
+      land: document.getElementById('land').value,
+      symmetry: document.getElementById('symmetry').value,
+      seed: document.getElementById('seed').value,
+    }));
+    check('a code in the URL restores its parameters without a click',
+          imported.land === '1' && imported.symmetry === '4' && imported.seed === '424242'
+            && imported.noteIsError === false,
+          `land=${imported.land} symmetry=${imported.symmetry} seed=${imported.seed}`);
+    check('the page says the code came from another version',
+          /本页是 2026\.10\.13\.2/.test(imported.note) && /2026\.10\.11/.test(imported.note),
+          imported.note);
+    check('and offers the switch to it, carrying the code',
+          imported.switchHidden === false
+            && imported.switchHref === `/v/2026.10.11/#p=${code}`,
+          imported.switchHref);
+
+    // A code carrying TOP-BOTTOM has to be applied like any other kind (it used to be
+    // refused while the page withheld it).  The point of the check is that the page and
+    // the code agree again: the select ends up on 3, the form keeps the code's seed, and
+    // the note does not report an error.
+    const readForm = () => page.evaluate(() => ({
+      land: document.getElementById('land').value,
+      symmetry: document.getElementById('symmetry').value,
+      seed: document.getElementById('seed').value,
+      note: document.getElementById('import-note').textContent.trim(),
+      noteIsError: /err/.test(document.getElementById('import-note').className),
+    }));
+    await page.evaluate(() => { location.hash = ''; });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+    await waitForReady();
+
+    const topBottom = encodeParams({
+      land: 3, theater: 0, time: 0, players: 2, ore: 1, single: false, symmetry: 3,
+      size: 1, width: 0, height: 0, seed: 777777, mapSeed: 0,
+      engine: enginePrefix(OWN_ENGINE),
+    }).code;
+    await page.evaluate((c) => { location.hash = `p=${c}`; }, topBottom);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+    await waitForReady();
+    await page.waitForFunction(
+      () => document.getElementById('symmetry')?.value === '3',
+      { timeout: 30000 }).catch(() => {});
+    const applied = await readForm();
+    check('a code using 上下对称 restores it (the kind ships again)',
+          applied.symmetry === '3' && applied.land === '3' && applied.seed === '777777'
+            && !applied.noteIsError,
+          applied.note);
+
+    // A rectangle code takes the other commit path in applyDecodedShare: 长 × 宽 mode
+    // plus the two number inputs, instead of the slider.
+    const rectCode = encodeParams({
+      land: 1, theater: 0, time: 0, players: 2, ore: 1, single: false, symmetry: 0,
+      size: 0, width: 380, height: 100, seed: 31337, mapSeed: 0,
+      engine: enginePrefix(OWN_ENGINE),
+    }).code;
+    await page.$eval('#import-code', (e, v) => { e.value = v; }, rectCode);
+    await page.click('#import-go');
+    await page.waitForFunction(
+      () => document.querySelector('#size-mode button.on')?.dataset.mode === 'rect',
+      { timeout: 10000 }).catch(() => {});
+    const rectImport = await page.evaluate(() => ({
+      mode: document.querySelector('#size-mode button.on')?.dataset.mode,
+      w: document.getElementById('rect-w').value,
+      h: document.getElementById('rect-h').value,
+      seed: document.getElementById('seed').value,
+      note: document.getElementById('import-note').textContent.trim(),
+    }));
+    check('a rectangle code restores 长 × 宽 mode and both sides',
+          rectImport.mode === 'rect' && rectImport.w === '380' && rectImport.h === '100'
+            && rectImport.seed === '31337' && /相同/.test(rectImport.note),
+          JSON.stringify(rectImport));
+  }
+
+  // ======================= 画廊 (gallery.html) =======================
+  //
+  // The second page: a catalogue of 参数集 maintained by hand in a text file, where the
+  // tag on every card is DECODED from the code rather than typed next to it.  It gets
+  // its own checks because it is one header click from the generator, and every one of
+  // its promises can rot silently: the list file, the batch machinery, the links that
+  // carry a code, the chips that claim to describe it, and the card that has to land in
+  // the generator with those parameters actually loaded.
+  //
+  // Runs LAST on purpose: it reuses the OPFS asset cache the earlier sections filled, so
+  // the generator it opens is ready without a game directory.
+  const gal = await browser.newPage();
+  await gal.setViewport({ width: 1280, height: 900 });
+  gal.on('pageerror', (e) => lines.push(`[gallery pageerror] ${e.message}`));
+  gal.on('console', (m) => { if (m.type() === 'error') lines.push(`[gallery console] ${m.text()}`); });
+
+  // A synthetic version, so "is this from another build?" has a known answer.  The engine
+  // id is the one the fixture entries (below) use for their OLD builds: that makes
+  // 另一个版本 appear on exactly the cards whose code says so, which is what gets checked.
+  const GALLERY_ENGINE = '9f1c02abdeadbeef';
+
+  // The list is the repository's own file first: that is what ships, and the checks below
+  // validate whatever the curator has put in it.  When it is EMPTY -- which is how the
+  // site ships, the first entry being the curator's to add -- a fixture is served over
+  // interception instead, so an empty file never means an untested gallery.  The empty
+  // state itself is checked first, against the real file, because that is what a visitor
+  // would see today.
+  const listText = (() => {
+    const real = fs.readFileSync(path.join(ROOT, 'webapp/gallery.txt'), 'utf8');
+    const codes = real.split(/\r?\n/).map((l) => l.trim())
+      .filter((l) => l !== '' && !l.startsWith('#')).map((l) => l.split('|')[0].trim());
+    if (codes.length > 0) return { text: real, fixture: false };
+    const legal = (over) => encodeParams({ land: 1, theater: 0, time: 0, players: 4, ore: 1,
+      single: false, symmetry: 1, size: sizeFromIndex(30, 0.1), width: 0, height: 0,
+      seed: 20260913, mapSeed: 0, engine: enginePrefix(GALLERY_ENGINE), ...over }).code;
+    return { fixture: true, text: [
+      '# 夹具：仓库里那份清单是空的（站点就是这样发布的），这一份由验收脚本通过请求拦截喂给页面。',
+      `${legal({})} | 测试甲 | 2026-01-02 | 甲图 | 夹具条目：本版能做的方形图。`,
+      // 乙图 carries a THIRD engine id on purpose: that is what makes the card show
+      // 另一个版本, and it is still buildable here (only the code's provenance differs).
+      `${legal({ land: 3, size: sizeFromIndex(9, 0.1), width: 200, height: 150, engine: 200 })} | 测试乙 | 2026-01-03 | 乙图 | 夹具条目：非方图，码里是另一个版本。`,
+      // 丙图 is the withdrawn kind AND says this very build made it -- the case with
+      // nowhere to send the player, so no switch may be offered (a switch is only useful
+      // when the code names another build; see describeShareOrigin).
+      `${legal({ land: 2, players: 6, symmetry: 3, size: sizeFromIndex(9, 0.1), seed: 24680 })} | 测试丙 | 2026-01-04 | 丙图 | 夹具条目：上下对称，本版已撤回。`,
+      // 只做「能不能换一批 / 刷新换顺序」这类检查需要"批里不止一条、且整体多于一批"：
+      // 夹具原来只有 3 条（其中一条还是被撤回的那种），批大小就等于条数，顺序根本无从改变 ——
+      // 那两条检查因此恒定失败。补几条本版能做的，让洗牌真的有东西可换。
+      `${legal({ symmetry: 2, seed: 11111 })} | 测试丁 | 2026-01-05 | 丁图 | 夹具条目：旋转对称。`,
+      `${legal({ symmetry: 4, seed: 22222 })} | 测试戊 | 2026-01-06 | 戊图 | 夹具条目：旋转对称（另一版）。`,
+      `${legal({ water: 2, seed: 33333 })} | 测试己 | 2026-01-07 | 己图 | 夹具条目：多水。`,
+      `${legal({ players: 2, size: sizeFromIndex(15, 0.1), seed: 44444 })} | 测试庚 | 2026-01-08 | 庚图 | 夹具条目：小图两玩家。`,
+    ].join('\n') + '\n' };
+  })();
+  if (listText.fixture) {
+    console.log('  note   gallery.txt 是空的：清单相关的检查改用夹具（页面状态仍按真实文件检查）');
+  }
+
+  const galleryUrl = new URL('gallery.html', args.url).href;
+  await gal.goto(galleryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+  await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
+  check('gallery page opened', true, galleryUrl);
+
+  if (listText.fixture) {
+    const shipped = await gal.evaluate(() => ({
+      count: document.getElementById('count').textContent.trim(),
+      empty: document.getElementById('empty').hidden ? '' : document.getElementById('empty').textContent.trim(),
+      maps: document.querySelectorAll('.card:not(.tile)').length,
+      tile: !!document.querySelector('.card.tile'),
+      more: document.getElementById('more').hidden,
+      banner: document.getElementById('sample').hidden ? '' : document.getElementById('sample').textContent.trim(),
+    }));
+    check('an empty gallery says so, offers the door, and shows no error',
+          shipped.maps === 0 && /还没有收录地图/.test(shipped.empty) && shipped.tile
+            && shipped.more === true && shipped.banner === '' && /^0 \/ 0/.test(shipped.count),
+          JSON.stringify(shipped));
+    await gal.setRequestInterception(true);
+  }
+  gal.on('request', (req) => {
+    const url = req.url().split('?')[0];
+    if (listText.fixture && url.endsWith('/gallery.txt')) {
+      return req.respond({ contentType: 'text/plain; charset=utf-8', body: listText.text });
+    }
+    if (url.endsWith('/version.json')) {
+      return req.respond({ contentType: 'application/json', body: JSON.stringify({
+        version: '2099.01.01', commit: 'c0ffee1',
+        builtAt: '2099-01-01T00:00:00+0800', engine: GALLERY_ENGINE }) });
+    }
+    if (url.endsWith('/versions.json')) {
+      return req.respond({ contentType: 'application/json', body: JSON.stringify({
+        current: '2099.01.01',
+        versions: [{ version: '2099.01.01', path: '/', commit: 'c0ffee1', engine: GALLERY_ENGINE }] }) });
+    }
+    req.continue();
+  });
+  if (listText.fixture) {
+    await gal.reload({ waitUntil: 'networkidle2', timeout: 60000 });
+    await gal.waitForFunction(() => document.querySelectorAll('.card:not(.tile)').length > 0,
+                              { timeout: 30000 });
+  }
+
+  // Parsed here the way the page parses it, so "one line per card" is checked against the
+  // list and not against the page.  The list is a SET -- the page shuffles it on every
+  // load -- so nothing below may assume the cards come out in file order; every
+  // expectation is derived from the code each card carries.
+  const galleryLines = listText.text
+    .split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
+  const fileCodes = galleryLines.map((l) => l.split('|')[0].trim());
+  // A code of our own for the checks that just need "a valid 参数集" (the import hint
+  // below): generated here rather than taken from gallery.txt, which ships EMPTY -- the
+  // first real entry is the curator's to add.
+  const sampleCode = encodeParams({ land: 1, theater: 0, time: 0, players: 4, ore: 1,
+    single: false, symmetry: 1, size: sizeFromIndex(30, 0.1), width: 0, height: 0,
+    seed: 20260913, mapSeed: 0, engine: enginePrefix(GALLERY_ENGINE) }).code;
+  const PAGE_SIZE = 24;                       // keep in step with webapp/gallery.js
+  const batchSize = Math.min(galleryLines.length, PAGE_SIZE);
+
+  const galCards = await gal.$$eval('.card', (ns) => ns.map((n) => ({
+    tile: n.classList.contains('tile'),
+    title: n.querySelector('.title')?.textContent.trim() || '',
+    code: n.querySelector('.code')?.textContent.trim() || '',
+    href: n.querySelector('a.hit')?.getAttribute('href') || '',
+    chips: [...n.querySelectorAll('.chip')].map((c) => c.textContent.trim()),
+    tags: [...n.querySelectorAll('.tag')].map((c) => c.textContent.trim()),
+  })));
+  const mapCards = galCards.filter((c) => !c.tile);
+  check(`gallery draws a batch of gallery.txt (${batchSize} of ${galleryLines.length})`,
+        mapCards.length === batchSize, `cards=${mapCards.length}`);
+  check('and every card it drew came from the file, exactly once',
+        new Set(mapCards.map((c) => c.code)).size === mapCards.length
+          && mapCards.every((c) => fileCodes.includes(c.code)),
+        mapCards.map((c) => c.code).filter((c) => !fileCodes.includes(c)).join(' '));
+  const tile = galCards.find((c) => c.tile);
+  check('the grid closes with a "自己摇一张" tile that opens the generator',
+        galCards.filter((c) => c.tile).length === 1
+          && tile === galCards[galCards.length - 1] && tile.href === './index.html',
+        tile && tile.href);
+
+  // Every card carries its code into the generator, and that code decodes.
+  const badHref = mapCards.filter((c) => !/^\.\/index\.html#p=[A-Za-z0-9_-]+$/.test(c.href));
+  check('every card links into the generator with its 参数集 in the fragment',
+        badHref.length === 0, badHref.map((c) => `${c.title}:${c.href}`).join(' '));
+  const undecodable = mapCards.filter((c) => {
+    try { decodeParams((/#p=([A-Za-z0-9_-]+)$/.exec(c.href) || [])[1] || ''); return false; }
+    catch { return true; }
+  });
+  check('every code a card carries decodes', undecodable.length === 0,
+        undecodable.map((c) => c.code).join(' '));
+
+  // The chips have to come from the code.  Checked two ways, because the two pages word
+  // a chip differently on purpose: the gallery has no field label in front of it (it
+  // says 无对称 where the <select> says 无), so the fields with a shared wording are
+  // compared exactly, and the ones that legitimately differ are pinned as one stable,
+  // DISTINCT word per value.  That is what breaks when someone types a tag next to a
+  // code instead of letting it decode.
+  const pairs = mapCards.map((card) => ({ card, p: decodeParams(card.code) }));
+  // An EMPTY list is a legitimate state -- it is what the site ships with, before anyone
+  // submits a map -- so everything below that needs entries is guarded rather than
+  // assumed.  Where a check has nothing to look at it says so in its detail line instead
+  // of passing silently: "ok" with a reason is honest, an invisible skip is not.
+  const hasEntries = pairs.length > 0;
+  const EMPTY_LIST = '(gallery.txt 还没有条目)';
+  const playersBad = pairs.filter(({ p, card }) => !card.chips.includes(`${p.players} 人`));
+  const sizeBad = pairs.filter(({ p, card }) => !card.chips.some((c) => (p.width > 0
+    ? c === `${p.width} × ${p.height}` : /^尺寸 /.test(c))));
+  check('the 人数 and 尺寸 chips match the decoded code on every card',
+        playersBad.length === 0 && sizeBad.length === 0,
+        `players=${playersBad.length} size=${sizeBad.length} of ${pairs.length}`);
+
+
+  const galleryLand = hasEntries
+    ? await page.evaluate((land) =>
+        document.querySelector(`#land option[value="${land}"]`)?.textContent.trim() || null,
+        String(pairs[0].p.land))
+    : null;
+  check('the environment chip is the word the generator itself uses',
+        !hasEntries || (!!galleryLand && pairs[0].card.chips[0] === galleryLand),
+        hasEntries ? `${pairs[0].card.chips[0]} vs select=${galleryLand}` : EMPTY_LIST);
+  for (const [field, position] of [['环境', 0], ['对称', 2]]) {
+    const perValue = new Map();
+    for (const { p, card } of pairs) {
+      const key = field === '环境' ? p.land : p.symmetry;
+      if (!perValue.has(key)) perValue.set(key, new Set());
+      perValue.get(key).add(card.chips[position] || '');
+    }
+    const values = [...perValue.keys()];
+    const texts = values.map((v) => [...perValue.get(v)][0]);
+    check(`the ${field} chip is one stable, distinct word per value (${values.length} values)`,
+          values.every((v) => perValue.get(v).size === 1 && [...perValue.get(v)][0] !== '')
+            && new Set(texts).size === texts.length,
+          texts.join(' / '));
+  }
+  // Two decoded fields are deliberately NOT chips (user decision, 2026-10-21): the
+  // map-type layout (多人 .yrm / 单人 .map) and the "换过地形种子" note.  Pinned here so
+  // they cannot quietly come back.
+  const hiddenChips = pairs.filter(({ card }) => card.chips.some(
+    (c) => /\.yrm|\.map|地形种子/.test(c)));
+  check('the map-type and terrain-seed chips are not shown on cards',
+        hiddenChips.length === 0,
+        hiddenChips.length ? `${hiddenChips.length} card(s) still carry one` : EMPTY_LIST);
+
+  // Cards from another build say so, and the count comes from the codes actually drawn:
+  // decoded engine id against this page's engine, never from what the page claims.
+  const mine = enginePrefix(GALLERY_ENGINE);
+  const expectMarked = pairs.filter(({ p }) => p.engine && p.engine !== mine).length;
+  const drawnMarked = mapCards.filter((c) => c.tags.includes('另一个版本')).length;
+  check('cards from another build are marked, counted from their own codes',
+        drawnMarked === expectMarked, `drawn=${drawnMarked} expected=${expectMarked}`);
+
+  // The batches: the button, the automatic load on scroll, and the end of the list.
+  const moreNow = await gal.$eval('#more', (b) => ({ hidden: b.hidden, text: b.textContent.trim() }));
+  if (galleryLines.length > PAGE_SIZE) {
+    check('a 加载更多 button says how many are left',
+          !moreNow.hidden && /还有 \d+ 条/.test(moreNow.text), moreNow.text);
+    await gal.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await gal.waitForFunction((n) => document.querySelectorAll('.card:not(.tile)').length === n,
+                              { timeout: 20000 }, galleryLines.length);
+    const gone = await gal.$eval('#more', (b) => b.hidden);
+    check('scrolling to the bottom loads the rest, and the button goes away',
+          gone === true, `cards=${galleryLines.length}`);
+  } else {
+    check('the whole list fits in one batch (no button)', moreNow.hidden, moreNow.text);
+  }
+
+  // ---- the order is deliberately meaningless --------------------------------
+  // gallery.txt is a set: every load shuffles it, so there is no "position" to maintain
+  // and adding an entry never means deciding where it goes.  The properties below are
+  // about ORDER only -- because the batch is a random 24 of 26, the cards on screen can
+  // legitimately differ between two reads (which is the point of the shuffle), so an
+  // assertion about "the same cards" would be testing the wrong thing.
+  const drawnCodes = () => gal.$$eval('.card:not(.tile) .code',
+    (ns) => ns.map((n) => n.textContent.trim()));
+  const sharedInOrder = (a, b) => b.filter((c) => a.includes(c)).join();
+  const defaultSort = await gal.$eval('#f-sort', (s) => s.value);
+  check('排序 defaults to 随机', defaultSort === 'random', defaultSort);
+
+  if (!hasEntries) {
+    check('the shuffle / batch behaviour needs entries', true, EMPTY_LIST);
+  } else {
+  const beforeFilter = await drawnCodes();
+  await gal.select('#f-land', String(pairs[0].p.land));
+  await new Promise((r) => setTimeout(r, 250));
+  const filtered = await drawnCodes();
+  await gal.select('#f-land', '');
+  await new Promise((r) => setTimeout(r, 250));
+  const backAgain = await drawnCodes();
+  // The batch length itself may differ (clearing a filter re-batches, and the auto-load
+  // may not have fired yet), so compare the cards both reads share -- in relative order.
+  check('filtering keeps every card where it was (the shuffle is per load, not per render)',
+        sharedInOrder(beforeFilter, backAgain) === sharedInOrder(backAgain, beforeFilter)
+          && filtered.length > 0
+          && filtered.join() === sharedInOrder(beforeFilter, filtered),
+        `${beforeFilter.length} → ${filtered.length} → ${backAgain.length}`);
+
+  await gal.click('#f-again');
+  await new Promise((r) => setTimeout(r, 250));
+  const afterAgain = await drawnCodes();
+  // 换一批 starts the batches over AND re-draws which cards are in the batch: a new order
+  // over a newly drawn subset is still "a different gallery", so all that is asserted is
+  // that the order changed and nothing invented appeared.
+  const overlap = Math.min(backAgain.length, afterAgain.length);
+  const sameSpots = afterAgain.slice(0, overlap).filter((c, i) => c === backAgain[i]).length;
+  check('换一批 draws a new order without a reload',
+        overlap > 1 && sameSpots < overlap && afterAgain.every((c) => fileCodes.includes(c)),
+        `same positions: ${sameSpots}/${overlap} drawn=${afterAgain.length}`);
+
+  await gal.goto(galleryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+  await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
+  const nextLoad = await drawnCodes();
+  check('a reload comes back in a different order (1 in 26! by chance)',
+        nextLoad.join() !== afterAgain.join(),
+        `same positions: ${nextLoad.filter((c, i) => c === afterAgain[i]).length}/${nextLoad.length}`);
+  await gal.select('#f-sort', 'new');
+  await new Promise((r) => setTimeout(r, 250));
+  const newest = await gal.$eval('.card:not(.tile) .meta', (m) => m.textContent.trim());
+  await gal.select('#f-sort', 'old');
+  await new Promise((r) => setTimeout(r, 250));
+  const oldest = await gal.$eval('.card:not(.tile) .meta', (m) => m.textContent.trim());
+  check('最新 / 最早 are still real date sorts (and disagree)',
+        newest !== oldest, `${newest} vs ${oldest}`);
+  await gal.select('#f-sort', 'random');
+  await new Promise((r) => setTimeout(r, 250));
+  }
+
+  // The footer this page shares with the generator.  verify_deploy checks the source and
+  // the served bytes; this checks the RENDERED page, which a CSS rule could hide.
+  const footText = await gal.$eval('footer.foot', (f) => f.innerText);
+  check('the gallery footer shows the filing numbers',
+        /苏ICP备2023037209号-2/.test(footText) && /苏公网安备32081202000454号/.test(footText)
+          && /与 EA 无关/.test(footText));
+
+  // 投稿 is a function of the site, not decoration: the group number appears where a
+  // player decides to submit (the tile, and the export block right after a map) and in
+  // the footer.  Read out of the footer instead of hard-coded, so changing the group is
+  // one edit -- and forgetting one of these spots fails here rather than silently
+  // sending people to a dead group.
+  const groupNo = (/(?:QQ 群|QQ群)\s*(\d{6,12})/.exec(footText) || [])[1] || '';
+  const tileTip = await gal.$eval('.tile-tip', (e) => e.textContent.trim());
+  const shareTip = await page.$eval('.share-tip', (e) => e.textContent.trim());
+  check('the 投稿 spots all carry the footer\'s group number',
+        !!groupNo && tileTip.includes(groupNo) && shareTip.includes(groupNo),
+        `${groupNo || '(没读到群号)'} tile=${tileTip.includes(groupNo)} share=${shareTip.includes(groupNo)}`);
+
+  // The gallery link in the import box is part of the HINT line, and that is the whole
+  // point of it: "paste the code you were sent" and "where would I get one" are two
+  // halves of one thought, so they are one line -- and the link leaves with the hint,
+  // because every other state (已载入 / 本页做不出来 / 读不出来) replaces the line with
+  // status text.  Measured 2026-10-14: as a SIBLING element it stayed up next to
+  // "参数集读不出来", which read as if the box were still empty.
+  //
+  // Driven in-page instead of with page.click(): the mouse path scrolls the element into
+  // view first, and this page has just run a render (which smooth-scrolls).  What is
+  // under test is the button's handler, not Chrome's hit-testing.  A race, so that a
+  // stalled renderer fails THIS check with a reason instead of hanging the whole suite
+  // (measured: under load a single CDP call stalled long enough to abort a 180 s run).
+  const inPage = (fn, arg) => Promise.race([
+    page.evaluate(fn, arg), new Promise((r) => setTimeout(() => r('(stalled)'), 20000)),
+  ]);
+  const readNote = () => inPage(() => {
+    const n = document.getElementById('import-note');
+    const a = n.querySelector('a');
+    return { text: n.textContent.trim(), href: a ? a.getAttribute('href') : '',
+             links: n.querySelectorAll('a').length, cls: n.className };
+  });
+  await inPage(() => { document.getElementById('import-code').value = ''; });
+  await inPage(() => { document.getElementById('import-go').click(); });
+  await new Promise((r) => setTimeout(r, 250));
+  const hintNote = await readNote();
+  // An unreadable code is the interesting state: it must NOT look like an empty box.
+  await inPage(() => { document.getElementById('import-code').value = 'not-a-code!!'; });
+  await inPage(() => { document.getElementById('import-go').click(); });
+  await new Promise((r) => setTimeout(r, 250));
+  const badNote = await readNote();
+  await inPage((code) => { document.getElementById('import-code').value = code; }, sampleCode);
+  await inPage(() => { document.getElementById('import-go').click(); });
+  await new Promise((r) => setTimeout(r, 250));
+  const afterNote = await readNote();
+  check('the import hint carries the gallery link, and the link leaves with the hint',
+        hintNote.href === './gallery.html' && /没有码/.test(hintNote.text) && hintNote.links === 1
+          && badNote.links === 0 && /读不出来/.test(badNote.text) && badNote.cls.includes('err')
+          && afterNote.links === 0 && afterNote.text.length > 0,
+        JSON.stringify({ hint: hintNote.text.slice(0, 24), bad: badNote.text.slice(0, 20),
+                         after: afterNote.text.slice(0, 20) }));
+
+  // 画廊 / 历史版本 / 设置 are one toolbar row: same height, and that height is the
+  // bar's -- no vertical inset.  A deliberate design decision (they used to be centred
+  // 22-30px pills in a 55px bar), so it gets a check instead of a comment.
+  //
+  // The vertical offset is measured on the CONTENT, not assumed from the box: stretching
+  // a <a> leaves its label at the top edge (measured: 优秀地图画廊 sat against the top
+  // while the neighbouring <button> was centred, because buttons centre their own
+  // content and anchors do not), and .minibtn.hot's later display:inline-block silently
+  // won over an inline-flex in a block that came earlier.
+  const chromeRow = await inPage(() => {
+    const bar = document.querySelector('.bar').getBoundingClientRect();
+    return { barH: Math.round(bar.height), barTop: Math.round(bar.top),
+      items: ['gallery-open', 'hist-open', 'settings-open'].map((id) => {
+        const el = document.getElementById(id);
+        const r = el.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const cr = range.getBoundingClientRect();
+        return { id, h: Math.round(r.height), top: Math.round(r.top),
+                 font: getComputedStyle(el).fontSize,
+                 off: Math.round(((cr.top + cr.bottom) / 2) - ((r.top + r.bottom) / 2)) };
+      }) };
+  });
+  check('the three header controls are one size, filling the bar (no vertical inset)',
+        !!chromeRow.items && chromeRow.items.every((i) => Math.abs(i.h - chromeRow.items[0].h) <= 1
+          && i.top === chromeRow.barTop && i.h >= chromeRow.barH - 2
+          && i.font === chromeRow.items[0].font),
+        JSON.stringify(chromeRow));
+  check('and their labels are centred in them, not glued to the top',
+        !!chromeRow.items && chromeRow.items.every((i) => Math.abs(i.off) <= 1),
+        chromeRow.items.map((i) => `${i.id}:${i.off}px`).join(' '));
+
+  // Responsive: measured, not read out of the CSS.  The defect this pins was a 1240px
+  // container that left 230px dead on each side of an ordinary 1700px window while the
+  // cards sat at 255px.  A column-count jump can make the width dip slightly, so the
+  // growth test has slack; "uses the window" does not.
+  const geo = [];
+  for (const w of [1280, 1700, 2100]) {
+    await gal.setViewport({ width: w, height: 900 });
+    await new Promise((r) => setTimeout(r, 150));
+    geo.push(await gal.evaluate(() => {
+      // A map card when there is one; an empty list still renders the tile, and the grid
+      // width (the property under test) exists in both states.  Measured 2026-10-14:
+      // querying '.card:not(.tile)' unguarded threw on the empty list and aborted the run.
+      const card = document.querySelector('.card:not(.tile)') || document.querySelector('.card');
+      return {
+        vw: innerWidth,
+        card: card ? Math.round(card.getBoundingClientRect().width) : 0,
+        grid: Math.round(document.getElementById('grid').getBoundingClientRect().width),
+        overflow: document.documentElement.scrollWidth > innerWidth + 1,
+      };
+    }));
+  }
+  check('the grid uses the window it is given (no dead gutters) and never overflows',
+        geo.every((g) => !g.overflow && g.grid / g.vw > 0.9),
+        geo.map((g) => `${g.vw}:${g.grid}`).join(' '));
+  check('and the cards get wider with the window',
+        !hasEntries || (geo[1].card > geo[0].card * 1.15 && geo[2].card > geo[0].card * 1.15),
+        hasEntries ? geo.map((g) => `${g.vw}:${g.card}`).join(' ') : EMPTY_LIST);
+
+  // The whole point: a card click lands in the generator with that 参数集 loaded.
+  // Read the cards AGAIN rather than reusing the snapshot: the shuffle checks above
+  // re-ordered the grid and reloaded the page, so the card at the top is a different one.
+  //
+  // And it has to be a card this build can actually MAKE.  The list deliberately
+  // contains two it cannot (the withdrawn 上下对称) and a shuffled order can put one of
+  // those on top -- so "can make it" is ASKED OF THE PAGE rather than re-derived here:
+  // set the entry's environment / player count / theatre in the controls and read the
+  // slider limit the engine just handed the page.  Re-deriving that table (or checking
+  // only the symmetry, which is what this did first) silently disagrees: measured
+  // 2026-10-14, 4 of the 26 sample entries exceeded their per-environment size limit
+  // while the symmetry-only probe called them fine, so the check picked one and the page
+  // refused it -- and the sample data was wrong, not the page.
+  await gal.setViewport({ width: 1280, height: 900 });
+  const symChoices = await page.$$eval('#symmetry option',
+    (ns) => ns.map((o) => ({ v: o.value, off: o.disabled })));
+  const sizeLimitFor = async (p) => inPage((pp) => {
+    const set = (id, v) => { const e = document.getElementById(id); e.value = String(v);
+      e.dispatchEvent(new Event('change', { bubbles: true })); };
+    set('land', pp.land); set('players', pp.players); set('theater', pp.theater);
+    return Number(document.getElementById('size').max);
+  }, p);
+  const topCards = await gal.$$eval('.card:not(.tile)', (ns) => ns.map((n) => ({
+    code: n.querySelector('.code').textContent.trim(),
+    chips: [...n.querySelectorAll('.chip')].map((c) => c.textContent.trim()),
+  })));
+
+  // Every entry must be one this build can actually PRODUCE -- the gallery's promise is
+  // "click a card and get that map", and the page refuses rather than clamping.  This is
+  // the check that was missing: measured 2026-10-14, 4 of the 26 sample entries exceeded
+  // their per-environment size limit (a 大岛屿 map with 2 players caps at 3.6, and nothing
+  // said so), so those cards led straight to a red refusal.
+  //
+  // One exception, on purpose: a code asking for the withdrawn 上下对称 may be
+  // unbuildable HERE as long as it says which build made it -- that refusal is the version
+  // story, and the switch it offers is only useful because the marker is there.
+  const unbuildable = [];
+  for (const { p, card } of pairs) {
+    const opt = symChoices.find((x) => x.v === String(p.symmetry));
+    if (!opt || opt.off || p.symmetry === 3) {
+      if (!p.engine) unbuildable.push(`${card.code}: 用了本页没有的对称，却没标是哪个版本做的`);
+      continue;
+    }
+    if (p.width > 0) continue;                    // rectangles: their limit is not read here
+    const sizeMaxHere = await sizeLimitFor(p);
+    if (!(typeof sizeMaxHere === 'number' && p.size <= sizeMaxHere + 1e-9)) {
+      unbuildable.push(`${card.code}: 尺寸 ${p.size} 超过该环境上限 ${sizeMaxHere}`);
+    }
+  }
+  check('every entry this build is supposed to make is one it can actually make',
+        unbuildable.length === 0, unbuildable.join(' | '));
+  // Two different questions, so two different paths -- conflating them made this check
+  // demand a refusal from a rectangle the page accepts (measured: it clicked a 380×100
+  // card, the page loaded it, and the check failed on its own bookkeeping):
+  //   * makeable: a square card this build can produce (rectangles are skipped here only
+  //     because their limit is not read out below -- not because they are refused);
+  //   * refused: a card the page will actually reject, which is the withdrawn symmetry
+  //     (decidable from the <select> alone) or a size past the environment's limit.
+  let makeable = null;
+  let refusedCard = null;
+  for (const c of topCards) {
+    const p = decodeParams(c.code);
+    const opt = symChoices.find((x) => x.v === String(p.symmetry));
+    if (!opt || opt.off || p.symmetry === 3) {
+      if (!refusedCard) refusedCard = c;
+    } else if (p.width === 0) {
+      const max = await sizeLimitFor(p);
+      if (typeof max === 'number' && p.size <= max + 1e-9) { if (!makeable) makeable = c; }
+      else if (!refusedCard) refusedCard = c;
+    }
+    if (makeable && refusedCard) break;
+  }
+  check('the shuffled top of the list includes a card this build can make',
+        !hasEntries || !!makeable, hasEntries ? `of ${topCards.length} drawn` : EMPTY_LIST);
+  if (makeable) {
+    const firstP = decodeParams(makeable.code);
+    await gal.click(`a.hit[href="./index.html#p=${makeable.code}"]`);
+    await gal.waitForFunction(
+      () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+      { timeout: 120000 });
+    const landedGal = await gal.evaluate(() => ({
+      hash: location.hash,
+      seed: document.getElementById('seed').value,
+      land: document.getElementById('land').value,
+      banner: document.getElementById('landing').hidden
+        ? '' : document.getElementById('landing-what').textContent.trim(),
+    }));
+    check('clicking a card opens the generator with that code loaded and applied',
+          landedGal.hash === `#p=${makeable.code}` && landedGal.seed === String(firstP.seed)
+            && landedGal.land === String(firstP.land),
+          JSON.stringify(landedGal));
+    // ...and the two pages describe that loaded code with the SAME words.  The banner
+    // reads 环境 · N 人 · 对称 · 尺寸, the card draws the same four as chips; a player who
+    // clicks a card should not see the parameters renamed on arrival.
+    const bannerFields = landedGal.banner.split(' · ');
+    check('and the landing banner names them the way the card did',
+          bannerFields.length === 4 && bannerFields[0] === makeable.chips[0]
+            && bannerFields[1] === makeable.chips[1] && bannerFields[2] === makeable.chips[2]
+            && bannerFields[3] === makeable.chips[3],
+          `${JSON.stringify(bannerFields)} vs ${JSON.stringify(makeable.chips.slice(0, 4))}`);
+  }
+
+  // The other half of a SHUFFLED list: sooner or later the top card is one this build
+  // cannot make.  That must be loud (a red banner naming the reason) and must leave the
+  // form alone -- silently generating something else is the failure mode this whole
+  // version story exists to prevent.
+  // Prefer one the shuffle actually drew (that is the path a player meets); otherwise the
+  // withdrawn kind, which the sample list keeps on purpose, so this never degenerates
+  // into "nothing to test".
+  const unmakeableCode = (refusedCard && refusedCard.code)
+    || fileCodes.find((c) => decodeParams(c).symmetry === 3);
+  if (unmakeableCode) {
+    // The GENERATOR with the code in its fragment (not the gallery): this is what a card
+    // click does, minus the card.  goto alone would be a same-document navigation when
+    // the path is already index.html, so the reload is what makes it boot and apply.
+    const genUrl = new URL('index.html', args.url).href;
+    await gal.goto(`${genUrl}#p=${unmakeableCode}`, { waitUntil: 'domcontentloaded' });
+    await gal.reload({ waitUntil: 'networkidle2' });
+    await gal.waitForFunction(
+      () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+      { timeout: 120000 });
+    const refusedGal = await gal.evaluate(() => ({
+      hidden: document.getElementById('landing').hidden,
+      bad: document.getElementById('landing').classList.contains('bad'),
+      lead: document.getElementById('landing-lead').textContent.trim(),
+      what: document.getElementById('landing-what').textContent.trim(),
+      go: document.getElementById('landing-go').hidden,
+      switchText: document.getElementById('landing-switch').textContent.trim(),
+    }));
+    // The switch is offered only when the code came from ANOTHER engine AND that engine
+    // is one this site still publishes.  A refusal by the very build the code names has
+    // nowhere to send the player -- and pretending otherwise would be worse than saying
+    // nothing.  (The other-build case is covered by the import section above.)
+    const engineDiffers = decodeParams(unmakeableCode).engine !== mine;
+    check('a card this build cannot make is refused loudly, with a way out',
+          !refusedGal.hidden && refusedGal.bad === true && refusedGal.lead.length > 0
+            && refusedGal.what === '' && refusedGal.go === true
+            && (refusedGal.switchText.length > 0) === engineDiffers,
+          `${JSON.stringify(refusedGal)} engineDiffers=${engineDiffers}`);
+  } else {
+    check('a card this build cannot make is refused loudly, with a way out', true,
+          'no such card in the drawn batch (the list has none)');
+  }
+  await gal.close();
+
+  // ---- a slow start must not look like a broken one --------------------------
+  // The boot watchdog fires after 20 s, and a healthy start can exceed that on a loaded
+  // machine (692 KB of wasm to compile).  Measured 2026-10-14: the old wording blamed the
+  // Content-Type of mg_engine.wasm while the engine was still coming up, which sends
+  // whoever reads it after the wrong problem -- and it was the only thing a suite run saw
+  // when the machine was busy building something else.  Two cheap properties: the alarm
+  // says waiting may be all that is needed, and it clears itself when the module lands.
+  const slow = await browser.newPage();
+  await slow.setViewport({ width: 900, height: 700 });
+  slow.on('pageerror', (e) => lines.push(`[slow pageerror] ${e.message}`));
+  const wasmBody = fs.readFileSync(path.join(ROOT, 'webapp/mg_engine.wasm'));
+  await slow.setRequestInterception(true);
+  slow.on('request', async (req) => {
+    if (req.url().endsWith('mg_engine.wasm')) {
+      await new Promise((r) => setTimeout(r, 24000));
+      return req.respond({ status: 200, contentType: 'application/wasm', body: wasmBody });
+    }
+    req.continue();
+  });
+  await slow.goto(new URL('index.html', args.url).href,
+                  { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await slow.waitForFunction(
+    () => (document.getElementById('error')?.textContent || '').trim() !== '',
+    { timeout: 40000 });
+  const alarm = await slow.$eval('#error', (e) => e.textContent.trim());
+  check('a slow engine start warns without claiming the files are wrong',
+        /慢|继续等/.test(alarm), alarm.slice(0, 70));
+  await slow.waitForFunction(
+    () => /就绪/.test(document.getElementById('status')?.textContent || ''),
+    { timeout: 120000 });
+  const healed = await slow.evaluate(() => ({
+    error: document.getElementById('error').textContent.trim(), status: document.getElementById('status').textContent.trim(),
+  }));
+  check('and it heals itself when the module finally lands (no stale error)',
+        healed.error === '', JSON.stringify(healed).slice(0, 110));
+  await slow.close();
 
   console.log('\n  --- page + worker output ---');
   for (const l of lines.slice(-40)) console.log('  ' + l);
