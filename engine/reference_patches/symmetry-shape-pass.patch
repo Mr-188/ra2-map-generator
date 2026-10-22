@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-22 16:18:09.140337406 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-22 16:18:09.148924606 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-22 16:51:13.590478993 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-22 16:51:13.597946098 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -51,8 +51,8 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-22 16:18:09.140035079 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-22 16:18:09.149024152 +0800
+--- b/MapGenerator/MapGen.h	2026-10-22 16:51:13.590217934 +0800
++++ c/MapGenerator/MapGen.h	2026-10-22 16:51:13.598112364 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -334,8 +334,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:18:09.137327622 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:18:09.149091955 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:51:13.587228736 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:51:13.598215687 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -347,8 +347,8 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
 --- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 16:18:09.149926091 +0800
-@@ -0,0 +1,412 @@
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 16:51:13.598882630 +0800
+@@ -0,0 +1,437 @@
 +// ============================================================================
 +// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
 +// family (cliff01..40) and the multi-cell RAMP family (ramp01..10).
@@ -723,48 +723,73 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +        DiagLog("cliff-partner: %lld west pieces, %lld partner cells stamped",
 +                pieces, stamped);
 +
-+    // ---- the single-cell SLOPE family (slope01..20) ----------------------
++    // ---- the single-cell SLOPE family (slope01..20) and its ramp-edge twin ------
++    // The recalc lays these from each cell's own neighbour pattern, and that pass is not
++    // mirror-equivariant: an east cell can keep the SAME orientation as its west partner
++    // instead of the mirrored one (user's report of 2026-10-22, seen in the inspector:
++    // slope01 on both sides).  Rewriting the east cell by the corner pattern's
++    // transpose (kSlopeCornerMirror, the same relation FinalizeElevationSlopes uses for
++    // its micro-slopes) makes the pair exact.
++    //
++    // "Ramp edge fixup" (rmpfx01..12) is the same ramp-edge art in its own family and
++    // mirrors the same way, so one table covers both: the slope numbering.
 +    static const int kSlopeMirror[19] =
 +    {
 +        0, 2, 1, 4, 3, 5, 8, 7, 6, 9, 12, 11, 10, 13, 16, 15, 14, 17, 18
 +    };
-+    long long slopeSwapped = 0;
-+    const char* envMode = std::getenv("MG_CLIFF_PARTNER");
-+    if (rampBaseIndex_ >= 0 && envMode != nullptr && envMode[0] == '2')
-+    {
-+        for (int sy = 0; sy < slotRows_; ++sy)
-+            for (int sx = 0; sx < 512; ++sx)
++    // rmpfxNN -> the rmpfx number its mirror should hold.  Measured from the model map
++    // (majority of every mirrored pair): 01<->04, 02<->02, 03<->04, 04 swings between
++    // 01 and 03, 08<->11, 09<->11.  Numbers with no consistent partner keep their own.
++    static const int kRmpfxMirror[13] = { 0, 4, 2, 4, 3, 5, 6, 7, 11, 11, 10, 8, 12 };
++    long long slopeSwapped = 0, rmpfxSwapped = 0;
++    for (int sy = 0; sy < slotRows_; ++sy)
++        for (int sx = 0; sx < 512; ++sx)
++        {
++            MapCell* c = cellSlots_[512 * sy + sx];
++            if (c == nullptr)
++                continue;
++            const int wx = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
++            const int wy = static_cast<int>(static_cast<int16_t>(
++                static_cast<uint32_t>(c->MapCoords) >> 16));
++            if (!(wx < wy))
++                continue;                              // one direction only
++            const int16_t tx = static_cast<int16_t>(wy), ty = static_cast<int16_t>(wx);
++            if (!CellExists(tx, ty))
++                continue;
++            MapCell* e = CellAt(tx, ty);
++            if (e == nullptr)
++                continue;
++            if (rampBaseIndex_ >= 0)
 +            {
-+                MapCell* c = cellSlots_[512 * sy + sx];
-+                if (c == nullptr)
-+                    continue;
 +                const int base = c->IsoTileTypeIndex - rampBaseIndex_;
-+                if (base < 0 || base >= 19)
++                if (base >= 0 && base < 19)
++                {
++                    const int mb = kSlopeMirror[base + 1];
++                    e->IsoTileTypeIndex = rampBaseIndex_ + (mb ? mb - 1 : 0);
++                    e->SlopeIndex = mb;
++                    ++slopeSwapped;
 +                    continue;
-+                const int wx = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
-+                const int wy = static_cast<int>(static_cast<int16_t>(
-+                    static_cast<uint32_t>(c->MapCoords) >> 16));
-+                if (!(wx < wy))
-+                    continue;
-+                const int16_t tx = static_cast<int16_t>(wy), ty = static_cast<int16_t>(wx);
-+                if (!CellExists(tx, ty))
-+                    continue;
-+                MapCell* e = CellAt(tx, ty);
-+                if (e == nullptr)
-+                    continue;
-+                const int mb = kSlopeMirror[base + 1];
-+                e->IsoTileTypeIndex = rampBaseIndex_ + (mb ? mb - 1 : 0);
-+                e->SlopeIndex = mb;
-+                ++slopeSwapped;
++                }
 +            }
-+    }
++            if (rampSmoothIndex_ >= 0)
++            {
++                const int base = c->IsoTileTypeIndex - rampSmoothIndex_;
++                if (base >= 0 && base < 12)
++                {
++                    const int mb = kRmpfxMirror[base + 1];
++                    e->IsoTileTypeIndex = rampSmoothIndex_ + (mb - 1);
++                    ++rmpfxSwapped;
++                }
++            }
++        }
 +    if (std::getenv("MG_CLIFF_PARTNER_DIAG"))
-+        DiagLog("cliff-partner: %lld slope cells rewritten", slopeSwapped);
++        DiagLog("cliff-partner: %lld slope cells, %lld ramp-edge cells rewritten",
++                slopeSwapped, rmpfxSwapped);
 +}
 \ No newline at end of file
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-22 16:18:09.138574919 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-22 16:18:09.149999435 +0800
+--- b/MapGenerator/MapGenHills.cpp	2026-10-22 16:51:13.588247836 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-22 16:51:13.598942023 +0800
 @@ -66,6 +66,8 @@
  
  #include "pch.h"
@@ -1694,8 +1719,8 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +    }
 +}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-22 16:18:09.137642669 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 16:18:09.149166919 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-22 16:51:13.587440238 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 16:51:13.598260359 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2030,8 +2055,8 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-22 16:18:09.138512836 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 16:18:09.149256784 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-22 16:51:13.588180404 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 16:51:13.598303940 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2145,8 +2170,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:18:09.136562080 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:18:09.149399032 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:51:13.586791040 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:51:13.598460396 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -2376,8 +2401,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:18:09.140678233 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:18:09.149529119 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:51:13.590663099 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:51:13.598593990 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -2402,8 +2427,8 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-22 16:18:09.136973133 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 16:18:09.149640265 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-22 16:51:13.587013178 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 16:51:13.598699874 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -3113,7 +3138,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  {
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 16:18:09.149789023 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 16:51:13.598830449 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
