@@ -319,6 +319,11 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     rmg.CreateHills();
     rmg.CreateLATs();
     rmg.RecalculateCellAttributes();
+    // [port-only] Left-right cliff/RAMP partners (MapGenCliffPartner.cpp), at the
+    // same point as mgconsole: after the last recalc, before the tree prune.  Off
+    // unless MG_CLIFF_PARTNER=1 (a web build cannot set the variable, so the page
+    // keeps the existing path until this is made the default).
+    rmg.MirrorCliffPartners();
     rmg.PruneTerrainTrees();
     // [移植侧] The symmetry pass, at the same point the native driver uses it:
     // after every RNG-consuming and disassembly-derived stage, before the radar

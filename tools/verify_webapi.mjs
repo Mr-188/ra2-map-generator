@@ -401,7 +401,15 @@ if (args.render) {
     if (rc === 0) {
       const png = fsThem.readFile('/maps/render.png');
       check('preview PNG produced', png.length > 1000, `${png.length} B`);
-      if (args.preview) fs.writeFileSync(path.resolve(args.preview), png);
+      if (args.preview) {
+        // verify_all.sh points --preview at build/render_test/, which only exists if an
+        // earlier step created it (that step is skipped when the browser renderer was
+        // not built, as here).  Writing into a missing directory threw ENOENT and took
+        // the whole step down with a stack trace, so create it.
+        const dest = path.resolve(args.preview);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, png);
+      }
     }
   }
 }
