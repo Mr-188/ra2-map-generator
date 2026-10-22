@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-22 15:45:53.651944115 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-22 15:45:53.662547017 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-22 16:11:21.765257154 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-22 16:11:21.774318537 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -51,8 +51,8 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-22 15:45:53.651616405 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-22 15:45:53.662676203 +0800
+--- b/MapGenerator/MapGen.h	2026-10-22 16:11:21.764975140 +0800
++++ c/MapGenerator/MapGen.h	2026-10-22 16:11:21.774422669 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -334,8 +334,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 15:45:53.648054259 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 15:45:53.662761044 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:11:21.762543479 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:11:21.774493529 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -347,8 +347,8 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
 --- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 15:45:53.663474571 +0800
-@@ -0,0 +1,342 @@
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 16:11:21.775208228 +0800
+@@ -0,0 +1,415 @@
 +// ============================================================================
 +// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
 +// family (cliff01..40) and the multi-cell RAMP family (ramp01..10).
@@ -606,12 +606,54 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +    const int rampW[10] = { 3, 3, 4, 4, 3, 3, 2, 4, 4, 2 };
 +    const int rampH[10] = { 4, 4, 3, 3, 4, 4, 2, 3, 3, 2 };
 +
-+    // Runs right after MakeRegions, when BOTH halves carry their own ramp pieces
-+    // (measured on the model map: 40 cells west, 40 east, same piece kinds).  Each
-+    // east cell is the transpose of its west partner, so rewriting the two offset
-+    // fields with the table partner turns the pair into R8/R5 - the user's table of
-+    // 2026-10-22.  "west" = x < y, which is the low side of the drawn axis.
-+    long long swapped = 0;
++    // ---- the ten RAMP pieces, as whole pieces ------------------------------
++    // Footprints from MapGenRiver.cpp's kSlopeSetPieceFootprints: (col, row, z) in
++    // Height order.  A piece is stamped as a WHOLE: transposing cell by cell made the
++    // partner cells land on scattered anchors and the image half ended up with a
++    // dozen one-cell "R05" fragments rather than one piece (user, 2026-10-22).
++    struct Foot { int c, r, z; };
++    static const Foot kFoot[10][12] =
++    {
++        { {1,0,3}, {2,0,3}, {0,1,4}, {1,1,3}, {2,1,2}, {0,2,0}, {1,2,0}, {2,2,1}, {1,3,0}, {2,3,0}, {0,0,0}, {0,0,0} }, // ramp01
++        { {0,0,3}, {1,0,3}, {0,1,2}, {1,1,3}, {2,1,4}, {0,2,1}, {1,2,0}, {2,2,0}, {0,3,0}, {1,3,0}, {0,0,0}, {0,0,0} }, // ramp02
++        { {0,0,3}, {1,0,2}, {2,0,1}, {3,0,0}, {0,1,3}, {1,1,3}, {2,1,0}, {3,1,0}, {1,2,4}, {2,2,0}, {0,0,0}, {0,0,0} }, // ramp03
++        { {1,0,4}, {2,0,0}, {0,1,3}, {1,1,3}, {2,1,0}, {3,1,0}, {0,2,3}, {1,2,2}, {2,2,1}, {3,2,0}, {0,0,0}, {0,0,0} }, // ramp04
++        { {1,0,0}, {2,0,0}, {0,1,0}, {1,1,0}, {2,1,1}, {0,2,4}, {1,2,3}, {2,2,2}, {1,3,3}, {2,3,3}, {0,0,0}, {0,0,0} }, // ramp05
++        { {0,0,0}, {1,0,0}, {0,1,1}, {1,1,0}, {2,1,0}, {0,2,2}, {0,3,3}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0} }, // ramp06
++        { {0,0,3}, {1,0,4}, {0,1,3}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0} }, // ramp07
++        { {1,0,0}, {2,0,4}, {0,1,0}, {1,1,0}, {2,1,3}, {3,1,3}, {0,2,0}, {1,2,1}, {2,2,2}, {3,2,3}, {0,0,0}, {0,0,0} }, // ramp08
++        { {0,0,0}, {1,0,1}, {2,0,2}, {3,0,3}, {0,1,0}, {1,1,0}, {1,2,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0} }, // ramp09
++        { {0,0,3}, {1,0,3}, {0,1,4}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0} }, // ramp10
++    };
++    static const int kCount[10] = { 10, 10, 10, 10, 10, 7, 3, 10, 7, 3 };
++
++    // (a) clear the east half's ramp cells
++    long long cleared = 0;
++    for (int sy = 0; sy < slotRows_; ++sy)
++        for (int sx = 0; sx < 512; ++sx)
++        {
++            MapCell* c = cellSlots_[512 * sy + sx];
++            if (c == nullptr)
++                continue;
++            if (c->IsoTileTypeIndex < slopeSetPiecesIndex_
++                || c->IsoTileTypeIndex >= slopeSetPiecesIndex_ + 10)
++                continue;
++            const int x = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
++            const int y = static_cast<int>(static_cast<int16_t>(
++                static_cast<uint32_t>(c->MapCoords) >> 16));
++            if (x < y)
++                continue;
++            c->IsoTileTypeIndex = 0;
++            c->Height = 0;
++            ++cleared;
++        }
++
++    // (b) stamp each WEST piece's partner whole, on the transposed anchor
++    // A piece's anchor is the smallest (x, y) of the cells that footprint covers, so
++    // the pieces are collected by scanning the stage's own cell array once and
++    // keeping, per (tile, anchor), the cells found.
++    struct WPiece { int k, ax, ay, level; };
++    std::vector<WPiece> wpieces;
 +    for (int sy = 0; sy < slotRows_; ++sy)
 +        for (int sx = 0; sx < 512; ++sx)
 +        {
@@ -621,35 +663,70 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +            const int k = c->IsoTileTypeIndex - slopeSetPiecesIndex_;
 +            if (k < 0 || k >= 10)
 +                continue;
-+            const int wx = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
-+            const int wy = static_cast<int>(static_cast<int16_t>(
++            const int x = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
++            const int y = static_cast<int>(static_cast<int16_t>(
 +                static_cast<uint32_t>(c->MapCoords) >> 16));
-+            if (wx >= wy)
-+                continue;                              // east half: written by its pair
-+            const int16_t tx = static_cast<int16_t>(wy), ty = static_cast<int16_t>(wx);
-+            if (!CellExists(tx, ty))
++            if (x >= y)
 +                continue;
-+            MapCell* e = CellAt(tx, ty);
-+            if (e == nullptr)
++            // the anchor of the piece this cell belongs to: try each footprint cell
++            // as this cell's place and keep the anchor that puts the WHOLE footprint
++            // on ramp cells of the same kind
++            int bestAx = -1, bestAy = -1, bestN = -1;
++            for (int n = 0; n < kCount[k]; ++n)
++            {
++                const int ax = x - kFoot[k][n].c, ay = y - kFoot[k][n].r;
++                int hit = 0;
++                for (int m = 0; m < kCount[k]; ++m)
++                {
++                    const int px = ax + kFoot[k][m].c, py = ay + kFoot[k][m].r;
++                    if (!CellExists(static_cast<int16_t>(px), static_cast<int16_t>(py)))
++                        continue;
++                    const MapCell* pcm = CellAt(static_cast<int16_t>(px), static_cast<int16_t>(py));
++                    if (pcm != nullptr && pcm->IsoTileTypeIndex == c->IsoTileTypeIndex)
++                        ++hit;
++                }
++                if (hit > bestN) { bestN = hit; bestAx = ax; bestAy = ay; }
++            }
++            if (bestAx < 0)
 +                continue;
-+            const int partnerK = kRampPartner[k] - 1;
-+            const int col = c->Height % rampW[k];
-+            const int row = c->Height / rampW[k];
-+            e->IsoTileTypeIndex = slopeSetPiecesIndex_ + partnerK;
-+            // The east cell mirrors (row,col) of the west piece, so the partner cell it
-+            // must show is the one at (row,col) of the partner footprint.
-+            if (row < rampH[partnerK] && col < rampW[partnerK])
-+                e->Height = static_cast<uint8_t>(row + col * rampH[partnerK]);
-+            ++swapped;
++            bool dup = false;
++            for (const WPiece& w : wpieces)
++                if (w.k == k && w.ax == bestAx && w.ay == bestAy) { dup = true; break; }
++            if (dup)
++                continue;
++            wpieces.push_back(WPiece{ k, bestAx, bestAy, c->Level });
 +        }
++
++    long long stamped = 0;
++    for (const WPiece& w : wpieces)
++    {
++        const int pk = kRampPartner[w.k] - 1;
++        const int pw = rampH[pk];                  // partner grid width
++        // The image half gets the partner piece ON THE SAME CELLS, transposed: the
++        // source piece's own footprint decides which cells exist, because the two
++        // pieces do not occupy identical footprint offsets (R04 is 10 of a 12-cell
++        // 4x3, R01 is 10 of a 12-cell 3x4, and the missing offsets differ).
++        for (int n = 0; n < kCount[w.k]; ++n)
++        {
++            const int cc = kFoot[w.k][n].c, rr = kFoot[w.k][n].r;
++            const int tx = w.ay + rr, ty = w.ax + cc;   // transpose the offset
++            if (!CellExists(static_cast<int16_t>(tx), static_cast<int16_t>(ty)))
++                continue;
++            MapCell* t = CellAt(static_cast<int16_t>(tx), static_cast<int16_t>(ty));
++            if (t == nullptr)
++                continue;
++            t->IsoTileTypeIndex = slopeSetPiecesIndex_ + pk;
++            t->Height = static_cast<uint8_t>(rr + cc * pw);
++            t->Level = w.level;                        // same ramp, turned around
++            ++stamped;
++        }
++    }
++    const long long pieces = static_cast<long long>(wpieces.size());
++    if (std::getenv("MG_CLIFF_PARTNER_DIAG"))
++        DiagLog("cliff-partner: %lld east cells cleared, %lld pieces stamped (%lld cells)",
++                cleared, pieces, stamped);
++
 +    // ---- the single-cell SLOPE family (slope01..20) ----------------------
-+    // The recalc lays these from each cell's own neighbour pattern, and that pass is not
-+    // mirror-equivariant, so an east cell can hold the SAME orientation as its west
-+    // partner instead of the mirrored one.  Rewriting it by the corner pattern's
-+    // transpose (kSlopeCornerMirror, the same relation FinalizeElevationSlopes uses for
-+    // its micro-slopes) makes the pair exact by the table; it is kept behind
-+    // MG_CLIFF_PARTNER=2 because on the model map the render got slightly worse
-+    // (dark 0.3067% -> 0.3092%), so the two settings are A/B-able rather than decided.
 +    static const int kSlopeMirror[19] =
 +    {
 +        0, 2, 1, 4, 3, 5, 8, 7, 6, 9, 12, 11, 10, 13, 16, 15, 14, 17, 18
@@ -685,15 +762,12 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +            }
 +    }
 +    if (std::getenv("MG_CLIFF_PARTNER_DIAG"))
-+        DiagLog("cliff-partner: %lld ramp cells, %lld slope cells rewritten", swapped, slopeSwapped);
-+
-+    // The swap count is the one number worth keeping in the log: it is what a
-+    // regression would show as a drop.
-+
++        DiagLog("cliff-partner: %lld slope cells rewritten", slopeSwapped);
 +}
+\ No newline at end of file
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-22 15:45:53.648874559 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-22 15:45:53.663541780 +0800
+--- b/MapGenerator/MapGenHills.cpp	2026-10-22 16:11:21.763390550 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-22 16:11:21.775312520 +0800
 @@ -66,6 +66,8 @@
  
  #include "pch.h"
@@ -1623,8 +1697,8 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +    }
 +}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-22 15:45:53.648240341 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 15:45:53.662814120 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-22 16:11:21.762791532 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 16:11:21.774605611 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1959,8 +2033,8 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-22 15:45:53.648831454 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 15:45:53.662859326 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-22 16:11:21.763351879 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 16:11:21.774655192 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2074,8 +2148,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 15:45:53.647474418 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 15:45:53.662999563 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:11:21.761883991 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:11:21.774768233 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -2305,8 +2379,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 15:45:53.652181954 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 15:45:53.663151672 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:11:21.765406445 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:11:21.774881474 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -2331,8 +2405,8 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-22 15:45:53.647801357 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 15:45:53.663271606 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-22 16:11:21.762142174 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 16:11:21.774994246 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -3042,7 +3116,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  {
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 15:45:53.663422425 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 16:11:21.775122087 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
