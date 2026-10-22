@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-21 13:40:01.598635456 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-21 13:40:01.605888673 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-22 14:47:51.017536282 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-22 14:47:51.028527475 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -51,8 +51,8 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-21 13:40:01.598418492 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-21 13:40:01.606011092 +0800
+--- b/MapGenerator/MapGen.h	2026-10-22 14:47:51.017241181 +0800
++++ c/MapGenerator/MapGen.h	2026-10-22 14:47:51.028672165 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -101,7 +101,28 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
  class RandomMapGenerator
  {
  public:
-@@ -1450,8 +1477,21 @@
+@@ -1427,6 +1454,20 @@
+     // Step 6 (inline at 0x5A36CB): collapse the 2x2 blocks whose slopes are
+     // 5/6/7/8 or 11/12/9/10 into the 0xFFFF multi-cell-tile mark.
+     void MergeSlopeBlocks();
++    // [port-only / experiment] filled by CarveHighlandRamps; cleared of the
++    // hill stage's protection mark in CreateHills so FinalizeElevationSlopes
++    // will lay the ramp art on them (packed MapCoords).
++    std::vector<uint32_t> rampCorridorCoords_;
++    void ClearRampCorridorProtection();
++    void MarkRampCorridorTouched();
++    // [port-only / experiment] MG_RAMP_CORRIDOR=1: cut a terraced corridor
++    // through a cliff edge by editing the live elevation grid before
++    // FinalizeElevationSlopes.  Concept taken from WorldAlteringEditor
++    // (SmartAlert's base): terraform into a staircase first and let the
++    // terrain stage derive the ramp art, instead of stamping multi-cell ramp
++    // art onto a height field that does not support it.  No RNG; env unset is
++    // byte-identical to before.  See MapGenHills.cpp for the full contract.
++    void CarveHighlandRamps();
+     // Port-only final sweep (runs after MergeSlopeBlocks): the micro-slopes
+     // FinalizeElevationSlopes lays down did not exist when PlaceCliffs ran, so
+     // a CliffSet piece can end up with a raised wall cell (L8) diagonally
+@@ -1450,8 +1491,21 @@
      void ScatterRocks();
      // sub_5A4B60: best-first growth of a LAT / rock blob of `count` cells,
      // stamping work dword +0x3C with the seed's slot index.
@@ -124,7 +145,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // sub_5A45E0: plant up to `count` TREE01..TREE25 objects around the cell,
      // returning how many were planted. Route B: records MapTerrainObject.
      int ScatterTrees(MapCell* cell, int count, double probability);
-@@ -1467,6 +1507,66 @@
+@@ -1467,6 +1521,74 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
  
@@ -188,10 +209,18 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
 +    // 返回 false 表示前置条件不满足（未分配格子、或尚未实现的对称种类）。
 +    bool MirrorMap(mg::MapSymmetry kind);
 +
++    // [port-only] Left-right cliff/RAMP partner pass (MapGenCliffPartner.cpp).
++    // In the same public section as MirrorMap because the drivers call it at the
++    // end of the pipeline; a no-op unless MG_CLIFF_PARTNER=1 and left-right.
++    void MirrorCliffPartners();
++    bool SlopePartnerOn();
++    bool MirrorOfCell(int x, int y, int* outX, int* outY) const;
++
++
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1523,6 +1623,22 @@
+@@ -1523,6 +1645,22 @@
      // budget), false on failure (map already rolled back to all-land).
      bool GenerateRiver(int* startXY, double initialAngle, bool isTributary);
  
@@ -214,7 +243,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // One river-mouth delta fan (replicates sub_59E740) - IMPLEMENTED.
      // Called by the river main loop's delta trigger (0x59ddf5) after all
      // six gates pass; carves a fan of water downstream of the river end
-@@ -1720,6 +1836,14 @@
+@@ -1720,6 +1858,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -229,7 +258,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2126,53 @@
+@@ -2002,6 +2148,63 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -278,12 +307,22 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
 +    // 避免两半抽签次数不同时错位）。
 +    double MirrorSharedValue(double own, const MapCell* cell, int site);
 +
++    // [port-only] Cliff / ramp partner tables for left-right symmetry, and the
++    // pass that uses them.  Derived from the user's own reading of the art
++    // (2026-10-22): the cliff family and the ten RAMP pieces each have a mirror
++    // partner under (row,col) -> (col,row), and inside a "group" any member can
++    // stand in for any member of its partner group (the art is interchangeable on
++    // purpose, to avoid repetition).  Off by default; see CliffPartnerEnabled().
++    static bool CliffPartnerEnabled();
++    // The piece that stands for `tile` on the mirrored side, or -1 when the tile is
++    // not in one of the two families.  `inoutHeight` is remapped with the piece.
++    int CliffPartnerTile(int tile, int* inoutHeight);
 +    int MirrorTile(int tile, mg::MapSymmetry kind, int* inoutHeight,
 +                   bool* approximate = nullptr, bool* styleFallback = nullptr) const;
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2351,10 @@
+@@ -2180,6 +2383,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -295,8 +334,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-21 13:40:01.596737896 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-21 13:40:01.606101248 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 14:47:51.014408775 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 14:47:51.028850428 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -306,23 +345,336 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      // ---- 0x5993BB - 0x5993D0: the work array ------------------------------
      delete[] workCells_;
      workCells_ = nullptr;
+diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
+--- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 14:47:51.029935138 +0800
+@@ -0,0 +1,298 @@
++// ============================================================================
++// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
++// family (cliff01..40) and the multi-cell RAMP family (ramp01..10).
++//
++// WHY
++// ---
++// MirrorTile picks the image half's piece by MIRRORED FOOTPRINT alone, inside the
++// same family.  That is ambiguous almost everywhere in CliffSet: C01/C03/C04 and
++// C19/C20/C21 are the same 2x3 shape, C05/C06/C07 and C15/C16/C17 the same 2x2, and
++// the generic fallback below the shore branch returns the FIRST same-footprint piece
++// in table order.  On a map where the two halves disagree (a cliff line, a ramp
++// mouth) the first piece is often not the one the other side's art expects, and the
++// render shows a black wedge where the mirrored facade does not line up (the user's
++// report on 2026-10-22; the model map is the 参数集 MZEAS49tDl5sGEQ9l1A).
++//
++// WHAT THE TABLE SAYS (user, 2026-10-22; file names, i.e. cliffNN.tem)
++// -------------------------------------------------------------------
++//   groups that mirror onto each other, any member to any member (the group exists
++//   to avoid repeating one piece, so the members are interchangeable):
++//       {C01, C03, C04} <-> {C19, C20, C21}
++//       {C05, C06, C07} <-> {C15, C16, C17}
++//       {C02, C08}      <-> {C18, C22}
++//       {C23, C24, C25} <-> {C35, C36, C37}
++//   self-mirrored (same piece on both sides):
++//       C09, C10, C11, C27, C28, C31, C32 and every 1x1 piece
++//       (C12..C14 feet; C26, C29, C30, C33, C34, C38..C40 walls)
++//   RAMP family, STRICT one-to-one:
++//       ramp01<->ramp04, ramp02<->ramp03, ramp05<->ramp08, ramp06<->ramp09,
++//       ramp07<->ramp10
++// This is the LEFT-RIGHT relation ((x,y) -> (y,x), i.e. a footprint transpose).
++// Top-bottom and the two 180 flavours have different relations and are not covered
++// here: the pass only runs for AxialLeftRight.
++//
++// HOW THE PASS RUNS
++// -----------------
++// After MirrorSpecialTerrain has copied the shape, a second walk reads each
++// AUTHORITATIVE cell and writes its image cell's piece.  That direction matters:
++// the copy pass runs image cell by image cell and its Height comes from the source
++// cell, which is already the piece's own offset - reading it back from the image
++// cell would be reading art the other side chose.
++//
++// Inside a group the partner is drawn with the engine's terrain RNG, so the mirror
++// does not always show the same member as the source side (that is what the groups
++// are for).  The draw happens once per SOURCE piece, not once per cell: every cell of
++// the same piece on the source side gets the same partner.
++//
++// Level / SlopeIndex / LandType / Passability are left as the copy pass set them
++// (they are already mirrored there).  Only IsoTileTypeIndex and Height are written.
++//
++// OFF BY DEFAULT (MG_CLIFF_PARTNER=1 turns it on): it changes the output of every
++// symmetric inland map that carries cliffs, and it has to be measured against the
++// old path before it can be the default.  tools/verify_symmetry.py is the yardstick
++// (one-sided art pairs, dark pixels).
++// ============================================================================
++
++#include "pch.h"
++#include "MapGen.h"
++
++#include <cstdlib>
++#include <algorithm>
++#include <string>
++#include <map>
++
++namespace
++{
++// Cliff slots (1-based, = tile - shoreTileIndex_ + 1) grouped exactly as in the
++// header comment.  A slot that appears in no group is self-mirrored.
++const int kGroupA[] = { 1, 3, 4 };      // <-> kGroupB
++const int kGroupB[] = { 19, 20, 21 };
++const int kGroupC[] = { 5, 6, 7 };      // <-> kGroupD
++const int kGroupD[] = { 15, 16, 17 };
++const int kGroupE[] = { 2, 8 };         // <-> kGroupF
++const int kGroupF[] = { 18, 22 };
++const int kGroupG[] = { 23, 24, 25 };   // <-> kGroupH
++const int kGroupH[] = { 35, 36, 37 };
++
++struct Group { const int* members; int count; const int* partner; int partnerCount; };
++
++const Group kGroups[] =
++{
++    { kGroupA, 3, kGroupB, 3 },
++    { kGroupB, 3, kGroupA, 3 },
++    { kGroupC, 3, kGroupD, 3 },
++    { kGroupD, 3, kGroupC, 3 },
++    { kGroupE, 2, kGroupF, 2 },
++    { kGroupF, 2, kGroupE, 2 },
++    { kGroupG, 3, kGroupH, 3 },
++    { kGroupH, 3, kGroupG, 3 },
++};
++
++// CliffSet geometry, straight out of kCliffFootprints (MapGenRiver.cpp): the piece's
++// CellsInX and its occupied cells as (col, row, z) in Height order.  Copied as data
++// because that table is file-local; a renumbering there would have to be repeated
++// here, which is why both are commented with the same tile names.
++struct CliffCells { int w; struct { int col, row, z; } cell[16]; };
++const CliffCells kCliffCells[40] =
++{
++    { 2, { {0,0,4}, {0,1,0}, {1,1,4}, {1,2,0} } },  // cliff01
++    { 1, { {0,0,4}, {0,1,0} } },  // cliff02
++    { 2, { {0,0,4}, {0,1,0}, {1,1,4}, {1,2,0} } },  // cliff03
++    { 2, { {0,0,4}, {0,1,0}, {1,1,4}, {1,2,0} } },  // cliff04
++    { 2, { {0,0,4}, {1,0,4}, {0,1,0}, {1,1,0} } },  // cliff05
++    { 2, { {0,0,4}, {1,0,4}, {0,1,0}, {1,1,0} } },  // cliff06
++    { 2, { {0,0,4}, {1,0,4}, {0,1,0}, {1,1,0} } },  // cliff07
++    { 1, { {0,0,4}, {0,1,0} } },  // cliff08
++    { 2, { {0,0,4}, {1,0,0}, {0,1,0} } },  // cliff09
++    { 2, { {0,0,4}, {1,0,0}, {0,1,0} } },  // cliff10
++    { 2, { {0,0,4}, {1,0,0}, {0,1,0} } },  // cliff11
++    { 1, { {0,0,0} } },  // cliff12
++    { 1, { {0,0,0} } },  // cliff13
++    { 1, { {0,0,0} } },  // cliff14
++    { 2, { {0,0,4}, {1,0,0}, {0,1,4}, {1,1,0} } },  // cliff15
++    { 2, { {0,0,4}, {1,0,0}, {0,1,4}, {1,1,0} } },  // cliff16
++    { 2, { {0,0,4}, {1,0,0}, {0,1,4}, {1,1,0} } },  // cliff17
++    { 2, { {0,0,4}, {1,0,0} } },  // cliff18
++    { 3, { {0,0,4}, {1,0,0}, {1,1,4}, {2,1,0} } },  // cliff19
++    { 3, { {0,0,4}, {1,0,0}, {1,1,4}, {2,1,0} } },  // cliff20
++    { 3, { {0,0,4}, {1,0,0}, {1,1,4}, {2,1,0} } },  // cliff21
++    { 2, { {0,0,4}, {1,0,0} } },  // cliff22
++    { 2, { {0,0,4}, {1,0,4} } },  // cliff23
++    { 2, { {0,0,4}, {1,0,4} } },  // cliff24
++    { 2, { {0,0,4}, {1,0,4} } },  // cliff25
++    { 1, { {0,0,4} } },  // cliff26
++    { 2, { {0,0,4}, {1,0,4}, {0,1,4} } },  // cliff27
++    { 2, { {1,0,4}, {0,1,4}, {1,1,4} } },  // cliff28
++    { 1, { {0,0,4} } },  // cliff29
++    { 1, { {0,0,4} } },  // cliff30
++    { 2, { {0,0,4}, {1,0,4}, {0,1,4} } },  // cliff31
++    { 2, { {1,0,4}, {0,1,4}, {1,1,4} } },  // cliff32
++    { 1, { {0,0,4} } },  // cliff33
++    { 1, { {0,0,4} } },  // cliff34
++    { 1, { {0,0,4}, {0,1,4} } },  // cliff35
++    { 1, { {0,0,4}, {0,1,4} } },  // cliff36
++    { 1, { {0,0,4}, {0,1,4} } },  // cliff37
++    { 1, { {0,0,4} } },  // cliff38
++    { 1, { {0,0,4} } },  // cliff39
++    { 1, { {0,0,4} } },  // cliff40
++};
++
++// RAMP pieces, strict one-to-one (1-based index inside the family).
++const int kRampPartner[10] = { 4, 3, 2, 1, 8, 9, 10, 5, 6, 7 };
++}  // namespace
++
++bool RandomMapGenerator::CliffPartnerEnabled()
++{
++    // ON by default since 2026-10-22 (user's table, verified 40/0 on the model map and
++    // no regression in verify_symmetry).  MG_CLIFF_PARTNER=0 restores the previous
++    // behaviour byte-for-byte - that is what the acceptance suites pin against.
++    static int cached = -1;
++    if (cached < 0)
++    {
++        const char* env = std::getenv("MG_CLIFF_PARTNER");
++        cached = (env != nullptr && env[0] == '0') ? 0 : 1;
++    }
++    return cached != 0;
++}
++
++// MG_CLIFF_PARTNER=2 additionally forces EVERY RAMP cell of the image half through
++// the partner table, whether that cell's piece was mirrored from the other side or
++// stamped on both halves independently (the two halves carve their ramps with their
++// own material, so they can end up holding the same piece - the user's report of
++// 2026-10-22: ramp08 on BOTH sides of one mouth).
++static bool PartnerForcesAllRamps()
++{
++    const char* env = std::getenv("MG_CLIFF_PARTNER");
++    return env != nullptr && env[0] == '2';
++}
++
++// ---------------------------------------------------------------------------
++// CliffPartnerTile - the piece for the mirrored cell, or -1 when `tile` is not a
++// cliff or RAMP piece (the caller then leaves the cell as the copy pass wrote it).
++// `inoutHeight` is the source cell's Height and is rewritten to the partner's.
++// ---------------------------------------------------------------------------
++int RandomMapGenerator::CliffPartnerTile(int tile, int* inoutHeight)
++{
++    // ---- CliffSet ------------------------------------------------------
++    if (shoreTileIndex_ >= 0 && tile >= shoreTileIndex_ && tile < shoreTileIndex_ + 40)
++    {
++        const int slot = tile - shoreTileIndex_ + 1;
++        int partnerSlot = slot;
++        for (const Group& g : kGroups)
++        {
++            bool member = false;
++            for (int k = 0; k < g.count; ++k)
++                if (g.members[k] == slot) { member = true; break; }
++            if (!member)
++                continue;
++            // Any member of the partner group may stand in; draw one.
++            partnerSlot = g.partner[rng_.RandomRanged(0, g.partnerCount - 1)];
++            break;
++        }
++        if (partnerSlot == slot)
++            return tile;                              // self-mirrored: unchanged
++        // Remap Height ((row,col) -> (col,row); the footprint transposes, so a
++        // w-wide piece becomes h-wide).
++        const int off = (inoutHeight != nullptr) ? *inoutHeight : -1;
++        if (off < 0 || off >= 16)
++            return tile;
++        const int row = kCliffCells[slot - 1].cell[off].row;
++        const int col = kCliffCells[slot - 1].cell[off].col;
++        if (row < 0 || col < 0)
++            return tile;                              // past the piece's cells
++        for (int k = 0; k < 16; ++k)
++        {
++            if (kCliffCells[partnerSlot - 1].cell[k].col == row
++                && kCliffCells[partnerSlot - 1].cell[k].row == col)
++            {
++                if (inoutHeight != nullptr)
++                    *inoutHeight = k;                // Height = index in the table
++                return shoreTileIndex_ + partnerSlot - 1;
++            }
++        }
++        return tile;                                  // the transposed cell is not in
++                                                      // the partner's footprint
++    }
++
++    // ---- RAMP (SlopeSetPieces) -----------------------------------------
++    if (slopeSetPiecesIndex_ >= 0 && tile >= slopeSetPiecesIndex_
++        && tile < slopeSetPiecesIndex_ + 10)
++    {
++        const int k = tile - slopeSetPiecesIndex_;    // 0..9
++        const int partner = kRampPartner[k] - 1;
++        if (partner == k)
++            return tile;
++        // The pieces are a fixed 2x2 / 3x4 / 4x3 family; Height is the cell index in
++        // the rectangular grid (col + row * w), so the transpose is arithmetic.
++        static const int kW[10] = { 3, 3, 4, 4, 3, 3, 2, 4, 4, 2 };
++        static const int kH[10] = { 4, 4, 3, 3, 4, 4, 2, 3, 3, 2 };
++        const int off = (inoutHeight != nullptr) ? *inoutHeight : -1;
++        const int w = kW[k];
++        if (off < 0 || off >= w * kH[k])
++            return tile;
++        const int row = off / w, col = off % w;
++        if (col >= kH[partner] || row >= kW[partner])
++            return tile;
++        if (inoutHeight != nullptr)
++            *inoutHeight = col + row * kH[partner];   // the partner's width is kH[k]
++        return slopeSetPiecesIndex_ + partner;
++    }
++
++    return -1;
++}
++
++// ---------------------------------------------------------------------------
++// MirrorCliffPartners - left-right only; no-op unless MG_CLIFF_PARTNER=1.
++// ---------------------------------------------------------------------------
++void RandomMapGenerator::MirrorCliffPartners()
++{
++    if (!CliffPartnerEnabled())
++        return;
++    if (config_.symmetry != mg::MapSymmetry::AxialLeftRight)
++        return;
++    if (cellSlots_ == nullptr || slopeSetPiecesIndex_ < 0)
++        return;
++    const int rampW[10] = { 3, 3, 4, 4, 3, 3, 2, 4, 4, 2 };
++    const int rampH[10] = { 4, 4, 3, 3, 4, 4, 2, 3, 3, 2 };
++
++    // Runs right after MakeRegions, when BOTH halves carry their own ramp pieces
++    // (measured on the model map: 40 cells west, 40 east, same piece kinds).  Each
++    // east cell is the transpose of its west partner, so rewriting the two offset
++    // fields with the table partner turns the pair into R8/R5 - the user's table of
++    // 2026-10-22.  "west" = x < y, which is the low side of the drawn axis.
++    long long swapped = 0;
++    for (int sy = 0; sy < slotRows_; ++sy)
++        for (int sx = 0; sx < 512; ++sx)
++        {
++            MapCell* c = cellSlots_[512 * sy + sx];
++            if (c == nullptr)
++                continue;
++            const int k = c->IsoTileTypeIndex - slopeSetPiecesIndex_;
++            if (k < 0 || k >= 10)
++                continue;
++            const int wx = static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
++            const int wy = static_cast<int>(static_cast<int16_t>(
++                static_cast<uint32_t>(c->MapCoords) >> 16));
++            if (wx >= wy)
++                continue;                              // east half: written by its pair
++            const int16_t tx = static_cast<int16_t>(wy), ty = static_cast<int16_t>(wx);
++            if (!CellExists(tx, ty))
++                continue;
++            MapCell* e = CellAt(tx, ty);
++            if (e == nullptr)
++                continue;
++            const int partnerK = kRampPartner[k] - 1;
++            const int col = c->Height % rampW[k];
++            const int row = c->Height / rampW[k];
++            e->IsoTileTypeIndex = slopeSetPiecesIndex_ + partnerK;
++            // The east cell mirrors (row,col) of the west piece, so the partner cell it
++            // must show is the one at (row,col) of the partner footprint.
++            if (row < rampH[partnerK] && col < rampW[partnerK])
++                e->Height = static_cast<uint8_t>(row + col * rampH[partnerK]);
++            ++swapped;
++        }
++    // The swap count is the one number worth keeping in the log: it is what a
++    // regression would show as a drop.
++    if (std::getenv("MG_CLIFF_PARTNER_DIAG"))
++        DiagLog("cliff-partner: %lld ramp cells rewritten", swapped);
++}
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-21 13:40:01.597526388 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-21 13:40:01.606146881 +0800
-@@ -74,9 +74,12 @@
+--- b/MapGenerator/MapGenHills.cpp	2026-10-22 14:47:51.015677858 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-22 14:47:51.030011453 +0800
+@@ -66,6 +66,8 @@
+ 
+ #include "pch.h"
+ #include "MapGen.h"
++#include <algorithm>
++#include <cstdlib>
+ 
+ // ---------------------------------------------------------------------------
+ // The stage body - sub_5A35F0 (0x5A35F0 - 0x5A38B0).
+@@ -74,9 +76,14 @@
  {
      MarkTechBuildingProtection(); // [port-only] keep tech buildings on flat ground
      MarkHillProtection();        // 0x5a35f9  sub_5A33F0
 +    // [移植侧] 对称：这两个标记是 CanHostSlope / CliffMask 的输入，而它们读的瓦片在两半是镜像的。
 +    MirrorWorkMarks(config_.symmetry);   // [port-only]
++    ClearRampCorridorProtection(); // [port-only] MG_RAMP_CORRIDOR=1 (default no-op)
      BuildHillHeightField();      // 0x5a3600  sub_5A2F50
      BuildElevationGrid();        // 0x5a3605  sub_6B2A70
++    MarkRampCorridorTouched();   // [port-only] MG_RAMP_CORRIDOR=1 (default no-op)
      ApplyElevationLevels();      // 0x5a361a  the inline level-apply loop
 +    MirrorElevationGrid();       // [移植侧] 施加之后再次转置（这一步自己写角值与 touched）
      FinalizeElevationSlopes();   // 0x5a36c1  sub_6B3850
      MergeSlopeBlocks();          // 0x5a36cb  the inline 2x2 slope merge
      RemoveCliffsOverRamps();     // port-only: keep ramp seams free of walls
-@@ -252,6 +255,39 @@
+@@ -252,6 +259,39 @@
      const int side = size_.workSide;
      const int count = side * side;
  
@@ -362,7 +714,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
      // The two doubles a work cell carries: the HEIGHT field at +8 and the
      // AMPLITUDE field at +16. WorkCell stores 20 ints, so they are reached
      // through the raw bytes (the vanilla does the same qword fp loads/stores).
-@@ -273,6 +309,11 @@
+@@ -273,6 +313,11 @@
          const int16_t y = static_cast<int16_t>(
                                static_cast<uint32_t>(packed) >> 16);
          const int16_t xm = static_cast<int16_t>(x - 1);
@@ -374,7 +726,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          const int16_t ym = static_cast<int16_t>(y - 1);
  
          amplitude(i) = 0.0;                             // 0x5a2fe7 / 0x5a2ff0
-@@ -342,10 +383,10 @@
+@@ -342,10 +387,10 @@
                  centre = span - amplitude(i);           // 0x5a324f
              }
              double d;
@@ -387,7 +739,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          }
  
          // ---- draw 2, the height (0x5a329a - 0x5a335d) ---------------------
-@@ -361,10 +402,32 @@
+@@ -361,10 +406,32 @@
                  centre = span + lo;                     // 0x5a332b
              }
              double d;
@@ -422,7 +774,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          }
      }
  
-@@ -434,6 +497,29 @@
+@@ -434,6 +501,29 @@
      { 15,  0, 15,  0 },     // 18
  };
  
@@ -452,7 +804,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
  // ---------------------------------------------------------------------------
  // IsMorphableTile - the vanilla's morphable clause on an UNSIGNED index:
  //     tile < IsometricTileTypeClass::Array.Count || tile == 0xFFFF
-@@ -464,7 +550,26 @@
+@@ -464,7 +554,26 @@
      if (WorkAt(x, y).Byte(69) != 0)
          return false;
  
@@ -480,7 +832,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
  }
  
  // Step 3 - BuildElevationGrid (sub_6B2A70, 0x6B2A70 - 0x6B2F28).
-@@ -564,6 +669,8 @@
+@@ -564,6 +673,8 @@
              }
          }
      }
@@ -489,7 +841,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
  }
  
  // ---------------------------------------------------------------------------
-@@ -900,13 +1007,89 @@
+@@ -900,13 +1011,89 @@
      if (cellSlots_ == nullptr || elevGrid_.empty())
          return;
  
@@ -582,7 +934,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          const int indexA = (x - elevLeft_) + elevStride_ * (y - elevTop_);
          const int indexB = indexA + elevStride_;          // the row below
          const int index[4] = { indexA, indexA + 1, indexB + 1, indexB };
-@@ -993,6 +1176,31 @@
+@@ -993,6 +1180,31 @@
          // the slope and the tile are skipped for it.
          cell->Level = lowest / 15;
  
@@ -614,7 +966,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          for (int k = 0; k < 4; ++k)                       // 0x6b39ea
              corner[k] -= lowest;                          // the normalized pattern
  
-@@ -1011,16 +1219,57 @@
+@@ -1011,16 +1223,57 @@
              }
          }
          if (slope < 0)
@@ -672,7 +1024,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
  }
  
  // ---------------------------------------------------------------------------
-@@ -1055,6 +1304,19 @@
+@@ -1055,6 +1308,19 @@
          const int16_t x = static_cast<int16_t>(cell->MapCoords & 0xFFFF);
          const int16_t y = static_cast<int16_t>(
                                static_cast<uint32_t>(cell->MapCoords) >> 16);
@@ -692,7 +1044,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          const int anchor = cell->SlopeIndex;              // 0x5a375a
  
          // Only the two anchor slopes take part; everything else is skipped
-@@ -1126,6 +1388,15 @@
+@@ -1126,6 +1392,15 @@
  
          // Collapse the four cells into the multi-cell tile (0x5a382b - 0x5a3891):
          // 0xFFFF is the "no own tile" mark the delta corners use too.
@@ -708,7 +1060,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          for (int k = 0; k < 4; ++k)
          {
              MapCell* c = CellAt(static_cast<int16_t>(x + kOffX[k]),
-@@ -1135,6 +1406,30 @@
+@@ -1135,6 +1410,30 @@
              c->Height = 0;                                // 0x5a387d
              c->SlopeIndex = 0;                            // 0x5a3884
              c->Level = bump + level;                      // 0x5a388b
@@ -739,7 +1091,7 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
          }
      }
  }
-@@ -1290,3 +1585,92 @@
+@@ -1290,3 +1589,486 @@
          }
      }
  }
@@ -832,9 +1184,403 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +                 "evened out\n", mg::MapSymmetryName(kind), pairs);
 +    return true;
 +}
++
++
++// ---------------------------------------------------------------------------
++// CarveHighlandRamps [port-only / experiment, MG_RAMP_CORRIDOR=1]
++//
++// Idea from WorldAlteringEditor (SmartAlert is a WAE fork): a slope is a
++// consequence of the height field, not a piece of art.  WAE raises/lowers cell
++// levels into a staircase and then derives the 1x1 RampBase tile from the
++// height pattern; it never keeps multi-cell ramp art that the height field does
++// not support.  Our FinalizeElevationSlopes already derives every 1x1 ramp tile
++// from the shared 2x2 corner grid, so this pass only has to terraform Levels.
++//
++// Runs in MakeRegions, AFTER FixCliffLevels and BEFORE PlaceCliffs.  That
++// ordering is the whole point: PlaceCliffs paints the cut faces of the notch
++// from the heights it sees, so the corridor gets real cliff art on its sides
++// instead of the black holes an after-the-fact cut leaves (measured: cutting
++// the same corridor inside CreateHills produced two ~5k-pixel black holes per
++// corridor - the removed CliffSet pieces' wall faces have no replacement).
++//
++// Geometry: a straight edge where level L meets a wall of level H (D = H-L in
++// 2..6), D-1 rows of level H behind and level L in front.  A W-cell window
++// from the middle of the longest run is lowered to a staircase:
++//
++//     row yTop     -> H-1      (yTop = y-(D-1))
++//     ...
++//     row y        -> L
++//
++// so every adjacent pair differs by exactly ONE level.  PlaceCliffs only walls
++// the sides of the notch (2+ levels there), CreateHills seeds its corner grid
++// from these Levels, and FinalizeElevationSlopes lays the ramp.  No RNG; with
++// the env var unset the function returns immediately and the map is
++// byte-identical.  Symmetric maps are skipped for now (the corridor would have
++// to be carved on the authoritative half and the mirror passes for TB/180 deg
++// do not cover a per-cell Level edit).
++// ---------------------------------------------------------------------------
++void RandomMapGenerator::CarveHighlandRamps()
++{
++    const char* env = std::getenv("MG_RAMP_CORRIDOR");
++    if (env == nullptr || env[0] != '1')
++        return;
++    if (cellSlots_ == nullptr || workCells_ == nullptr)
++        return;
++    rampCorridorCoords_.clear();
++    if (config_.symmetry != mg::MapSymmetry::None)
++    {
++        std::fprintf(stderr, "[rampcorr] symmetry %s is not supported yet; skipped\n",
++                     mg::MapSymmetryName(config_.symmetry));
++        return;
++    }
++
++    const auto cellX = [](const MapCell* c) {
++        return static_cast<int>(static_cast<int16_t>(c->MapCoords & 0xFFFF));
++    };
++    const auto cellY = [](const MapCell* c) {
++        return static_cast<int>(static_cast<int16_t>((c->MapCoords >> 16) & 0xFFFF));
++    };
++
++    const auto qualifies = [&](int x, int y, int* outH, int* outL) -> bool
++    {
++        const MapCell* lo = CellAt(x, y);
++        const MapCell* hi = CellAt(x, y - 1);
++        if (lo == nullptr || hi == nullptr)
++            return false;
++        const int L = lo->Level;
++        const int H = hi->Level;
++        const int D = H - L;
++        if (D < 2 || D > 6)
++            return false;
++        if (lo->OverlayTypeIndex != -1 || hi->OverlayTypeIndex != -1)
++            return false;
++        if ((lo->AltFlags & AltCellFlags_ContainsBuilding) != 0
++            || (hi->AltFlags & AltCellFlags_ContainsBuilding) != 0)
++            return false;
++        for (int d = 1; d <= D - 1; ++d)
++        {
++            const MapCell* c = CellAt(x, y - d);
++            if (c == nullptr || c->Level != H)
++                return false;
++            if (c->OverlayTypeIndex != -1
++                || (c->AltFlags & AltCellFlags_ContainsBuilding) != 0)
++                return false;
++        }
++        const MapCell* below = CellAt(x, y + 1);
++        if (below == nullptr || below->Level != L
++            || below->OverlayTypeIndex != -1
++            || (below->AltFlags & AltCellFlags_ContainsBuilding) != 0)
++            return false;
++        *outH = H;
++        *outL = L;
++        return true;
++    };
++
++    struct Run { int x0, y, len, H, L; };
++    std::vector<Run> runs;
++
++    CellIterator it;
++    it.Reset(cellSlots_, size_.mapWidth);
++    while (MapCell* c = it.Next())
++    {
++        const int x = cellX(c);
++        const int y = cellY(c);
++        int H = 0, L = 0;
++        if (!qualifies(x, y, &H, &L))
++            continue;
++        int pH = 0, pL = 0;
++        if (CellAt(x - 1, y) != nullptr && qualifies(x - 1, y, &pH, &pL)
++            && pH == H && pL == L)
++            continue;
++        int len = 0;
++        while (len < 64)
++        {
++            int h2 = 0, l2 = 0;
++            if (!qualifies(x + len, y, &h2, &l2) || h2 != H || l2 != L)
++                break;
++            ++len;
++        }
++        if (len >= 6)
++            runs.push_back(Run{ x, y, len, H, L });
++    }
++
++    if (runs.empty())
++    {
++        std::fprintf(stderr, "[rampcorr] no straight cliff edge found\n");
++        return;
++    }
++
++    std::sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) {
++        if (a.len != b.len) return a.len > b.len;
++        if (a.y != b.y) return a.y < b.y;
++        return a.x0 < b.x0;
++    });
++
++    const int kWidth = 5;
++    struct Corridor { int xs, y, H, L; };
++    std::vector<Corridor> picked;
++    for (const Run& r : runs)
++    {
++        if (picked.size() >= 3)
++            break;
++        const int xs = r.x0 + (r.len - kWidth) / 2;
++        bool overlap = false;
++        for (const Corridor& c : picked)
++        {
++            const bool nearY = (c.y > r.y ? c.y - r.y : r.y - c.y) < 8;
++            const bool nearX = !(xs + kWidth + 4 < c.xs || c.xs + kWidth + 4 < xs);
++            if (nearY && nearX) { overlap = true; break; }
++        }
++        if (overlap)
++            continue;
++        picked.push_back(Corridor{ xs, r.y, r.H, r.L });
++    }
++
++    int carved = 0;
++    for (const Corridor& c : picked)
++    {
++        const int D = c.H - c.L;
++        const int yTop = c.y - (D - 1);
++
++        for (int yy = yTop; yy <= c.y; ++yy)
++        {
++            const int level = c.H - 1 - (yy - yTop);
++            for (int xx = c.xs - 1; xx <= c.xs + kWidth; ++xx)
++            {
++                MapCell* cell = CellAt(xx, yy);
++                if (cell == nullptr)
++                    continue;
++                cell->Level = level;
++                cell->IsoTileTypeIndex = 0;
++                cell->Height = 0;
++                cell->SlopeIndex = 0;
++                rampCorridorCoords_.push_back(
++                    static_cast<uint32_t>(xx & 0xFFFF)
++                    | (static_cast<uint32_t>(yy & 0xFFFF) << 16));
++            }
++        }
++
++        ++carved;
++        std::fprintf(stderr,
++                     "[rampcorr] corridor x=%d..%d y=%d..%d H=%d L=%d D=%d\n",
++                     c.xs - 1, c.xs + kWidth, yTop, c.y, c.H, c.L, D);
++    }
++
++    // -----------------------------------------------------------------------
++    // Height normalisation - the step that was missing in the first prototype.
++    //
++    // WAE never leaves a cell next to a neighbour two or more levels away: its
++    // CheckCell raises the lower side until every adjacent pair is within one
++    // level, and only then does ApplyRamps pick a tile.  Our first version
++    // carved a rectangular staircase and stopped, so the corridor's flanks
++    // still met the plateau at 2..4 levels and FinalizeElevationSlopes had no
++    // pattern to lay there - those cells stayed flat and the render showed
++    // black wedges.
++    //
++    // Here the same rule is applied in the direction a cut needs: walk out from
++    // the corridor's cells and LOWER any neighbour that is still two or more
++    // levels above, one level at a time, until the whole rim is a staircase.
++    // The result is a fan-shaped depression: every adjacent pair within one
++    // level, so PlaceCliffs sees no wall to draw and the ordinary slope pass
++    // paints the whole thing.
++    // -----------------------------------------------------------------------
++    {
++        static const int dx8[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
++        static const int dy8[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
++
++        const auto normaliseRim = [&]() -> long long
++        {
++            std::vector<uint32_t> queue(rampCorridorCoords_);
++            size_t head = 0;
++            long long lowered = 0;
++            while (head < queue.size() && lowered < 200000)
++            {
++                const uint32_t packed = queue[head++];
++                const int x = static_cast<int16_t>(packed & 0xFFFF);
++                const int y = static_cast<int16_t>((packed >> 16) & 0xFFFF);
++                const MapCell* c = CellAt(x, y);
++                if (c == nullptr)
++                    continue;
++                for (int d = 0; d < 8; ++d)
++                {
++                    const int nx = x + dx8[d];
++                    const int ny = y + dy8[d];
++                    MapCell* n = CellAt(nx, ny);
++                    if (n == nullptr || n->Level <= c->Level + 1)
++                        continue;
++                    if (n->OverlayTypeIndex != -1
++                        || (n->AltFlags & AltCellFlags_ContainsBuilding) != 0)
++                        continue;
++                    n->Level = c->Level + 1;
++                    n->IsoTileTypeIndex = 0;
++                    n->Height = 0;
++                    n->SlopeIndex = 0;
++                    const uint32_t npacked = static_cast<uint32_t>(nx & 0xFFFF)
++                        | (static_cast<uint32_t>(ny & 0xFFFF) << 16);
++                    queue.push_back(npacked);
++                    rampCorridorCoords_.push_back(npacked);
++                    ++lowered;
++                }
++            }
++            return lowered;
++        };
++
++        // WAE's CellHeightFixes: no one-cell depression and no asymmetric
++        // height diffs on a straight diagonal line.  Without these the rim can
++        // keep a single lower cell between two plateau cells; its 2x2 corner
++        // pattern is then not in the 19-entry table, FinalizeElevationSlopes
++        // skips it and the cell renders black.
++        const auto fixDiagonalPits = [&]() -> int
++        {
++            int fixed = 0;
++            const size_t count = rampCorridorCoords_.size();   // snapshot
++            for (size_t i = 0; i < count; ++i)
++            {
++                const uint32_t packed = rampCorridorCoords_[i];
++                const int x = static_cast<int16_t>(packed & 0xFFFF);
++                const int y = static_cast<int16_t>((packed >> 16) & 0xFFFF);
++                MapCell* c = CellAt(x, y);
++                if (c == nullptr)
++                    continue;
++
++                static const int pairs[2][2][2] = {
++                    { { 1, -1 }, { -1, 1 } },
++                    { { 1, 1 }, { -1, -1 } } };
++                for (int p = 0; p < 2; ++p)
++                {
++                    const MapCell* a = CellAt(x + pairs[p][0][0], y + pairs[p][0][1]);
++                    const MapCell* b = CellAt(x + pairs[p][1][0], y + pairs[p][1][1]);
++                    if (a == nullptr || b == nullptr)
++                        continue;
++                    const int da = a->Level - c->Level;
++                    const int db = b->Level - c->Level;
++                    bool raise = false;
++                    if (da > 0 && db > 0 && a->Level == b->Level)
++                        raise = true;                       // one-cell depression
++                    else if (da + db >= 3)
++                        raise = true;                       // asymmetric diffs
++
++                    if (raise)
++                    {
++                        c->Level += 1;
++                        c->IsoTileTypeIndex = 0;
++                        c->Height = 0;
++                        c->SlopeIndex = 0;
++                        rampCorridorCoords_.push_back(packed);
++                        ++fixed;
++                        break;
++                    }
++                }
++            }
++            return fixed;
++        };
++
++        long long totalLowered = normaliseRim();
++        int totalFixed = 0;
++        for (int iter = 0; iter < 6; ++iter)
++        {
++            const int fixed = fixDiagonalPits();
++            totalFixed += fixed;
++            if (fixed == 0)
++                break;
++            totalLowered += normaliseRim();
++        }
++
++        std::fprintf(stderr,
++                     "[rampcorr] rim normalised: %lld lowered, %d pits fixed\n",
++                     totalLowered, totalFixed);
++    }
++
++    std::fprintf(stderr, "[rampcorr] runs=%zu picked=%d carved=%d\n",
++                 runs.size(), static_cast<int>(picked.size()), carved);
++}
++
++
++// ---------------------------------------------------------------------------
++// ClearRampCorridorProtection [port-only, MG_RAMP_CORRIDOR=1]
++//
++// MarkHillProtection marks the placeholder cells next to every cliff with work
++// byte +69, and CanHostSlope refuses a marked cell.  The ramp corridor is cut
++// before PlaceCliffs, so PlaceCliffs walls its sides and those side cells mark
++// their neighbours - including the ramp cells themselves.  Measured effect of
++// not clearing the mark: FinalizeElevationSlopes skipped every corridor cell
++// (tile 0 / SlopeIndex 0 survived) and the render showed one black strip per
++// step.  Clear only the corridor's own cells; the mark on cells outside it
++// still keeps the hill field away from the cut faces.
++// ---------------------------------------------------------------------------
++void RandomMapGenerator::ClearRampCorridorProtection()
++{
++    if (rampCorridorCoords_.empty() || workCells_ == nullptr)
++        return;
++
++    for (uint32_t packed : rampCorridorCoords_)
++    {
++        const int x = static_cast<int16_t>(packed & 0xFFFF);
++        const int y = static_cast<int16_t>((packed >> 16) & 0xFFFF);
++        // The corridor's neighbours matter too: they share its vertices, so
++        // if CanHostSlope refuses them FinalizeElevationSlopes leaves their old
++        // flat pattern and the shared vertex becomes a 15/30/45 crack
++        // (measured: every black strip sat on such a vertex).  Two rings: the
++        // corner cells are two steps away from the deepest part of the cut.
++        for (int dy = -2; dy <= 2; ++dy)
++        {
++            for (int dx = -2; dx <= 2; ++dx)
++            {
++                const int nx = x + dx;
++                const int ny = y + dy;
++                if (!CellExists(nx, ny))
++                    continue;
++                WorkAt(nx, ny).Byte(69) = 0;
++            }
++        }
++    }
++
++    std::fprintf(stderr, "[rampcorr] protection cleared on %zu corridor cells (+2 ring)\n",
++                 rampCorridorCoords_.size());
++}
++
++
++// ---------------------------------------------------------------------------
++// MarkRampCorridorTouched [port-only, MG_RAMP_CORRIDOR=1]
++//
++// FinalizeElevationSlopes only visits a cell whose 2x2 corner block has at
++// least one `touched` grid point, and BuildElevationGrid seeds every point with
++// touched = 0.  The hill stage's own ApplyElevationLevels marks the points it
++// moves, so without this the corridor cells that the height field happened not
++// to touch keep tile 0 / SlopeIndex 0 - measured: the ramp was a checkerboard
++// of painted and unpainted cells and every unpainted side became a black
++// strip.  Mark the four corners of every corridor cell; the side cells share
++// those points, so they are finalised with the corridor instead of staying at
++// their old flat art.
++// ---------------------------------------------------------------------------
++void RandomMapGenerator::MarkRampCorridorTouched()
++{
++    if (rampCorridorCoords_.empty() || elevGrid_.empty())
++        return;
++
++    const int side = size_.workSide;
++    const auto touch = [&](int x, int y)
++    {
++        if (x < elevLeft_ || x >= elevLeft_ + side || y < elevTop_ || y >= elevTop_ + side)
++            return;
++        const int index = (x - elevLeft_) + elevStride_ * (y - elevTop_);
++        if (index >= 0 && index < static_cast<int>(elevGrid_.size()))
++            elevGrid_[index].touched = 1;
++    };
++
++    for (uint32_t packed : rampCorridorCoords_)
++    {
++        const int x = static_cast<int16_t>(packed & 0xFFFF);
++        const int y = static_cast<int16_t>((packed >> 16) & 0xFFFF);
++        touch(x, y);
++        touch(x + 1, y);
++        touch(x + 1, y + 1);
++        touch(x, y + 1);
++    }
++}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-21 13:40:01.596902697 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-21 13:40:01.606209475 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-22 14:47:51.014734159 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 14:47:51.028978388 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -1169,15 +1915,15 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-21 13:40:01.597484095 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-21 13:40:01.606261808 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-22 14:47:51.015598422 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 14:47:51.029058364 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
  // MapGenMaking.cpp - the "Making regions" stage of the random map generator
  //
  //   MakeRegions             sub_598960 @ 0x598D44   stage body - the only
-@@ -72,23 +72,98 @@
+@@ -72,23 +72,99 @@
      // ---- 0x598d55 - 0x598d60: the LandType 3/4 gate ----------------------
      const int landType = static_cast<int>(config_.landType);
  
@@ -1233,6 +1979,7 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
 +            std::fprintf(stderr, "[symmetry] MirrorLevels failed inside MakeRegions\n");
 +
 +
++        CarveHighlandRamps();   // [port-only] MG_RAMP_CORRIDOR=1 (default off)
 +        FixCliffLevels();
 +        diagStep("FixCliffLevels");                           // 0x598d6e  sub_5A19E0
          // [SNAPSHOT-OFF] SaveStageSnapshot("FixCliffLevels");
@@ -1283,8 +2030,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-21 13:40:01.596249153 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-21 13:40:01.606378656 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 14:47:51.013557773 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 14:47:51.029230676 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -1514,8 +2261,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-21 13:40:01.598777815 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-21 13:40:01.606493584 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 14:47:51.017730157 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 14:47:51.029426110 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -1540,8 +2287,8 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-21 13:40:01.596506130 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-21 13:40:01.606599581 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-22 14:47:51.013974764 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 14:47:51.029645376 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2205,9 +2952,53 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
              const int sub = (n242 < 240) ? (n242 / 40) : (247 - n242);
  
              const int packedCoords = cell->MapCoords;
+@@ -3839,6 +4347,43 @@
+ // be hard-coded to 2x2: DecorateWaterTiles (the eight water detail tiles,
+ // waterTileIndex_ + 0..7, all full 2x2 rectangles with Z = 0) and
+ // CorrectCliffTiles (CliffSet pieces - width 1 or 2, height up to 3).
++// ---------------------------------------------------------------------------
++// [port-only] Ramp partners for left-right symmetry.
++//
++// The ten SlopeSetPieces (ramp01..10) come in five left-right pairs, read off the art
++// by the user on 2026-10-22 (file names, strictly one-to-one):
++//     ramp01 <-> ramp04   ramp02 <-> ramp03   ramp05 <-> ramp08
++//     ramp06 <-> ramp09   ramp07 <-> ramp10
++// The mirror is the footprint transpose ((x,y) -> (y,x)), so a cell at (col,row) of
++// piece k lands at (row,col) of its partner.  Off unless MG_CLIFF_PARTNER=1; when the
++// variable is unset nothing below runs and the map stays byte-identical.
++// ---------------------------------------------------------------------------
++static const int kSlopePartner[10] = { 4, 3, 2, 1, 8, 9, 10, 5, 6, 7 };
++// Width of each SlopeSetPiece footprint (ramp01..10), from kSlopeSetPieceFootprints
++// below: the partner's grid width is the source's HEIGHT.
++static const int kSlopePartnerW[10] = { 4, 4, 3, 3, 4, 4, 2, 3, 3, 2 };
++
++bool RandomMapGenerator::SlopePartnerOn()
++{
++    const char* env = std::getenv("MG_CLIFF_PARTNER");
++    return env != nullptr && env[0] != '0';
++}
++
++// The mirror cell of (x, y) for the current symmetry, when it exists.
++bool RandomMapGenerator::MirrorOfCell(int x, int y, int* outX, int* outY) const
++{
++    if (config_.symmetry == mg::MapSymmetry::None)
++        return false;
++    int mx = 0, my = 0;
++    if (!mg::MirrorCell(size_.mapWidth, size_.mapHeight, config_.symmetry, x, y, &mx, &my))
++        return false;
++    if (!CellExists(static_cast<int16_t>(mx), static_cast<int16_t>(my)))
++        return false;
++    *outX = mx;
++    *outY = my;
++    return true;
++}
++
+ void RandomMapGenerator::PlaceWaterDetailTile(int tileIndex, int packedCoords,
+                                               int genCode, int level)
+ {
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-21 13:40:01.606716689 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 14:47:51.029849991 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//

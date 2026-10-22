@@ -490,17 +490,31 @@ int main(int argc, char** argv)
     if (diagSym) diagSymmetry(rmg, cfg, "after CreateLATs");
     if (stopHere("lats")) return emit();
     rmg.RecalculateCellAttributes();                      // 0x599354
+    // [port-only] Left-right cliff/RAMP partners (MapGenCliffPartner.cpp).  AFTER
+    // the last recalc, because every piece has to exist before the image half can
+    // take its partner: cliffs are laid in MakeRegions, the RAMP pieces by the
+    // region carver, and the recalc above re-derives tiles from slope indices -
+    // measured 2026-10-22: zero cliff cells exist at MirrorSpecialTerrain time, so
+    // an earlier hook swaps nothing.  Off unless MG_CLIFF_PARTNER=1.
     rmg.PruneTerrainTrees();                              // port-side, after pass 4
     if (diagSym) diagSymmetry(rmg, cfg, "after PruneTrees");
     if (stopHere("prune")) return emit();
     // [移植侧] 对称镜像。放在 PruneTerrainTrees 之后、Cleanup 之前：所有吃 RNG
     // 与所有出处出自反汇编的阶段都已结束，而 ComputeRadarImage 与写盘都在其后，
     // 雷达与 [Header] 因此自动重算。
+    // [port-only] LG2 ramp partners: LAST, because CreateHills stamps three more
+    // SlopeSetPieces per ramp and those come out same-kind on both halves too.  Off
+    // unless MG_CLIFF_PARTNER=1.
     if (!rmg.MirrorMap(cfg.symmetry))
     {
         std::fprintf(stderr, "[mgconsole] MirrorMap failed\n");
         return 6;
     }
+    // [port-only] LG2 ramp partners AFTER MirrorMap: MirrorMap rewrites the mirrored
+    // half's art from the shape, so a partner written before it does not survive
+    // (measured 2026-10-22: 40/0 right before MirrorMap, 32/8 after).  Placed last, the
+    // pair relation stands in the file.  Off unless MG_CLIFF_PARTNER=1.
+    rmg.MirrorCliffPartners();
     if (stopHere("mirror")) return emit();
     rmg.Cleanup();                                        // 0x5993A5
     rmg.ComputeRadarImage();                              // 0x599451
