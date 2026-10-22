@@ -340,6 +340,63 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
         g_error = "SaveMapFile failed";
         return 3;
     }
+
+    // The page's start-point editor: it lets the player drag a start position on
+    // the rendered preview, and to turn a click back into a cell it needs two
+    // facts only the generator has -- each cell's height (the isometric
+    // projection stacks heights, so one pixel column is many cells) and whether
+    // the ground can carry a start at all.  Both are read here, after the final
+    // RecalculateCellAttributes/MirrorMap, i.e. the state the map file was
+    // written from, so the grid cannot disagree with the map.
+    //
+    // Written next to the map as "<out>.cells", little endian:
+    //   u32 side, u32 side, then side*side pairs of [level][flags],
+    //   index = y * side + x
+    //   flags bit 0 -- the cell exists in the map diamond (CellExists)
+    //   flags bit 1 -- the ground is PassabilityType_Passable
+    //
+    // `side` is the DIAMOND, not the map's Width/Height: RA2 cell coordinates
+    // (the ones [Waypoints] packs as X + 1000*Y) live in the padded diamond
+    // space the generator works in, so a 73x73 map still has cells at x = 161.
+    // side = mapWidth + mapHeight covers every coordinate CellExists admits:
+    // |x - y| < mapWidth and x + y <= mapWidth + 2*mapHeight bound x and y by
+    // (mapWidth + 2*mapHeight + mapWidth - 1) / 2 < mapWidth + mapHeight.
+    {
+        const MapSizeResult sz = RandomMapGenerator::CalcMapSize(cfg);
+        const int side = sz.mapWidth + sz.mapHeight;
+        std::string grid(outPath ? outPath : "");
+        grid += ".cells";
+        // Cells.Items, the same slot array CellAt indexes: index = x + (y << 9).
+        // Read through the public accessor so this entry point needs no new
+        // member on the reference class (which would mean a patch).
+        MapCell* const* slots = rmg.GetCellSlots();
+        if (std::FILE* f = std::fopen(grid.c_str(), "wb"))
+        {
+            const std::uint32_t wh[2] = {
+                static_cast<std::uint32_t>(side),
+                static_cast<std::uint32_t>(side) };
+            std::fwrite(wh, sizeof wh, 1, f);
+            for (int y = 0; y < side; ++y)
+            {
+                for (int x = 0; x < side; ++x)
+                {
+                    const int index = x + (y << 9);
+                    const MapCell* cell = (index >= 0) ? slots[index] : nullptr;
+                    std::uint8_t pair[2];
+                    const int level = cell ? cell->Level : 0;
+                    pair[0] = static_cast<std::uint8_t>(
+                        level < 0 ? 0 : (level > 255 ? 255 : level));
+                    pair[1] = 0;
+                    if (rmg.CellExists(x, y)) pair[1] |= 1;
+                    if (cell && cell->Passability == PassabilityType_Passable)
+                        pair[1] |= 2;
+                    std::fwrite(pair, sizeof pair, 1, f);
+                }
+            }
+            std::fclose(f);
+        }
+    }
+
     g_output = outPath ? outPath : "";
     return 0;
 }

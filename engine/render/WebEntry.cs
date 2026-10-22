@@ -45,6 +45,15 @@ namespace CNCMaps {
 				// the same corner tile - kept as upstream draws them).
 				MarkStartPos = true,
 				StartPositionMarking = StartPositionMarking.Squared,
+				// The page lets the player move the start positions on the preview and
+				// re-render, so it has to turn a click in the saved PNG back into a map
+				// cell.  The renderer already resolves that transform exactly - the crop
+				// origin, the tile size and every start position's surface pixel - and
+				// writes it next to the image with `--meta-json`.  Asking for the same
+				// file here means the page never keeps its own copy of the projection,
+				// which is the rule the whole project follows: one implementation, and
+				// the UI reads it.
+				MetadataOutFile = outPath + ".json",
 			};
 			var engine = new RenderEngine();
 			if (!engine.ConfigureFromSettings(settings)) return -1;

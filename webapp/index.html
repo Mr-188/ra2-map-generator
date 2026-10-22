@@ -484,10 +484,37 @@ a.dl svg { width: 12px; height: 12px; }
   padding: 0 24px 48px;
 }
 #preview { display: none; }
+/* The start-point editor draws over the image, so the two share one box: the
+   canvas is positioned against this wrapper and sized to the image's DISPLAYED
+   box, while all picking happens in the image's NATURAL pixels (starts.js). */
+.pv { position: relative; }
 #preview img {
   display: block; width: 100%; height: auto;
   border: 1px solid var(--rule); background: #000;
 }
+#starts-layer {
+  /* The image has a 1px border, so the canvas sits on its CONTENT box (1px in,
+     2px smaller) or every click and every drawn marker is off by that border.
+     The size is explicit rather than `inset` alone on purpose: a canvas is a
+     REPLACED element, so `width:auto` takes its intrinsic size (300x150) and the
+     opposite inset is ignored -- the overlay then draws at a fraction of the
+     map, which is exactly how the first version of this shipped. */
+  position: absolute; left: 1px; top: 1px;
+  width: calc(100% - 2px); height: calc(100% - 2px);
+  display: block; cursor: crosshair;
+  touch-action: none;            /* a drag must not scroll the page on touch */
+}
+#starts-bar { display: none; }
+#starts-bar.on {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;
+}
+#starts-bar .btn { width: auto; margin-top: 0; }
+#starts-hint {
+  margin: 0; font: 400 12.5px/1.7 var(--mono);
+  letter-spacing: .03em; color: var(--ink-3);
+}
+#starts-hint.bad { color: #e0857a; }
+#starts-hint.ok { color: var(--amber-2); }
 .meta {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-top: 10px;
@@ -1059,7 +1086,18 @@ a.dl svg { width: 12px; height: 12px; }
 <section class="band">
   <div class="sec" id="preview">
     <h2 class="sec-h">渲染预览<span class="sec-n">CNCMaps · WASM</span></h2>
-    <img id="preview-img" alt="地图预览">
+    <div class="pv">
+      <img id="preview-img" alt="地图预览">
+      <canvas id="starts-layer" hidden></canvas>
+    </div>
+    <!-- 出生点编辑：拖红方块改落点，应用后只改地图的 [Waypoints]，再重新出图。
+         落点校验用引擎自己的可通行性（不去猜地形），所以这里不需要重复地形规则。 -->
+    <div id="starts-bar">
+      <button id="starts-edit" class="btn" type="button">编辑出生点</button>
+      <button id="starts-apply" class="btn primary" type="button" hidden>应用并重新预览</button>
+      <button id="starts-reset" class="btn" type="button" hidden>还原</button>
+      <p id="starts-hint"></p>
+    </div>
     <div class="meta">
       <p class="cap" id="preview-cap"></p>
       <a class="dl" id="preview-dl" download="preview.png">

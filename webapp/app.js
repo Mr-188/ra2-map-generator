@@ -14,6 +14,12 @@
 // classic script (the .NET runtime detects its host with `typeof importScripts`).
 import { encodeParams, decodeParams, enginePrefix, sizeFromIndex, indexFromSize }
   from './sharebits.js';
+// The preview's start-point editor: pixel -> cell and the [Waypoints] rewrite.
+// Pure code, exercised by tools/verify_starts.mjs under node.
+import {
+  parseCellGrid, pickCell, projectCell, rewriteWaypoint, readWaypoints,
+  cellFlags, CELL_IN_MAP, CELL_PASSABLE,
+} from './starts.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
@@ -43,6 +49,12 @@ const previewEl = el('preview');
 const previewImg = el('preview-img');
 const previewCap = el('preview-cap');
 const previewDl = el('preview-dl');
+const startsLayer = el('starts-layer');
+const startsBar = el('starts-bar');
+const startsEditBtn = el('starts-edit');
+const startsApplyBtn = el('starts-apply');
+const startsResetBtn = el('starts-reset');
+const startsHint = el('starts-hint');
 
 // Object URLs for the two downloads; revoked before being replaced so a session
 // that generates many maps does not leak blob storage.
@@ -50,6 +62,19 @@ let mapUrl = null;
 let previewUrl = null;
 let mapBytes = null;      // the renderer runs on this thread and reads these
 let rendererRuntime = null;
+
+// ---- 出生点编辑（see the "start points" section near the bottom）-----------
+let cellGrid = null;       // the generator's per-cell level/passability sidecar
+let renderMeta = null;     // the renderer's cell -> pixel transform for the image on screen
+const startEdit = {
+  on: false,
+  points: [],              // [{ number, x, y }] -- what the map WOULD carry if applied
+  original: [],            // the same list as the map on disk, for 还原
+  selected: -1,
+  dragging: false,
+  hover: null,             // { x, y, ok } under the pointer while dragging
+  mapText: '',             // latin1-decoded map, edited in place
+};
 
 // The 参数集 of the run that is in flight, and of the map currently on screen.  It
 // is built from the CONCRETE values decided at click time (never from the controls,
@@ -480,6 +505,17 @@ worker.addEventListener('message', async (event) => {
       break;
     case 'map': {
       mapBytes = msg.bytes;
+      // A new map invalidates whatever the editor was holding: the cell grid is
+      // this map's, and the pixel transform belongs to the image still on screen
+      // (it is replaced when the render lands).
+      cellGrid = msg.cells ? parseCellGrid(msg.cells) : null;
+      // The transform belongs to the image that is on screen, and that image is
+      // this map's PREDECESSOR until the next render lands.  Keeping the old
+      // numbers here would mean picking cells with one map's camera and another
+      // map's terrain, which is wrong in a way no assertion downstream catches.
+      renderMeta = null;
+      resetStartEdit();
+      refreshStartTools();
       if (mapUrl) URL.revokeObjectURL(mapUrl);
       mapUrl = URL.createObjectURL(new Blob([msg.bytes], { type: 'application/octet-stream' }));
       downloadEl.href = mapUrl;
@@ -522,6 +558,7 @@ worker.addEventListener('message', async (event) => {
       setStatus('渲染完成。', 'ok');
       renderBtn.disabled = false;
       renderBtn.textContent = '重新渲染';
+      refreshStartTools();
       break;
     }
     case 'assets-data':
@@ -583,6 +620,15 @@ async function renderOnMainThread(msg) {
     const rc = Render('/maps/render.map', '/game', '/maps/render');
     if (rc !== 0) throw new Error(`渲染器返回 ${rc}`);
     const png = fs.readFile('/maps/render.png');
+    // The renderer's own cell -> pixel transform for THIS image (WebEntry asks
+    // for it with --meta-json).  Absent means an older renderer is cached, in
+    // which case the start-point editor stays off rather than guessing.
+    try {
+      renderMeta = JSON.parse(new TextDecoder().decode(fs.readFile('/maps/render.json')));
+    } catch (err) {
+      renderMeta = null;
+      mark('starts: 渲染器没有给出坐标元数据，出生点编辑不可用');
+    }
 
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
@@ -596,6 +642,7 @@ async function renderOnMainThread(msg) {
     setStatus('渲染完成。', 'ok');
     renderBtn.disabled = false;
     renderBtn.textContent = '重新渲染';
+    refreshStartTools();
     // This path (the main-thread renderer) is what actually runs; it used to leave
     // the 120 s watchdog armed, so a finished image was reported as "渲染超时"
     // two minutes later, on top of the picture.
@@ -1832,3 +1879,319 @@ pendingHashCode = readHashCode();
 if (pendingHashCode) importCodeEl.value = pendingHashCode;
 setImportHint();
 el('landing-close').addEventListener('click', hideLanding);
+
+// ===========================================================================
+// 出生点编辑（start points）
+//
+// 生成并渲染之后，玩家可以直接在预览图上拖红方块改出生点，应用后重新出图。
+//
+// 三件事各自只有一个来源，页面不复制任何一份：
+//   * 贴图坐标  —— 渲染器自己算的 cell -> pixel 变换（--meta-json，WebEntry 里打开）
+//   * 格子高度/可通行性 —— 生成器随图导出的 <out>.cells（mg_generate 里写的）
+//   * 地图格式   —— [Waypoints] 一个数：X + 1000 * Y（MapGenMapFile.cpp 的写法）
+//
+// 所以这里没有"猜地形"的逻辑：落点能不能站人，问的是生成器算完那一刻的
+// Passability，而不是从图片颜色反推。
+// ===========================================================================
+
+/** The map file is byte-oriented; latin1 is the 1:1 decode that lets the edited
+ *  text be re-encoded without touching a byte we did not mean to change. */
+function decodeLatin1(bytes) {
+  return new TextDecoder('latin1').decode(bytes);
+}
+function encodeLatin1(text) {
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; ++i) out[i] = text.charCodeAt(i) & 0xff;
+  return out;
+}
+
+function resetStartEdit() {
+  startEdit.on = false;
+  startEdit.points = [];
+  startEdit.original = [];
+  startEdit.selected = -1;
+  startEdit.dragging = false;
+  startEdit.hover = null;
+  startEdit.mapText = '';
+  startEdit.baseBytes = null;
+  setHint('');
+}
+
+/** Shows or hides the whole editor according to what is actually available. */
+function refreshStartTools() {
+  const ready = !!(cellGrid && renderMeta && mapBytes);
+  startsBar.classList.toggle('on', ready);
+  startsLayer.hidden = !(ready && startEdit.on);
+  startsEditBtn.textContent = startEdit.on ? '退出编辑' : '编辑出生点';
+  startsEditBtn.hidden = !ready;
+  startsApplyBtn.hidden = !(ready && startEdit.on);
+  startsResetBtn.hidden = !(ready && startEdit.on);
+  if (!ready) { setHint(''); return; }
+  if (startEdit.on) { sizeStartsLayer(); drawStarts(); }
+}
+
+function enterStartEdit() {
+  startEdit.on = true;
+  startEdit.mapText = decodeLatin1(mapBytes);
+  startEdit.baseBytes = mapBytes.slice();
+  startEdit.points = readWaypoints(startEdit.mapText).filter((w) => w.number < 8);
+  startEdit.original = startEdit.points.map((p) => ({ ...p }));
+  startEdit.selected = startEdit.points.length ? 0 : -1;
+  startEdit.hover = null;
+  refreshStartTools();
+  setHint(startEdit.points.length
+    ? `按住预览图上的方块拖动，或点一下把「出生点 ${startEdit.points[startEdit.selected].number}」放过去。`
+    : '这张图没有可编辑的出生点。');
+  mark(`starts: 进入出生点编辑（${startEdit.points.length} 个）`);
+}
+
+function leaveStartEdit() {
+  const unsaved = startEdit.on && startEdit.mapText && startEdit.points.some((p) => {
+    const now = readWaypoints(startEdit.mapText).find((w) => w.number === p.number);
+    return !now || now.x !== p.x || now.y !== p.y;
+  });
+  startEdit.on = false;
+  startEdit.dragging = false;
+  startEdit.hover = null;
+  refreshStartTools();
+  // Saying so matters: the map is only changed by 应用并重新预览, and a silently
+  // dropped drag looks like the editor did nothing.
+  setHint(unsaved ? '已退出编辑，未应用的改动没有写进地图。' : '', unsaved ? 'bad' : '');
+}
+
+function setHint(text, tone) {
+  startsHint.textContent = text;
+  startsHint.className = tone || '';
+}
+
+/** The canvas covers the image's content box, so its own rect is the right frame. */
+function toNatural(event) {
+  const rect = startsLayer.getBoundingClientRect();
+  const nw = previewImg.naturalWidth;
+  const nh = previewImg.naturalHeight;
+  if (!rect.width || !rect.height || !nw || !nh) return null;
+  return {
+    x: (event.clientX - rect.left) * nw / rect.width,
+    y: (event.clientY - rect.top) * nh / rect.height,
+  };
+}
+
+function sizeStartsLayer() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = startsLayer.clientWidth;
+  const h = startsLayer.clientHeight;
+  if (!w || !h) return;
+  const bw = Math.max(1, Math.round(w * dpr));
+  const bh = Math.max(1, Math.round(h * dpr));
+  if (startsLayer.width !== bw) startsLayer.width = bw;
+  if (startsLayer.height !== bh) startsLayer.height = bh;
+}
+
+/** One cell diamond, in CSS pixels, around a natural-pixel centre. */
+function diamond(ctx, cx, cy, hw, hh) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - hh);
+  ctx.lineTo(cx + hw, cy);
+  ctx.lineTo(cx, cy + hh);
+  ctx.lineTo(cx - hw, cy);
+  ctx.closePath();
+}
+
+function drawStarts() {
+  if (!startEdit.on || !cellGrid || !renderMeta) return;
+  const ctx = startsLayer.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = startsLayer.clientWidth;
+  const h = startsLayer.clientHeight;
+  if (!w || !h) return;
+  const s = w / previewImg.naturalWidth;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const hw = (renderMeta.tileWidth / 2) * s;
+  const hh = (renderMeta.tileHeight / 2) * s;
+
+  // The cell the pointer is over, so the user sees where it will land before
+  // letting go.  Red when the generator says the ground cannot carry a start.
+  if (startEdit.hover) {
+    const c = projectCell(cellGrid, renderMeta, startEdit.hover.x, startEdit.hover.y);
+    diamond(ctx, c.x * s, c.y * s, hw, hh);
+    ctx.fillStyle = startEdit.hover.ok ? 'rgba(242,192,105,.45)' : 'rgba(224,133,122,.45)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = startEdit.hover.ok ? '#f2c069' : '#e0857a';
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < startEdit.points.length; ++i) {
+    const pt = startEdit.points[i];
+    const c = projectCell(cellGrid, renderMeta, pt.x, pt.y);
+    const cx = c.x * s;
+    const cy = c.y * s;
+    diamond(ctx, cx, cy, hw, hh);
+    ctx.fillStyle = i === startEdit.selected ? 'rgba(242,192,105,.35)' : 'rgba(255,255,255,.14)';
+    ctx.fill();
+    ctx.lineWidth = i === startEdit.selected ? 2 : 1;
+    ctx.strokeStyle = i === startEdit.selected ? '#f2c069' : '#ffffff';
+    ctx.stroke();
+
+    // The number, haloed rather than boxed: a box the size of a cell would hide
+    // the very terrain the user is choosing between.
+    const label = String(pt.number);
+    ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(12,13,16,.9)';
+    ctx.strokeText(label, cx, cy + 1);
+    ctx.fillStyle = i === startEdit.selected ? '#f2c069' : '#f2f2f2';
+    ctx.fillText(label, cx, cy + 1);
+  }
+}
+
+/** What the cell under the pointer means, in the generator's own terms. */
+function describeCell(cell) {
+  if (!cell) return { ok: false, text: '这里在地图外。' };
+  const flags = cellFlags(cellGrid, cell.x, cell.y);
+  if (!(flags & CELL_IN_MAP)) return { ok: false, text: `(${cell.x}, ${cell.y}) 在地图菱形之外。` };
+  if (!(flags & CELL_PASSABLE)) return { ok: false, text: `(${cell.x}, ${cell.y}) 不是可通行地面（水面/崖/坡）。` };
+  const clash = startEdit.points.some(
+    (p, i) => i !== startEdit.selected && p.x === cell.x && p.y === cell.y);
+  if (clash) return { ok: false, text: `(${cell.x}, ${cell.y}) 已经有别的出生点。` };
+  return { ok: true, text: `放到 (${cell.x}, ${cell.y})。` };
+}
+
+function updateHover(natural) {
+  const cell = natural ? pickCell(cellGrid, renderMeta, natural.x, natural.y) : null;
+  if (!natural) { startEdit.hover = null; drawStarts(); return; }
+  const info = describeCell(cell);
+  startEdit.hover = cell ? { x: cell.x, y: cell.y, ok: info.ok } : null;
+  setHint(info.text, info.ok ? 'ok' : 'bad');
+  drawStarts();
+}
+
+function commitHover() {
+  const hover = startEdit.hover;
+  if (!hover || !hover.ok || startEdit.selected < 0) return false;
+  const pt = startEdit.points[startEdit.selected];
+  pt.x = hover.x;
+  pt.y = hover.y;
+  startEdit.hover = null;
+  const info = describeCell({ x: pt.x, y: pt.y });
+  setHint(`出生点 ${pt.number} → (${pt.x}, ${pt.y})。按「应用并重新预览」出图。`,
+          info.ok ? 'ok' : '');
+  drawStarts();
+  return true;
+}
+
+/** Nearest start to the pointer, in CSS pixels, within `limit`. */
+function nearestStart(natural) {
+  if (!natural || !startsLayer.clientWidth || !previewImg.naturalWidth) return -1;
+  const s = startsLayer.clientWidth / previewImg.naturalWidth;
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < startEdit.points.length; ++i) {
+    const c = projectCell(cellGrid, renderMeta, startEdit.points[i].x, startEdit.points[i].y);
+    const d = Math.hypot((c.x - natural.x) * s, (c.y - natural.y) * s);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return bestD <= 18 ? best : -1;
+}
+
+startsEditBtn.addEventListener('click', () => {
+  if (startEdit.on) leaveStartEdit();
+  else if (cellGrid && renderMeta && mapBytes) enterStartEdit();
+  else setHint('先生成并渲染一张图。', 'bad');
+});
+
+startsLayer.addEventListener('pointerdown', (event) => {
+  if (!startEdit.on) return;
+  const natural = toNatural(event);
+  if (!natural) return;
+  const hit = nearestStart(natural);
+  if (hit >= 0) startEdit.selected = hit;
+  if (startEdit.selected < 0) return;
+  startEdit.dragging = true;
+  try { startsLayer.setPointerCapture(event.pointerId); } catch (err) { /* no capture */ }
+  updateHover(natural);
+  event.preventDefault();
+});
+
+startsLayer.addEventListener('pointermove', (event) => {
+  if (!startEdit.on) return;
+  const natural = toNatural(event);
+  if (startEdit.dragging) { updateHover(natural); return; }
+  // Hover feedback even when not dragging, but only near an existing start:
+  // a bare pointer crossing the map should not repaint the world.
+  if (nearestStart(natural) >= 0 || startEdit.hover) updateHover(natural);
+});
+
+startsLayer.addEventListener('pointerup', (event) => {
+  if (!startEdit.on || !startEdit.dragging) return;
+  startEdit.dragging = false;
+  try { startsLayer.releasePointerCapture(event.pointerId); } catch (err) { /* not captured */ }
+  updateHover(toNatural(event));
+  commitHover();
+});
+
+startsLayer.addEventListener('pointercancel', () => {
+  startEdit.dragging = false;
+  startEdit.hover = null;
+  drawStarts();
+});
+
+startsLayer.addEventListener('pointerleave', () => {
+  if (startEdit.dragging) return;
+  startEdit.hover = null;
+  drawStarts();
+});
+
+window.addEventListener('resize', () => {
+  if (!startEdit.on) return;
+  sizeStartsLayer();
+  drawStarts();
+});
+
+/** Writes the moved start positions into the map bytes and re-renders.
+ *
+ *  Only [Waypoints] changes.  [Terrain] and [Structures] keys are packed cells
+ *  too, which is why the edit goes through rewriteWaypoint's section-scoped
+ *  lookup instead of a text replacement. */
+function applyStartEdits() {
+  let text = startEdit.mapText;
+  let changed = 0;
+  for (const pt of startEdit.points) {
+    const now = readWaypoints(text).find((w) => w.number === pt.number);
+    if (now && now.x === pt.x && now.y === pt.y) continue;
+    const next = rewriteWaypoint(text, pt.number, pt.x, pt.y);
+    if (next === null) continue;
+    text = next;
+    changed++;
+  }
+  if (!changed) { setHint('出生点没有变化。'); return; }
+  startEdit.mapText = text;
+  mapBytes = encodeLatin1(text);
+  if (mapUrl) URL.revokeObjectURL(mapUrl);
+  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
+  downloadEl.href = mapUrl;
+  startEdit.original = startEdit.points.map((p) => ({ ...p }));
+  mark(`starts: 已写入 ${changed} 个出生点，重新出图`);
+  startRender();
+}
+
+startsApplyBtn.addEventListener('click', applyStartEdits);
+
+startsResetBtn.addEventListener('click', () => {
+  if (!startEdit.baseBytes) return;
+  mapBytes = startEdit.baseBytes.slice();
+  if (mapUrl) URL.revokeObjectURL(mapUrl);
+  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
+  downloadEl.href = mapUrl;
+  startEdit.mapText = decodeLatin1(mapBytes);
+  startEdit.points = readWaypoints(startEdit.mapText).filter((w) => w.number < 8);
+  startEdit.original = startEdit.points.map((p) => ({ ...p }));
+  startEdit.selected = startEdit.points.length ? 0 : -1;
+  setHint('已还原成刚生成的地图，重新出图。');
+  mark('starts: 还原到生成时的地图');
+  startRender();
+});
