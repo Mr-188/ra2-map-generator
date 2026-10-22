@@ -10,7 +10,7 @@ decoder expects, so this suite does not trust the writer's own idea of LZO:
     module;
   * Python parses the result as an INI map and decodes the pack with the same
     LZO implementation the other oracles use (maptools.minilzo, a real LZO1X
-    decoder), then compares every BGR byte against the input;
+    decoder), then compares every RGB byte against the input;
   * [Preview]/[PreviewPack] must be the first two sections and Size must be
     the 120x60 the writer promises;
   * re-patching must be byte-identical (no duplicated sections) and must keep
@@ -88,7 +88,7 @@ def main() -> int:
         js = work / "make.mjs"
         js.write_text(f"""
 import fs from 'node:fs';
-import {{ buildPreviewSections, dummyPreviewSections, rgbaToBgr,
+import {{ buildPreviewSections, dummyPreviewSections, rgbaToRgb,
          withPreviewSections, PREVIEW_WIDTH, PREVIEW_HEIGHT }} from {json.dumps(MODULE.as_uri())};
 const w = PREVIEW_WIDTH, h = PREVIEW_HEIGHT;
 const rgba = new Uint8Array(w * h * 4);
@@ -96,13 +96,13 @@ for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {{
   const o = (y * w + x) * 4;
   rgba[o] = x * 2 & 255; rgba[o + 1] = y * 4 & 255; rgba[o + 2] = 128; rgba[o + 3] = 255;
 }}
-const bgr = rgbaToBgr(rgba, w, h);
-const sections = buildPreviewSections(bgr, w, h);
+const rgb = rgbaToRgb(rgba, w, h);
+const sections = buildPreviewSections(rgb, w, h);
 const base = new Uint8Array(fs.readFileSync({json.dumps(str(base))}));
 fs.writeFileSync({json.dumps(str(work / 'patched.map'))}, withPreviewSections(base, sections));
 fs.writeFileSync({json.dumps(str(work / 'patched2.map'))}, withPreviewSections(withPreviewSections(base, sections), sections));
 fs.writeFileSync({json.dumps(str(work / 'dummy.map'))}, withPreviewSections(base, dummyPreviewSections()));
-fs.writeFileSync({json.dumps(str(work / 'expected.bin'))}, bgr);
+fs.writeFileSync({json.dumps(str(work / 'expected.bin'))}, rgb);
 """, encoding="utf-8")
 
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=120)
@@ -119,7 +119,7 @@ fs.writeFileSync({json.dumps(str(work / 'expected.bin'))}, bgr);
         if len(decoded) != len(expected):
             failures.append(f"decoded {len(decoded)} bytes, expected {len(expected)}")
         elif decoded != expected:
-            failures.append("decoded BGR bytes do not match the input pixels")
+            failures.append("decoded RGB bytes do not match the input pixels")
 
         if (work / "patched2.map").read_bytes() != (work / "patched.map").read_bytes():
             failures.append("re-patching is not idempotent")

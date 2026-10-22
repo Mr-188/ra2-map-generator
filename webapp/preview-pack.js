@@ -14,7 +14,12 @@
 //     uint16 compressedLength
 //     uint16 rawLength
 //     compressedLength bytes of LZO1X
-// and the concatenated raw blocks are W*H*3 bytes of BGR888.
+// and the concatenated raw blocks are W*H*3 bytes of 24-bit RGB (R, G, B).
+//
+// Channel order is NOT BGR: WAE's writer stores R,G,B, and CnCNet's
+// MapPreviewExtractor reads the decompressed array as 24-bit RGB and then swaps
+// R/B only to fill GDI+'s Bgr24 buffer.  Writing BGR here swaps red and blue in
+// every thumbnail.
 //
 // This module writes a valid LZO1X stream using only the literal-run form
 // (control byte n+17 for n <= 238, otherwise 0 + 255-byte chunks + (n-18) then
@@ -23,7 +28,7 @@
 // cost is a few tens of KB, not a whole map.
 //
 // The format was derived from the shipped maps' bytes (a stock map's
-// [PreviewPack] decodes to a 120x60 BGR image) and from the RA2 map writer
+// [PreviewPack] decodes to a 120x60 RGB image) and from the RA2 map writer
 // contract; no editor code is copied.
 
 export const PREVIEW_WIDTH = 120;
@@ -63,22 +68,22 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-/** BGR888 bytes from an RGBA byte array (canvas ImageData). */
-export function rgbaToBgr(rgba, width, height) {
+/** 24-bit RGB bytes (R, G, B) from an RGBA byte array (canvas ImageData). */
+export function rgbaToRgb(rgba, width, height) {
   const out = new Uint8Array(width * height * 3);
   for (let i = 0, o = 0; i < width * height * 4; i += 4) {
-    out[o++] = rgba[i + 2];
-    out[o++] = rgba[i + 1];
     out[o++] = rgba[i];
+    out[o++] = rgba[i + 1];
+    out[o++] = rgba[i + 2];
   }
   return out;
 }
 
-/** [Preview] + [PreviewPack] text for a W*H BGR888 buffer. */
-export function buildPreviewSections(bgr, width, height) {
+/** [Preview] + [PreviewPack] text for a W*H 24-bit RGB buffer. */
+export function buildPreviewSections(rgb, width, height) {
   const framed = [];
-  for (let off = 0; off < bgr.length; off += BLOCK_SIZE) {
-    const raw = bgr.subarray(off, Math.min(off + BLOCK_SIZE, bgr.length));
+  for (let off = 0; off < rgb.length; off += BLOCK_SIZE) {
+    const raw = rgb.subarray(off, Math.min(off + BLOCK_SIZE, rgb.length));
     const packed = lzoLiteralStream(raw);
     framed.push(packed.length & 0xff, (packed.length >> 8) & 0xff,
                 raw.length & 0xff, (raw.length >> 8) & 0xff);
@@ -95,19 +100,19 @@ export function buildPreviewSections(bgr, width, height) {
 
 /** A valid but featureless 120x60 preview, so a map is never section-less. */
 export function dummyPreviewSections() {
-  const bgr = new Uint8Array(PREVIEW_WIDTH * PREVIEW_HEIGHT * 3);
+  const rgb = new Uint8Array(PREVIEW_WIDTH * PREVIEW_HEIGHT * 3);
   // A dark blue-grey like a map list's empty background, with a faint diagonal
   // so a thumbnail never looks like a decoding failure.
   for (let y = 0; y < PREVIEW_HEIGHT; ++y) {
     for (let x = 0; x < PREVIEW_WIDTH; ++x) {
       const v = 24 + ((x + y) & 15);
       const o = (y * PREVIEW_WIDTH + x) * 3;
-      bgr[o] = v;             // B
-      bgr[o + 1] = v + 8;     // G
-      bgr[o + 2] = v + 16;    // R
+      rgb[o] = v + 16;        // R
+      rgb[o + 1] = v + 8;     // G
+      rgb[o + 2] = v;         // B
     }
   }
-  return buildPreviewSections(bgr, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+  return buildPreviewSections(rgb, PREVIEW_WIDTH, PREVIEW_HEIGHT);
 }
 
 /** The existing [Preview]/[PreviewPack] text at the head of a map, if any. */
@@ -180,5 +185,5 @@ export async function previewSectionsFromPng(pngBytes,
   ctx.drawImage(bitmap, 0, 0, width, height);
   const rgba = ctx.getImageData(0, 0, width, height).data;
   bitmap.close?.();
-  return buildPreviewSections(rgbaToBgr(rgba, width, height), width, height);
+  return buildPreviewSections(rgbaToRgb(rgba, width, height), width, height);
 }
