@@ -484,15 +484,16 @@ a.dl svg { width: 12px; height: 12px; }
   padding: 0 24px 48px;
 }
 #preview { display: none; }
-/* The start-point editor draws over the image, so the two share one box: the
-   canvas is positioned against this wrapper and sized to the image's DISPLAYED
-   box, while all picking happens in the image's NATURAL pixels (starts.js). */
+/* The start-point and ore editors draw over the image, so they share one box:
+   each canvas is positioned against this wrapper and sized to the image's
+   DISPLAYED box, while all picking happens in the image's NATURAL pixels
+   (starts.js / ore.js). */
 .pv { position: relative; }
 #preview img {
   display: block; width: 100%; height: auto;
   border: 1px solid var(--rule); background: #000;
 }
-#starts-layer {
+#starts-layer, #ore-layer {
   /* The image has a 1px border, so the canvas sits on its CONTENT box (1px in,
      2px smaller) or every click and every drawn marker is off by that border.
      The size is explicit rather than `inset` alone on purpose: a canvas is a
@@ -503,8 +504,7 @@ a.dl svg { width: 12px; height: 12px; }
   width: calc(100% - 2px); height: calc(100% - 2px);
   display: block; cursor: crosshair;
   touch-action: none;            /* a drag must not scroll the page on touch */
-}
-#starts-bar { display: none; }
+}#starts-bar { display: none; }
 #starts-bar.on {
   display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;
 }
@@ -519,6 +519,30 @@ a.dl svg { width: 12px; height: 12px; }
 }
 #starts-hint.bad { color: #e0857a; }
 #starts-hint.ok { color: var(--amber-2); }
+/* 矿石绘制：拖框 -> 右击菜单。 提示条只在渲染器给出坐标元数据时才出现。 */
+#ore-bar { display: none; margin-top: 10px; }
+#ore-bar.on { display: block; }
+#ore-hint {
+  margin: 0; font: 400 12.5px/1.7 var(--mono);
+  letter-spacing: .03em; color: var(--ink-3);
+}
+#ore-hint.bad { color: #e0857a; }
+#ore-hint.ok { color: var(--amber-2); }
+#ore-menu {
+  position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 2px;
+  min-width: 176px; padding: 6px; background: var(--panel);
+  border: 1px solid var(--rule-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .55);
+}
+#ore-menu[hidden] { display: none; }
+#ore-menu button {
+  display: block; width: 100%; text-align: left; padding: 7px 10px;
+  border: 1px solid transparent; background: transparent; color: var(--ink);
+  font: 400 13px/1.4 var(--mono); letter-spacing: .03em; cursor: pointer;
+}
+#ore-menu button:hover:not(:disabled) {
+  background: var(--well); color: var(--amber-2); border-color: var(--rule);
+}
+#ore-menu button:disabled { color: var(--ink-3); opacity: .5; cursor: default; }
 .meta {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-top: 10px;
@@ -1093,6 +1117,7 @@ a.dl svg { width: 12px; height: 12px; }
     <div class="pv">
       <img id="preview-img" alt="地图预览">
       <canvas id="starts-layer" hidden></canvas>
+      <canvas id="ore-layer" hidden></canvas>
     </div>
     <!-- 出生点编辑：拖红方块改落点，应用后只改地图的 [Waypoints]，再重新出图。
          落点校验用引擎自己的可通行性（不去猜地形），所以这里不需要重复地形规则。 -->
@@ -1104,6 +1129,19 @@ a.dl svg { width: 12px; height: 12px; }
            所以这串码复现不出移动过的出生点。 -->
       <span class="starts-note" id="starts-note">改出生点不进参数集</span>
       <p id="starts-hint"></p>
+    </div>
+    <!-- 矿石绘制：在预览图上拖框选区，右击菜单把选区里所有可放的空地铺上矿石。
+         写回的是地图自己的 [OverlayPack]/[OverlayDataPack]，然后重新出图。
+         能不能放问的是生成器导出的可通行性，不是从图片颜色猜。 -->
+    <div id="ore-bar">
+      <p id="ore-hint"></p>
+      <!-- 和出生点编辑同一条规矩：分享码描述生成输入，描述不了生成后的手工编辑。 -->
+      <span class="starts-note">改矿石不进参数集</span>
+    </div>
+    <div id="ore-menu" hidden role="menu" aria-label="矿石绘制">
+      <button type="button" data-act="paint" role="menuitem" disabled>放矿石</button>
+      <button type="button" data-act="clear" role="menuitem" disabled>清除矿石</button>
+      <button type="button" data-act="cancel" role="menuitem">取消框选</button>
     </div>
     <div class="meta">
       <p class="cap" id="preview-cap"></p>

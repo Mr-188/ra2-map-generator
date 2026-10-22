@@ -29,6 +29,9 @@ cp "$ROOT/webapp/sharebits.js" "$OUT/"
 # 出生点编辑 (the preview's start-point editor).  app.js imports it, so a deploy
 # that forgets it breaks the module graph and the page never boots at all.
 cp "$ROOT/webapp/starts.js" "$OUT/"
+# 矿石绘制 (the preview's ore brush).  Same rule: app.js imports it; a missing
+# module means the whole page fails to boot (not just the brush).
+cp "$ROOT/webapp/ore.js" "$OUT/"
 # 画廊: a page plus the one file it reads.  The generator's header links to it, so a
 # deploy that forgets these ships a 404 behind that link (and a gallery that cannot
 # read its own list).

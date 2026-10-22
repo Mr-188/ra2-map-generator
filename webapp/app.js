@@ -20,6 +20,13 @@ import {
   parseCellGrid, pickCell, projectCell, rewriteWaypoint, readWaypoints,
   cellFlags, CELL_IN_MAP, CELL_PASSABLE,
 } from './starts.js';
+// The preview's ore brush: [OverlayPack]/[OverlayDataPack], the map's own ore
+// grid.  Pure code, exercised by tools/verify_ore.mjs under node.
+import {
+  readOverlayGrids, writeOverlayGrids, readOccupiedCells, cellsInRect,
+  countSelection, paintOreCells, clearOreCells, removeOreDecorations,
+  classifyCell, CELL_EMPTY, CELL_ORE,
+} from './ore.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
@@ -55,6 +62,12 @@ const startsEditBtn = el('starts-edit');
 const startsApplyBtn = el('starts-apply');
 const startsResetBtn = el('starts-reset');
 const startsHint = el('starts-hint');
+const oreLayer = el('ore-layer');
+const oreBar = el('ore-bar');
+const oreHint = el('ore-hint');
+const oreMenu = el('ore-menu');
+const oreMenuPaint = oreMenu.querySelector('[data-act="paint"]');
+const oreMenuClear = oreMenu.querySelector('[data-act="clear"]');
 
 // Object URLs for the two downloads; revoked before being replaced so a session
 // that generates many maps does not leak blob storage.
@@ -74,6 +87,15 @@ const startEdit = {
   dragging: false,
   hover: null,             // { x, y, ok } under the pointer while dragging
   mapText: '',             // latin1-decoded map, edited in place
+};
+
+// ---- 矿石绘制（see the "ore" section near the bottom）----------------------
+const oreEdit = {
+  dragging: false,
+  rect: null,              // { x0, y0, x1, y1 } in the image's natural pixels
+  cells: [],               // the cells whose centres are inside rect
+  counts: null,            // { empty, ore, blocked, total } for the menu labels
+  cache: null,             // { bytes, ids, data, occupied } for mapBytes
 };
 
 // The 参数集 of the run that is in flight, and of the map currently on screen.  It
@@ -515,6 +537,7 @@ worker.addEventListener('message', async (event) => {
       // map's terrain, which is wrong in a way no assertion downstream catches.
       renderMeta = null;
       resetStartEdit();
+      resetOreEdit();
       refreshStartTools();
       if (mapUrl) URL.revokeObjectURL(mapUrl);
       mapUrl = URL.createObjectURL(new Blob([msg.bytes], { type: 'application/octet-stream' }));
@@ -1926,8 +1949,12 @@ function refreshStartTools() {
   startsEditBtn.hidden = !ready;
   startsApplyBtn.hidden = !(ready && startEdit.on);
   startsResetBtn.hidden = !(ready && startEdit.on);
-  if (!ready) { setHint(''); return; }
-  if (startEdit.on) { sizeStartsLayer(); drawStarts(); }
+  if (!ready) setHint('');
+  else if (startEdit.on) { sizeStartsLayer(); drawStarts(); }
+  // The ore brush lives on the same image; it is available whenever there is a
+  // rendered image with its cell -> pixel transform, and hidden while the
+  // start-point editor has the canvas.
+  refreshOreTools();
 }
 
 function enterStartEdit() {
@@ -2195,4 +2222,355 @@ startsResetBtn.addEventListener('click', () => {
   setHint('已还原成刚生成的地图，重新出图。');
   mark('starts: 还原到生成时的地图');
   startRender();
+});
+
+// ===========================================================================
+// 矿石绘制（ore painting）
+//
+// 生成并渲染之后，在预览图上拖一个框，右击选「放矿石」，框里所有"可放"的
+// 空地就铺上矿石；写回的是地图文件自己的 [OverlayPack]/[OverlayDataPack]，
+// 然后重新出图。 和出生点编辑一样，这里不猜任何地形：
+//
+//   * 格子能不能放，问生成器随图导出的 <out>.cells（可通行性 + 建筑地基位），
+//     再加上地图自己的 overlay / [Terrain] / [Structures] 占用；
+//   * 框选落在哪些格子，用渲染器发布的 cell -> pixel 变换反算（starts.js）。
+//
+// 矿石自己的格式、id 和"生长阶段"全部写在 webapp/ore.js 的抬头里，那份
+// 逻辑由 tools/verify_ore.mjs 用 node 驱动，也在真实渲染器上对过像素。
+// ===========================================================================
+
+function resetOreEdit() {
+  oreEdit.dragging = false;
+  oreEdit.rect = null;
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  oreEdit.cache = null;
+  hideOreMenu();
+}
+
+function setOreHint(text, tone) {
+  oreHint.textContent = text;
+  oreHint.className = tone || '';
+}
+
+/** The map's overlay grids, decoded once per mapBytes value. */
+function ensureOreContext() {
+  if (!mapBytes) return null;
+  if (oreEdit.cache && oreEdit.cache.bytes === mapBytes) return oreEdit.cache;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) {
+    oreEdit.cache = null;
+    return null;
+  }
+  oreEdit.cache = {
+    bytes: mapBytes,
+    ids: grids.ids,
+    data: grids.data,
+    occupied: readOccupiedCells(text),
+  };
+  return oreEdit.cache;
+}
+
+/** Shows or hides the ore bar according to what is actually available. */
+function refreshOreTools() {
+  const ctx = (cellGrid && renderMeta && mapBytes) ? ensureOreContext() : null;
+  const ready = !!ctx;
+  // The start-point editor owns the canvas while it is open; two crosshair
+  // layers on one image would fight over the same drag, and the ore hint would
+  // be describing a gesture that is currently disabled.
+  oreBar.classList.toggle('on', ready && !startEdit.on);
+  oreLayer.hidden = !(ready && !startEdit.on);
+  if (!ready) {
+    hideOreMenu();
+    oreEdit.rect = null;
+    oreEdit.cells = [];
+    oreEdit.counts = null;
+    setOreHint('');
+    return;
+  }
+  if (startEdit.on) { hideOreMenu(); return; }
+  sizeOreLayer();
+  drawOre();
+  if (!oreEdit.rect) {
+    setOreHint('在预览图上拖拽框选一片区域，右击选「放矿石」。');
+  }
+}
+
+function sizeOreLayer() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = oreLayer.clientWidth;
+  const h = oreLayer.clientHeight;
+  if (!w || !h) return;
+  const bw = Math.max(1, Math.round(w * dpr));
+  const bh = Math.max(1, Math.round(h * dpr));
+  if (oreLayer.width !== bw) oreLayer.width = bw;
+  if (oreLayer.height !== bh) oreLayer.height = bh;
+}
+
+/** The canvas covers the image's content box (the image has a 1px border). */
+function toNaturalOre(event) {
+  const rect = oreLayer.getBoundingClientRect();
+  const nw = previewImg.naturalWidth;
+  const nh = previewImg.naturalHeight;
+  if (!rect.width || !rect.height || !nw || !nh) return null;
+  return {
+    x: (event.clientX - rect.left) * nw / rect.width,
+    y: (event.clientY - rect.top) * nh / rect.height,
+  };
+}
+
+function clampNatural(point) {
+  const nw = previewImg.naturalWidth || 0;
+  const nh = previewImg.naturalHeight || 0;
+  return {
+    x: Math.max(0, Math.min(nw, point.x)),
+    y: Math.max(0, Math.min(nh, point.y)),
+  };
+}
+
+function addDiamond(path, cx, cy, hw, hh) {
+  path.moveTo(cx, cy - hh);
+  path.lineTo(cx + hw, cy);
+  path.lineTo(cx, cy + hh);
+  path.lineTo(cx - hw, cy);
+  path.closePath();
+}
+
+function drawOre() {
+  if (oreLayer.hidden || !previewImg.naturalWidth) return;
+  const ctx = oreLayer.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = oreLayer.clientWidth;
+  const h = oreLayer.clientHeight;
+  if (!w || !h) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!oreEdit.rect) return;
+
+  const s = w / previewImg.naturalWidth;
+  const r = oreEdit.rect;
+  const x0 = Math.min(r.x0, r.x1) * s;
+  const x1 = Math.max(r.x0, r.x1) * s;
+  const y0 = Math.min(r.y0, r.y1) * s;
+  const y1 = Math.max(r.y0, r.y1) * s;
+
+  // While dragging only the rubber band is drawn: painting thousands of cell
+  // diamonds on every pointermove is the one thing that would make the drag lag.
+  if (!oreEdit.dragging && oreEdit.cells.length) {
+    const cache = ensureOreContext();
+    if (cache) {
+      const tw = (renderMeta.tileWidth / 2) * s;
+      const th = (renderMeta.tileHeight / 2) * s;
+      const emptyPath = new Path2D();
+      const orePath = new Path2D();
+      for (const cell of oreEdit.cells) {
+        const kind = classifyCell(cellGrid, cache.ids, cache.occupied, cell.x, cell.y);
+        if (kind !== CELL_EMPTY && kind !== CELL_ORE) continue;
+        const p = projectCell(cellGrid, renderMeta, cell.x, cell.y);
+        addDiamond(kind === CELL_ORE ? orePath : emptyPath, p.x * s, p.y * s, tw, th);
+      }
+      ctx.fillStyle = 'rgba(242,192,105,.34)';
+      ctx.fill(emptyPath);
+      ctx.fillStyle = 'rgba(126,214,120,.32)';
+      ctx.fill(orePath);
+    }
+  }
+
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(242,192,105,.95)';
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.setLineDash([]);
+}
+
+/** Recomputes the selected cells and what each one offers (menu labels). */
+function refreshOreSelection() {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect) {
+    oreEdit.cells = [];
+    oreEdit.counts = null;
+    return;
+  }
+  oreEdit.cells = cellsInRect(cellGrid, renderMeta, oreEdit.rect);
+  oreEdit.counts = countSelection(cellGrid, cache.ids, cache.occupied, oreEdit.cells);
+  const c = oreEdit.counts;
+  if (!c.total) {
+    setOreHint('框选区域里没有格子。', 'bad');
+    return;
+  }
+  const tone = c.empty || c.ore ? 'ok' : 'bad';
+  setOreHint(`已框选 ${c.total} 格：可放矿石 ${c.empty} 格，已有矿石 ${c.ore} 格，`
+           + `不可放 ${c.blocked} 格。右击选「放矿石」。`, tone);
+}
+
+function clearOreSelection() {
+  oreEdit.rect = null;
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  hideOreMenu();
+  drawOre();
+  setOreHint('在预览图上拖拽框选一片区域，右击选「放矿石」。');
+}
+
+function showOreMenu(clientX, clientY) {
+  const c = oreEdit.counts;
+  if (!c) return;
+  oreMenuPaint.textContent = `放矿石（${c.empty} 格）`;
+  oreMenuPaint.disabled = c.empty === 0;
+  oreMenuClear.textContent = `清除矿石（${c.ore} 格）`;
+  oreMenuClear.disabled = c.ore === 0;
+  oreMenu.hidden = false;
+  const box = oreMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(clientX, window.innerWidth - box.width - 8));
+  const top = Math.max(8, Math.min(clientY, window.innerHeight - box.height - 8));
+  oreMenu.style.left = `${left}px`;
+  oreMenu.style.top = `${top}px`;
+}
+
+function hideOreMenu() {
+  oreMenu.hidden = true;
+}
+
+/** Writes the brush's result into the map bytes and re-renders. */
+function applyOreEdit(action) {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
+  const text = decodeLatin1(mapBytes);
+  // Fresh arrays on purpose: the cached grids belong to the map on disk, and a
+  // failed write below must not leave them half-painted.
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能放矿石。', 'bad'); return; }
+
+  const result = action === 'paint'
+    ? paintOreCells({
+        grid: cellGrid, cells: oreEdit.cells,
+        ids: grids.ids, data: grids.data, occupied: cache.occupied,
+      })
+    : clearOreCells({ cells: oreEdit.cells, ids: grids.ids, data: grids.data });
+
+  const changed = action === 'paint' ? result.painted : result.cleared;
+  if (!changed) {
+    setOreHint(action === 'paint' ? '选区里没有可放矿石的空地。' : '选区里没有矿石。', 'bad');
+    return;
+  }
+
+  let next = writeOverlayGrids(text, grids.ids, grids.data);
+  if (next === null) {
+    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
+    return;
+  }
+  // 清除矿石时把矿柱装饰树（TIBTRE）一起收掉：它们是矿石的附属物，留在草地上
+  // 就是悬空的树。 放矿石不添加装饰树（overlay 本身已经能画）。
+  if (action === 'clear') next = removeOreDecorations(next, result.packed);
+
+  mapBytes = encodeLatin1(next);
+  if (mapUrl) URL.revokeObjectURL(mapUrl);
+  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
+  downloadEl.href = mapUrl;
+  oreEdit.cache = null;
+  refreshOreSelection();
+  drawOre();
+
+  if (action === 'paint') {
+    setOreHint(`已放 ${result.painted} 格矿石`
+      + `（${result.existing} 格已有矿石，${result.blocked} 格不可放），正在重新出图……`, 'ok');
+    mark(`ore: 已放 ${result.painted} 格矿石`
+      + `（${result.existing} 格已有矿石，${result.blocked} 格不可放），重新出图`);
+  } else {
+    setOreHint(`已清除 ${result.cleared} 格矿石，正在重新出图……`, 'ok');
+    mark(`ore: 已清除 ${result.cleared} 格矿石，重新出图`);
+  }
+  // 地图变了，参数集没变 —— 和出生点编辑同一条规矩：分享码描述生成输入，
+  // 不描述生成后的手工编辑。
+  startRender();
+}
+
+oreLayer.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 || startEdit.on) return;
+  const p = toNaturalOre(event);
+  if (!p) return;
+  hideOreMenu();
+  const q = clampNatural(p);
+  oreEdit.dragging = true;
+  oreEdit.rect = { x0: q.x, y0: q.y, x1: q.x, y1: q.y };
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  try { oreLayer.setPointerCapture(event.pointerId); } catch (err) { /* no capture */ }
+  drawOre();
+  event.preventDefault();
+});
+
+oreLayer.addEventListener('pointermove', (event) => {
+  if (!oreEdit.dragging) return;
+  const p = toNaturalOre(event);
+  if (!p) return;
+  const q = clampNatural(p);
+  oreEdit.rect = { x0: oreEdit.rect.x0, y0: oreEdit.rect.y0, x1: q.x, y1: q.y };
+  drawOre();
+});
+
+oreLayer.addEventListener('pointerup', (event) => {
+  if (!oreEdit.dragging) return;
+  oreEdit.dragging = false;
+  try { oreLayer.releasePointerCapture(event.pointerId); } catch (err) { /* not captured */ }
+  const r = oreEdit.rect;
+  if (!r) return;
+  const dragged = Math.hypot(r.x1 - r.x0, r.y1 - r.y0);
+  // A click is not a box: clearing is the least surprising answer, and it gives
+  // the user a way out without opening the menu.
+  if (dragged < 4) { clearOreSelection(); return; }
+  refreshOreSelection();
+  drawOre();
+});
+
+oreLayer.addEventListener('pointercancel', () => {
+  oreEdit.dragging = false;
+  if (oreEdit.rect) { refreshOreSelection(); drawOre(); }
+});
+
+oreLayer.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  if (startEdit.on) return;
+  if (!oreEdit.rect || !oreEdit.counts) {
+    setOreHint('先拖拽框选一片区域，再右击。', 'bad');
+    return;
+  }
+  showOreMenu(event.clientX, event.clientY);
+});
+
+oreMenu.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const action = button.dataset.act;
+  hideOreMenu();
+  if (action === 'paint') applyOreEdit('paint');
+  else if (action === 'clear') applyOreEdit('clear');
+  else if (action === 'cancel') clearOreSelection();
+});
+
+// Clicking anywhere else dismisses the menu; the canvas pointerdown above also
+// closes it before starting a new box.
+window.addEventListener('pointerdown', (event) => {
+  if (!oreMenu.hidden && !oreMenu.contains(event.target)) hideOreMenu();
+}, true);
+
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!oreMenu.hidden) { hideOreMenu(); return; }
+  if (oreEdit.rect) clearOreSelection();
+});
+
+window.addEventListener('scroll', () => { if (!oreMenu.hidden) hideOreMenu(); }, true);
+
+window.addEventListener('resize', () => {
+  if (oreLayer.hidden) return;
+  sizeOreLayer();
+  drawOre();
+});
+
+// The render replaces the image (new natural size), so the canvases have to be
+// re-measured after it decodes.
+previewImg.addEventListener('load', () => {
+  if (!startEdit.on) { sizeOreLayer(); drawOre(); }
 });

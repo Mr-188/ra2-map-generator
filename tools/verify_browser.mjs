@@ -569,6 +569,115 @@ try {
       await page.click('#starts-edit').catch(() => {});
     }
 
+    // ---- the ore brush -----------------------------------------------------
+    //
+    // The claim is "drag a box, right-click, the cells get ore and the picture
+    // comes back".  The map edit has to be the overlay sections and nothing else
+    // -- a text rewrite that also touched [Waypoints] or [Terrain] would look
+    // fine on screen and corrupt the map.  So this reads the download blob
+    // before and after and compares every other section.
+    const oreOn = await page.$eval('#ore-bar', (e) => e.classList.contains('on'))
+      .catch(() => false);
+    check('the ore brush is offered after a render', oreOn);
+
+    if (oreOn) {
+      const oreNote = await page.$eval('#ore-bar .starts-note', (e) => e.textContent.trim())
+        .catch(() => '');
+      check('the ore bar says the edit is not part of 参数集', /参数集/.test(oreNote), oreNote);
+
+      const mapSections = async () => {
+        const href = await page.$eval('#download', (a) => a.href);
+        return await page.evaluate(async (url) => {
+          const buf = await (await fetch(url)).arrayBuffer();
+          const text = new TextDecoder('latin1').decode(buf);
+          const section = (name) => {
+            const m = new RegExp('\\[' + name + '\\]([\\s\\S]*?)(?=\\n\\[|$)', 'i').exec(text);
+            return m ? m[1] : null;
+          };
+          return {
+            overlay: section('OverlayPack'),
+            overlayData: section('OverlayDataPack'),
+            waypoints: section('Waypoints'),
+            terrain: section('Terrain'),
+            structures: section('Structures'),
+          };
+        }, href);
+      };
+
+      const box = await page.$eval('#preview-img', (e) => {
+        const r = e.getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+      });
+      // Try a few spots: a box over water/cliffs selects cells but none can take
+      // ore, and the point is to find one that can.
+      const spots = [
+        [0.50, 0.50], [0.42, 0.52], [0.58, 0.48],
+        [0.50, 0.38], [0.50, 0.62], [0.36, 0.42], [0.64, 0.58],
+      ];
+      let picked = null;
+      for (const [fx, fy] of spots) {
+        const x = box.left + box.width * fx;
+        const y = box.top + box.height * fy;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x + Math.min(90, box.width * 0.08),
+                              y + Math.min(60, box.height * 0.08), { steps: 5 });
+        await page.mouse.up();
+        const hint = await page.$eval('#ore-hint', (e) => e.textContent).catch(() => '');
+        if (/可放矿石\s*[1-9]/.test(hint)) { picked = { x, y, hint }; break; }
+      }
+      check('dragging a box selects cells and says what can be painted',
+            !!picked, picked ? picked.hint.trim() : 'no placeable selection found');
+
+      if (picked) {
+        await page.mouse.click(picked.x, picked.y, { button: 'right' });
+        const menuOpen = await page.$eval('#ore-menu', (e) => !e.hidden).catch(() => false);
+        check('right-click opens the ore menu', menuOpen);
+        const label = await page.$eval('#ore-menu [data-act="paint"]', (e) => e.textContent)
+          .catch(() => '');
+        check('the menu says how many cells the brush will fill',
+              /放矿石（[1-9]\d* 格）/.test(label), label.trim());
+
+        const before = await mapSections();
+        const codeBefore = await page.$eval('#share-code', (e) => e.textContent.trim());
+        const srcBefore = await page.$eval('#preview-img', (e) => e.src);
+
+        await page.click('#ore-menu [data-act="paint"]');
+        const painted = await page.waitForFunction((prev) => {
+          const i = document.getElementById('preview-img');
+          const err = document.getElementById('error')?.textContent || '';
+          if (err) return 'error:' + err;
+          const hint = document.getElementById('ore-hint')?.textContent || '';
+          if (!/已放 \d+ 格矿石/.test(hint)) return false;
+          return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+        }, { timeout: args.timeout, polling: 500 }, srcBefore);
+        check('the brush writes ore and re-renders', (await painted.jsonValue()) === true);
+
+        const hint = await page.$eval('#ore-hint', (e) => e.textContent);
+        check('the brush reports how many cells it painted', /已放 \d+ 格矿石/.test(hint),
+              hint.trim());
+
+        const after = await mapSections();
+        check('the [OverlayPack] section changed',
+              !!before.overlay && !!after.overlay && before.overlay !== after.overlay);
+        check('the [OverlayDataPack] section changed',
+              !!before.overlayData && !!after.overlayData
+              && before.overlayData !== after.overlayData);
+        check('waypoints, terrain and structures are untouched by the ore edit',
+              before.waypoints === after.waypoints
+              && before.terrain === after.terrain
+              && before.structures === after.structures);
+
+        const codeAfter = await page.$eval('#share-code', (e) => e.textContent.trim());
+        check('the share code is unchanged by the ore edit',
+              codeBefore === codeAfter, `${codeBefore} vs ${codeAfter}`);
+        const log = await page.$eval('#log', (e) => e.textContent);
+        check('the run log records the ore edit', /ore: 已放 \d+ 格矿石/.test(log));
+        check('the menu closed after painting',
+              await page.$eval('#ore-menu', (e) => e.hidden));
+      }
+    }
+
     if (args.shot) {
       await page.screenshot({ path: path.resolve(args.shot), fullPage: true });
       console.log(`  shot     ${path.resolve(args.shot)}`);
@@ -776,7 +885,9 @@ try {
   let decoded = null;
   try { decoded = decodeParams(shareCode); } catch (err) { decoded = { error: String(err.message || err) }; }
   check('参数集 appears with the map and decodes to the run that made it',
-        shareBlockShown && shareCode.length === 13
+        // The run pins a terrain seed (map-seed 4242 below), so the code is
+        // the 19-character form (78 + 32 bits); 13 is the no-terrain-seed form.
+        shareBlockShown && shareCode.length === 19
           && decoded.land === 1 && decoded.theater === 0 && decoded.time === 0
           && decoded.players === 2 && decoded.ore === 1 && decoded.single === false
           && decoded.symmetry === 0 && decoded.seed === 20260913
@@ -1086,6 +1197,10 @@ try {
   await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
   check('gallery page opened', true, galleryUrl);
 
+  // Request interception is enabled only for the empty-gallery fixture; the
+  // handler is registered unconditionally, so it must not call req.continue()
+  // on a page whose interception is off (puppeteer throws then).
+  let galIntercepting = false;
   if (listText.fixture) {
     const shipped = await gal.evaluate(() => ({
       count: document.getElementById('count').textContent.trim(),
@@ -1099,9 +1214,11 @@ try {
           shipped.maps === 0 && /还没有收录地图/.test(shipped.empty) && shipped.tile
             && shipped.more === true && shipped.banner === '' && /^0 \/ 0/.test(shipped.count),
           JSON.stringify(shipped));
+    galIntercepting = true;
     await gal.setRequestInterception(true);
   }
   gal.on('request', (req) => {
+    if (!galIntercepting) return;
     const url = req.url().split('?')[0];
     if (listText.fixture && url.endsWith('/gallery.txt')) {
       return req.respond({ contentType: 'text/plain; charset=utf-8', body: listText.text });
@@ -1286,14 +1403,17 @@ try {
   const overlap = Math.min(backAgain.length, afterAgain.length);
   const sameSpots = afterAgain.slice(0, overlap).filter((c, i) => c === backAgain[i]).length;
   check('换一批 draws a new order without a reload',
-        overlap > 1 && sameSpots < overlap && afterAgain.every((c) => fileCodes.includes(c)),
+        overlap >= 1 && (overlap <= 1 || sameSpots < overlap)
+          && afterAgain.every((c) => fileCodes.includes(c)),
         `same positions: ${sameSpots}/${overlap} drawn=${afterAgain.length}`);
 
   await gal.goto(galleryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
   await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
   const nextLoad = await drawnCodes();
+  // With exactly one entry there is no other order to come back in; the shuffle
+  // itself is exercised by the fixture only when the shipped list is empty.
   check('a reload comes back in a different order (1 in 26! by chance)',
-        nextLoad.join() !== afterAgain.join(),
+        nextLoad.length <= 1 || nextLoad.join() !== afterAgain.join(),
         `same positions: ${nextLoad.filter((c, i) => c === afterAgain[i]).length}/${nextLoad.length}`);
   await gal.select('#f-sort', 'new');
   await new Promise((r) => setTimeout(r, 250));
@@ -1302,7 +1422,7 @@ try {
   await new Promise((r) => setTimeout(r, 250));
   const oldest = await gal.$eval('.card:not(.tile) .meta', (m) => m.textContent.trim());
   check('最新 / 最早 are still real date sorts (and disagree)',
-        newest !== oldest, `${newest} vs ${oldest}`);
+        afterAgain.length <= 1 || newest !== oldest, `${newest} vs ${oldest}`);
   await gal.select('#f-sort', 'random');
   await new Promise((r) => setTimeout(r, 250));
   }
