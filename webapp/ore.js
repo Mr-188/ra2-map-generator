@@ -1,5 +1,6 @@
-// Ore painting on the rendered preview: drag a box, right-click, drop ore on
-// every placeable cell inside it.
+// Mineral painting on the rendered preview: drag a box and drop green ore or
+// colored gems on every placeable cell inside it; right-click a single cell to
+// put down or remove a 矿柱 (a TIBTRE [Terrain] decoration).
 //
 // Pure functions, no DOM, so tools/verify_ore.mjs can exercise all of it under
 // node.  app.js owns the canvas, the menu and the pointer handling.
@@ -63,10 +64,13 @@ import {
 } from './starts.js';
 
 export const EMPTY_OVERLAY = 0xFF;
-export const ORE_OVERLAY_START = 102;
+export const ORE_OVERLAY_START = 102;    // Riparius, the green ore floor
+export const GEM_OVERLAY_START = 27;     // Cruentus, the gem ("彩矿") floor
 export const ORE_VARIANTS = 12;
 export const ORE_OVERLAY_END = ORE_OVERLAY_START + ORE_VARIANTS - 1;   // 113
+export const GEM_OVERLAY_END = GEM_OVERLAY_START + ORE_VARIANTS - 1;   // 38
 export const ORE_DATA = 11;              // mature field (see the header)
+export const GEM_DATA = 11;
 
 /** The overlay grid is 512 x 512 bytes, fixed by the writer. */
 export const OVERLAY_SIDE = 512;
@@ -80,6 +84,10 @@ export function isOreOverlay(id) {
   return id >= ORE_OVERLAY_START && id <= ORE_OVERLAY_END;
 }
 
+export function isGemOverlay(id) {
+  return id >= GEM_OVERLAY_START && id <= GEM_OVERLAY_END;
+}
+
 export function isTiberiumOverlay(id) {
   for (const start of TIBERIUM_STARTS) {
     if (id >= start && id < start + ORE_VARIANTS) return true;
@@ -87,9 +95,22 @@ export function isTiberiumOverlay(id) {
   return false;
 }
 
-/** The ore image variant for a cell -- deterministic, like the rest of the edit. */
+/** A tiberium family is a contiguous run of 12 overlay ids starting at `start`. */
+export function isMineralFamily(id, family) {
+  return id >= family && id < family + ORE_VARIANTS;
+}
+
+/** The image variant for a mineral family -- deterministic, like the edit itself. */
+export function mineralVariant(family, x, y) {
+  return family + ((x * 7 + y * 13) % ORE_VARIANTS);
+}
+
 export function oreVariant(x, y) {
-  return ORE_OVERLAY_START + ((x * 7 + y * 13) % ORE_VARIANTS);
+  return mineralVariant(ORE_OVERLAY_START, x, y);
+}
+
+export function gemVariant(x, y) {
+  return mineralVariant(GEM_OVERLAY_START, x, y);
 }
 
 export function overlayIndex(x, y) {
@@ -449,10 +470,6 @@ export function readOccupiedCells(text) {
 // Selection and painting
 // ---------------------------------------------------------------------------
 
-export const CELL_EMPTY = 'empty';
-export const CELL_ORE = 'ore';
-export const CELL_BLOCKED = 'blocked';
-
 /**
  * The cells whose drawn centre falls inside `rect`, in the image's natural
  * pixels.  `rect` is { x0, y0, x1, y1 } in any corner order.
@@ -479,66 +496,101 @@ export function cellsInRect(grid, meta, rect) {
   return out;
 }
 
+export const CELL_EMPTY = 'empty';
+export const CELL_ORE = 'ore';        // the target mineral family is already here
+export const CELL_OTHER = 'other';    // a different tiberium family
+export const CELL_BLOCKED = 'blocked';
+
 /**
- * What a cell offers to the ore brush:
- *   blocked -- not in the map / not passable / some other overlay or object
- *   ore     -- already ore (a no-op for the brush, a target for 清除)
- *   empty   -- free ground; the brush writes an ore overlay there
+ * What a cell offers to a mineral brush of `family` (102 = green ore, 27 = gems):
+ *   blocked -- not in the map / not passable / building foundation / other
+ *              overlay or [Terrain] object
+ *   other   -- a DIFFERENT tiberium family (not overwritten by this brush)
+ *   ore     -- the target family is already here (a no-op for painting)
+ *   empty   -- free ground; the brush writes the target family there
  */
-export function classifyCell(grid, ids, occupied, x, y) {
+export function classifyCell(grid, ids, occupied, x, y, family = ORE_OVERLAY_START) {
   const flags = cellFlags(grid, x, y);
   if (!(flags & CELL_IN_MAP) || !(flags & CELL_PASSABLE)) return CELL_BLOCKED;
   if (flags & CELL_BUILDING) return CELL_BLOCKED;
   const index = overlayIndex(x, y);
   const id = ids[index];
-  if (isOreOverlay(id)) return CELL_ORE;
-  if (id !== EMPTY_OVERLAY) return CELL_BLOCKED;      // gems, trees, props...
+  if (isMineralFamily(id, family)) return CELL_ORE;
+  if (isTiberiumOverlay(id)) return CELL_OTHER;
+  if (id !== EMPTY_OVERLAY) return CELL_BLOCKED;      // trees, props...
   if (occupied && occupied.has(index)) return CELL_BLOCKED;
   return CELL_EMPTY;
 }
 
-/** Counts the selection without changing anything (the menu's labels). */
-export function countSelection(grid, ids, occupied, cells) {
-  const counts = { empty: 0, ore: 0, blocked: 0, total: cells.length };
+/** Counts a selection for one mineral family (the menu's labels). */
+export function countSelection(grid, ids, occupied, cells, family = ORE_OVERLAY_START) {
+  const counts = { empty: 0, ore: 0, other: 0, blocked: 0, total: cells.length };
   for (const c of cells) {
-    const kind = classifyCell(grid, ids, occupied, c.x, c.y);
+    const kind = classifyCell(grid, ids, occupied, c.x, c.y, family);
     if (kind === CELL_EMPTY) counts.empty++;
     else if (kind === CELL_ORE) counts.ore++;
+    else if (kind === CELL_OTHER) counts.other++;
     else counts.blocked++;
   }
   return counts;
 }
 
 /**
- * Writes ore into every empty selected cell.  Existing ore is left alone (its
- * growth stage is the map's; painting over it would only change the variant).
+ * Writes one mineral family into every empty cell of the selection.  Existing
+ * minerals of the SAME family are left alone; a different family is not touched
+ * either (the brush is additive -- 清除矿 is the way to change a field's type).
  */
-export function paintOreCells({ grid, cells, ids, data, occupied }) {
-  const result = { painted: 0, existing: 0, blocked: 0 };
+export function paintMineralCells({
+  grid, cells, ids, data, occupied,
+  family = ORE_OVERLAY_START, stage = ORE_DATA,
+}) {
+  const result = { painted: 0, existing: 0, other: 0, blocked: 0 };
   for (const c of cells) {
-    const kind = classifyCell(grid, ids, occupied, c.x, c.y);
+    const kind = classifyCell(grid, ids, occupied, c.x, c.y, family);
     if (kind === CELL_BLOCKED) { result.blocked++; continue; }
     if (kind === CELL_ORE) { result.existing++; continue; }
+    if (kind === CELL_OTHER) { result.other++; continue; }
     const index = overlayIndex(c.x, c.y);
-    ids[index] = oreVariant(c.x, c.y);
-    data[index] = ORE_DATA;
+    ids[index] = mineralVariant(family, c.x, c.y);
+    data[index] = stage;
     result.painted++;
   }
   return result;
 }
 
-/** Removes ore (only the 102..113 family) from the selected cells. */
-export function clearOreCells({ cells, ids, data }) {
+/** Green ore, the original brush (kept as a name the page already imports). */
+export function paintOreCells({ grid, cells, ids, data, occupied }) {
+  return paintMineralCells({
+    grid, cells, ids, data, occupied,
+    family: ORE_OVERLAY_START, stage: ORE_DATA,
+  });
+}
+
+/** The gem ("彩矿") brush. */
+export function paintGemCells({ grid, cells, ids, data, occupied }) {
+  return paintMineralCells({
+    grid, cells, ids, data, occupied,
+    family: GEM_OVERLAY_START, stage: GEM_DATA,
+  });
+}
+
+/** Removes any tiberium (ore or gems) from the selected cells. */
+export function clearMineralCells({ cells, ids, data }) {
   const result = { cleared: 0, kept: 0, packed: new Set() };
   for (const c of cells) {
     const index = overlayIndex(c.x, c.y);
-    if (!isOreOverlay(ids[index])) { result.kept++; continue; }
+    if (!isTiberiumOverlay(ids[index])) { result.kept++; continue; }
     ids[index] = EMPTY_OVERLAY;
     data[index] = 0;
     result.packed.add(1000 * c.y + c.x);
     result.cleared++;
   }
   return result;
+}
+
+/** Backwards-compatible name (the first version of the brush only knew ore). */
+export function clearOreCells({ cells, ids, data }) {
+  return clearMineralCells({ cells, ids, data });
 }
 
 /**
@@ -579,4 +631,160 @@ export function removeOreDecorations(text, packed) {
   const body = kept.join(sec.eol).replace(/\s+$/, '')
     + sec.eol + (sec.next ? sec.eol : '');
   return text.slice(0, sec.bodyStart) + body + text.slice(sec.bodyEnd);
+}
+
+// ---------------------------------------------------------------------------
+// 矿柱 (the TIBTRE decoration)
+//
+// A pillar is not an overlay: it is a [Terrain] object, which is why it can sit
+// on an ore tile (the generator's "矿树") or on bare ground ("裸矿柱").  The
+// generator writes the three names TIBTRE01..03 (MapGenTiberium.cpp 397-409 and
+// PlaceArchipelagoOrePillars 484-510); the map's [Terrain] section carries one
+// `X + 1000*Y=NAME` line per object.
+//
+// Placing one by hand is allowed on any passable, non-building cell.  Whatever
+// else is on that cell is removed first, as the user asked: an existing
+// [Terrain] object is replaced, and a non-mineral overlay is cleared.  Ore/gems
+// are kept -- a pillar on a mineral tile is exactly the decoration the generator
+// produces.  Water, cliffs and building foundations are refused.
+// ---------------------------------------------------------------------------
+
+export const PILLAR_NAMES = ['TIBTRE01', 'TIBTRE02', 'TIBTRE03'];
+
+export function isPillarName(name) {
+  return PILLAR_NAMES.includes(name);
+}
+
+/** The pillar image for a cell -- deterministic, like the mineral variant. */
+export function pillarName(x, y) {
+  return PILLAR_NAMES[((x * 5 + y * 11) >>> 0) % PILLAR_NAMES.length];
+}
+
+/** The [Terrain] object name at a packed cell, or null. */
+export function findTerrainObject(text, packed) {
+  const sec = sectionBody(text, 'Terrain');
+  if (!sec) return null;
+  for (const line of sec.body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('[')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    if (Number(trimmed.slice(0, eq).trim()) !== packed) continue;
+    return trimmed.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/** Writes `packed=name` into [Terrain], replacing that cell's object if present. */
+export function setTerrainObject(text, packed, name) {
+  const sec = sectionBody(text, 'Terrain');
+  if (!sec) return null;
+  const lines = sec.body.split(/\r?\n/);
+  let replaced = false;
+  let lastData = -1;
+  for (let i = 0; i < lines.length; ++i) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('[')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    lastData = i;
+    if (Number(trimmed.slice(0, eq).trim()) !== packed) continue;
+    lines[i] = `${packed}=${name}`;
+    replaced = true;
+  }
+  if (!replaced) {
+    if (lastData >= 0) lines.splice(lastData + 1, 0, `${packed}=${name}`);
+    else lines.unshift(`${packed}=${name}`);
+  }
+  const body = lines.join(sec.eol).replace(/\s+$/, '')
+    + sec.eol + (sec.next ? sec.eol : '');
+  return text.slice(0, sec.bodyStart) + body + text.slice(sec.bodyEnd);
+}
+
+/** Removes the [Terrain] object at a packed cell. Returns { text, removed }. */
+export function removeTerrainObject(text, packed) {
+  const sec = sectionBody(text, 'Terrain');
+  if (!sec) return { text, removed: null };
+  const kept = [];
+  let removed = null;
+  for (const line of sec.body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('[')) {
+      kept.push(line);
+      continue;
+    }
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) { kept.push(line); continue; }
+    if (Number(trimmed.slice(0, eq).trim()) === packed) {
+      removed = trimmed.slice(eq + 1).trim();
+      continue;
+    }
+    kept.push(line);
+  }
+  if (removed === null) return { text, removed: null };
+  const body = kept.join(sec.eol).replace(/\s+$/, '')
+    + sec.eol + (sec.next ? sec.eol : '');
+  return { text: text.slice(0, sec.bodyStart) + body + text.slice(sec.bodyEnd), removed };
+}
+
+/**
+ * Whether a pillar may be placed on a cell, and what is already there.
+ * Returns { ok, reason, existing, isPillar }.
+ */
+export function describePillarTarget({ grid, text, x, y }) {
+  const flags = cellFlags(grid, x, y);
+  const existing = findTerrainObject(text, 1000 * y + x);
+  const isPillar = !!existing && isPillarName(existing);
+  if (!(flags & CELL_IN_MAP)) {
+    return { ok: false, reason: `(${x}, ${y}) 不在地图里。`, existing, isPillar };
+  }
+  if (!(flags & CELL_PASSABLE)) {
+    return { ok: false, reason: `(${x}, ${y}) 不是可通行地面（水面/崖/墙/石头）。`, existing, isPillar };
+  }
+  if (flags & CELL_BUILDING) {
+    return { ok: false, reason: `(${x}, ${y}) 是建筑地基，不能放。`, existing, isPillar };
+  }
+  if (!sectionBody(text, 'Terrain')) {
+    return { ok: false, reason: '这张地图没有 [Terrain] 段。', existing, isPillar };
+  }
+  return { ok: true, reason: '', existing, isPillar };
+}
+
+/**
+ * Places a pillar.  Replaces any existing [Terrain] object on the cell and
+ * clears a non-mineral overlay; ore/gems stay.  An existing pillar is a no-op.
+ */
+export function placePillar({ grid, text, ids, data, x, y }) {
+  const target = describePillarTarget({ grid, text, x, y });
+  if (!target.ok) return { ok: false, reason: target.reason };
+  if (target.isPillar) {
+    return { ok: true, changed: false, already: true, name: target.existing,
+             removedObject: null, removedOverlay: null, text };
+  }
+
+  const index = overlayIndex(x, y);
+  let removedOverlay = null;
+  if (ids[index] !== EMPTY_OVERLAY && !isTiberiumOverlay(ids[index])) {
+    removedOverlay = ids[index];
+    ids[index] = EMPTY_OVERLAY;
+    data[index] = 0;
+  }
+
+  const name = pillarName(x, y);
+  const next = setTerrainObject(text, 1000 * y + x, name);
+  if (next === null) return { ok: false, reason: '这张地图没有 [Terrain] 段。' };
+  return {
+    ok: true, changed: true, name, text: next,
+    removedObject: target.existing, removedOverlay,
+  };
+}
+
+/** Removes a pillar (only TIBTRE; other [Terrain] objects are left alone). */
+export function removePillar({ text, x, y }) {
+  const packed = 1000 * y + x;
+  if (!isPillarName(findTerrainObject(text, packed))) {
+    return { ok: true, changed: false, reason: `(${x}, ${y}) 没有矿柱。`, text };
+  }
+  const { text: next, removed } = removeTerrainObject(text, packed);
+  return { ok: true, changed: true, removed, text: next };
 }

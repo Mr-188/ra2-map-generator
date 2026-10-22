@@ -530,7 +530,7 @@ a.dl svg { width: 12px; height: 12px; }
 #ore-hint.ok { color: var(--amber-2); }
 #ore-menu {
   position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 2px;
-  min-width: 176px; padding: 6px; background: var(--panel);
+  min-width: 196px; padding: 6px; background: var(--panel);
   border: 1px solid var(--rule-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .55);
 }
 #ore-menu[hidden] { display: none; }
@@ -1130,17 +1130,21 @@ a.dl svg { width: 12px; height: 12px; }
       <span class="starts-note" id="starts-note">改出生点不进参数集</span>
       <p id="starts-hint"></p>
     </div>
-    <!-- 矿石绘制：在预览图上拖框选区，右击菜单把选区里所有可放的空地铺上矿石。
-         写回的是地图自己的 [OverlayPack]/[OverlayDataPack]，然后重新出图。
-         能不能放问的是生成器导出的可通行性，不是从图片颜色猜。 -->
+    <!-- 矿石绘制：在预览图上拖框选区，右击菜单把选区里所有可放的空地铺上
+         矿石（绿）或彩矿；也可以直接在单个格子上右击放/移除矿柱。
+         写回的是地图自己的 [OverlayPack]/[OverlayDataPack] 与 [Terrain]，然后
+         重新出图。 能不能放问的是生成器导出的可通行性，不是从图片颜色猜。 -->
     <div id="ore-bar">
       <p id="ore-hint"></p>
       <!-- 和出生点编辑同一条规矩：分享码描述生成输入，描述不了生成后的手工编辑。 -->
-      <span class="starts-note">改矿石不进参数集</span>
+      <span class="starts-note">改矿 / 矿柱不进参数集</span>
     </div>
     <div id="ore-menu" hidden role="menu" aria-label="矿石绘制">
       <button type="button" data-act="paint" role="menuitem" disabled>放矿石</button>
-      <button type="button" data-act="clear" role="menuitem" disabled>清除矿石</button>
+      <button type="button" data-act="gems" role="menuitem" disabled>放彩矿</button>
+      <button type="button" data-act="pillar" role="menuitem" disabled>放矿柱</button>
+      <button type="button" data-act="unpillar" role="menuitem" disabled>移除矿柱</button>
+      <button type="button" data-act="clear" role="menuitem" disabled>清除矿</button>
       <button type="button" data-act="cancel" role="menuitem">取消框选</button>
     </div>
     <div class="meta">

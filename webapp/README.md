@@ -135,11 +135,13 @@ sending the `.map` file.
 
 With the same rendered image, dragging a box on the preview selects the cells whose
 drawn centre falls inside it (`cellsInRect` in `ore.js`); right-clicking opens a menu
-that either paints ore on every placeable cell of the selection or clears the ore in
-it.  The map is rewritten **in the browser**, then re-rendered — no regeneration, so
-the terrain, starts and everything else stay exactly as generated.
+that paints **green ore** (Riparius) or **彩矿/gems** (Cruentus) on every placeable
+cell of the selection, clears the minerals in it, or acts on the **single cell under
+the pointer** (放矿柱 / 移除矿柱).  The map is rewritten **in the browser**, then
+re-rendered — no regeneration, so the terrain, starts and everything else stay
+exactly as generated.
 
-What the brush writes is the map's own ore layer:
+What the brushes write is the map's own mineral layer:
 
 * **[OverlayPack]/[OverlayDataPack]** are the fixed 512 × 512 grids the writer emits
   (`MapGenMapFile.cpp`: `index = X + 512 * Y`, `0xFF` = no overlay), 32 chunks of
@@ -147,18 +149,28 @@ What the brush writes is the map's own ore layer:
   numbered base64 lines.  `ore.js` decodes and re-encodes exactly that shape;
   `tools/verify_ore.mjs` checks both directions against `maptools/format80.py` and
   compares the rewritten file with the Python map-format oracle, section by section.
-* **The ore ids are the generator's own**: 102..113 (`MapGenTiberium.cpp`'s
-  `overlayBase 102` plus 0..11), at growth stage 11 — a mature field, the value most
-  cells of a generated map already carry.  Gems (27..38) and the other tiberium
-  families are recognised and never overwritten.
+* **The ids are the generator's own**: ore 102..113 (`MapGenTiberium.cpp`'s
+  `overlayBase 102` plus 0..11) and gems 27..38 (`overlayBase 27`), both at growth
+  stage 11 — a mature field, the value most cells of a generated map already carry.
+  The brushes are additive: a cell already carrying the **other** family is left
+  alone (清除矿 is the way to change a field's type), and other tiberium families are
+  recognised and never overwritten.
 * **Placeability is the engine's vocabulary**, not a colour guess: the cell must be
   in the map diamond and `PassabilityType_Passable` in the `<out>.cells` sidecar the
   generator already exports for the start editor (so water, beach, cliffs, walls and
   rocks are out), its overlay slot must be empty, it must not be a building
   foundation cell (the sidecar's third flag bit is `AltCellFlags_ContainsBuilding`;
   `[Structures]` names the anchor cell only), and it must not hold a `[Terrain]`
-  object (trees; read out of the map text).  The variant within 102..113 is derived
-  from the cell coordinates, so painting the same box twice produces the same bytes.
+  object (trees; read out of the map text).  The variant within each family is
+  derived from the cell coordinates, so painting the same box twice produces the
+  same bytes.
+* **矿柱** is a `[Terrain]` object (`TIBTRE01..03`), not an overlay, so it can sit on
+  an ore tile (the generator's 矿树) or on bare ground (裸矿柱).  Right-clicking a
+  single cell offers 放矿柱: the cell must be passable and not a building foundation,
+  and whatever else is on it is removed first — an existing `[Terrain]` object is
+  replaced and a non-mineral overlay is cleared; ore/gems are kept.  移除矿柱 deletes
+  only the `TIBTRE` line.  The generator's own placement rules and names are in
+  `MapGenTiberium.cpp` 397-409 / 484-510.
 
 Like the start editor, this is a manual edit and the 参数集 does not describe it —
 regenerating from the code gives back the generated map, not the painted one.
@@ -194,10 +206,11 @@ python3 -m http.server 8000
   click copies it, and a code from another build offers the right version switch).
 * The **矿石绘制** is verified by `tools/verify_ore.mjs`: Format80 against the
   project's Python codec in both directions, the `[OverlayPack]` rewrite against the
-  Python map-format oracle (every other section byte-identical), the brush's rules
-  (water/gems/objects untouched, idempotent, 清除 back to `0xFF`), and — when the
-  native renderer and a loose game tree are available — a real render whose painted
-  cells' pixels changed.
+  Python map-format oracle (every other section byte-identical), both mineral
+  brushes (green/gems, additive, idempotent, 清除 back to `0xFF`), the 矿柱 edit
+  (replaces a tree, keeps every other `[Terrain]` line, refuses water/buildings,
+  removes only TIBTRE), and — when the native renderer and a loose game tree are
+  available — a real render whose painted cells' and pillar cell's pixels changed.
 * The **画廊** (`gallery.html` + `gallery.js`) is the other half of 参数集: a catalogue
   whose list is a hand-editable text file (`gallery.txt`, one line per map:
   `参数集 | 作者 | 日期 | 标题 | 描述`, only the first field required) and whose every

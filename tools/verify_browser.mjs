@@ -675,6 +675,109 @@ try {
         check('the run log records the ore edit', /ore: 已放 \d+ 格矿石/.test(log));
         check('the menu closed after painting',
               await page.$eval('#ore-menu', (e) => e.hidden));
+
+        // ---- 彩矿 (gems) on a fresh box --------------------------------
+        // The green brush filled the first box's empty cells, so a new box is
+        // needed; the hint's 可放矿石 count is exactly the empty cells the gem
+        // brush will fill.
+        const gemSpots = [
+          [0.45, 0.42], [0.55, 0.42], [0.45, 0.58], [0.55, 0.58],
+          [0.40, 0.50], [0.60, 0.50], [0.50, 0.34], [0.50, 0.66],
+          [0.34, 0.50], [0.66, 0.50], [0.38, 0.38], [0.62, 0.62],
+        ];
+        let gemBox = null;
+        for (const [fx, fy] of gemSpots) {
+          const x = box.left + box.width * fx;
+          const y = box.top + box.height * fy;
+          await page.mouse.move(x, y);
+          await page.mouse.down();
+          await page.mouse.move(x + Math.min(80, box.width * 0.07),
+                                y + Math.min(55, box.height * 0.07), { steps: 5 });
+          await page.mouse.up();
+          const hint = await page.$eval('#ore-hint', (e) => e.textContent).catch(() => '');
+          if (/可放矿石\s*[1-9]/.test(hint)) { gemBox = { x, y, hint }; break; }
+        }
+        check('a fresh box is found for the gem brush', !!gemBox,
+              gemBox ? gemBox.hint.trim() : 'no empty cells left');
+
+        if (gemBox) {
+          await page.mouse.click(gemBox.x, gemBox.y, { button: 'right' });
+          const gemLabel = await page.$eval('#ore-menu [data-act="gems"]', (e) => e.textContent)
+            .catch(() => '');
+          check('the menu offers 彩矿 with a cell count',
+                /放彩矿（[1-9]\d* 格）/.test(gemLabel), gemLabel.trim());
+          const beforeGem = await mapSections();
+          const codeGem = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcGem = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="gems"]');
+          const gemDone = await page.waitForFunction((prev) => {
+            const i = document.getElementById('preview-img');
+            const err = document.getElementById('error')?.textContent || '';
+            if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/已放 \d+ 格彩矿/.test(hint)) return false;
+            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+          }, { timeout: args.timeout, polling: 500 }, srcGem);
+          check('the gem brush writes 彩矿 and re-renders', (await gemDone.jsonValue()) === true);
+          const afterGem = await mapSections();
+          check('彩矿 changes the overlay sections only',
+                afterGem.overlay !== beforeGem.overlay
+                && afterGem.overlayData !== beforeGem.overlayData
+                && afterGem.waypoints === beforeGem.waypoints
+                && afterGem.terrain === beforeGem.terrain
+                && afterGem.structures === beforeGem.structures);
+          check('the share code is unchanged by the gem edit',
+                codeGem === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logGem = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the gem edit', /已放 \d+ 格彩矿/.test(logGem));
+        }
+
+        // ---- 矿柱 (a single cell, TIBTRE) ------------------------------
+        const pillarSpots = [
+          [0.50, 0.50], [0.48, 0.46], [0.52, 0.54], [0.44, 0.52], [0.56, 0.48],
+          [0.50, 0.40], [0.50, 0.60], [0.40, 0.44], [0.60, 0.56], [0.46, 0.58],
+        ];
+        let pillar = null;
+        for (const [fx, fy] of pillarSpots) {
+          const px = box.left + box.width * fx;
+          const py = box.top + box.height * fy;
+          await page.mouse.click(px, py, { button: 'right' });
+          const item = await page.$eval('#ore-menu [data-act="pillar"]', (b) => ({
+            disabled: b.disabled, label: b.textContent.trim(), title: b.title,
+          })).catch(() => null);
+          if (item && !item.disabled) { pillar = { px, py, ...item }; break; }
+        }
+        check('right-click on a cell offers 放矿柱', !!pillar,
+              pillar ? pillar.label : 'no passable cell under the tried points');
+
+        if (pillar) {
+          check('the pillar item names the target cell',
+                /放矿柱（\d+, \d+）/.test(pillar.label), pillar.label);
+          const beforePillar = await mapSections();
+          const codePillar = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcPillar = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="pillar"]');
+          const pillarDone = await page.waitForFunction((prev) => {
+            const i = document.getElementById('preview-img');
+            const err = document.getElementById('error')?.textContent || '';
+            if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/已在 \(\d+, \d+\) 放了 TIBTRE/.test(hint)) return false;
+            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+          }, { timeout: args.timeout, polling: 500 }, srcPillar);
+          check('the pillar is written and re-rendered', (await pillarDone.jsonValue()) === true);
+          const afterPillar = await mapSections();
+          check('矿柱 changes [Terrain] and leaves the rest alone',
+                afterPillar.terrain !== beforePillar.terrain
+                && afterPillar.waypoints === beforePillar.waypoints
+                && afterPillar.structures === beforePillar.structures);
+          check('the pillar text names a TIBTRE',
+                /TIBTRE0[1-3]/.test(afterPillar.terrain || ''));
+          check('the share code is unchanged by the pillar edit',
+                codePillar === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logPillar = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the pillar edit', /矿柱 TIBTRE0[1-3]/.test(logPillar));
+        }
       }
     }
 

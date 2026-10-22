@@ -34,10 +34,12 @@ import {
 } from '../webapp/starts.js';
 import {
   readOverlayGrids, writeOverlayGrids, readOccupiedCells, cellsInRect,
-  countSelection, paintOreCells, clearOreCells, removeOreDecorations, classifyCell,
-  decodeFormat80, encodeFormat80, isOreOverlay, isTiberiumOverlay,
-  EMPTY_OVERLAY, ORE_OVERLAY_START, ORE_OVERLAY_END, ORE_DATA,
-  OVERLAY_BYTES, CELL_EMPTY, CELL_ORE, CELL_BLOCKED,
+  countSelection, paintOreCells, paintMineralCells, clearOreCells, removeOreDecorations,
+  placePillar, removePillar, describePillarTarget, findTerrainObject, isPillarName,
+  classifyCell, decodeFormat80, encodeFormat80, isOreOverlay, isGemOverlay,
+  isTiberiumOverlay, EMPTY_OVERLAY, ORE_OVERLAY_START, ORE_OVERLAY_END,
+  GEM_OVERLAY_START, GEM_OVERLAY_END, ORE_DATA, GEM_DATA,
+  OVERLAY_BYTES, CELL_EMPTY, CELL_ORE, CELL_OTHER, CELL_BLOCKED,
 } from '../webapp/ore.js';
 
 function parseArgs(argv) {
@@ -473,6 +475,57 @@ check('painting again is a no-op', second.painted === 0
       && second.existing === painted.existing + painted.painted,
       `${second.painted} more painted, ${second.existing} existing`);
 
+// ---- the colored-ore brush (gems, 27..38) --------------------------------
+const gemGrids = readOverlayGrids(mapText);
+const gemCounts = countSelection(grid, beforeIds, occupied, selected, GEM_OVERLAY_START);
+const gemPainted = paintMineralCells({
+  grid, cells: selected, ids: gemGrids.ids, data: gemGrids.data, occupied,
+  family: GEM_OVERLAY_START, stage: GEM_DATA,
+});
+check('painting gems fills the same empty cells',
+      gemPainted.painted === gemCounts.empty && gemPainted.painted > 0,
+      `${gemPainted.painted} painted, ${gemPainted.existing} existing, `
+      + `${gemPainted.other} other mineral, ${gemPainted.blocked} blocked`);
+check('painted gems are the gem family at the mature stage',
+      selected.every((c) => {
+        const i = c.x + 512 * c.y;
+        if (gemGrids.ids[i] === beforeIds[i]) return true;
+        return isGemOverlay(gemGrids.ids[i]) && gemGrids.data[i] === GEM_DATA
+          && gemGrids.ids[i] >= GEM_OVERLAY_START && gemGrids.ids[i] <= GEM_OVERLAY_END;
+      }), `data ${GEM_DATA}`);
+check('the gem brush leaves green ore alone',
+      selected.every((c) => {
+        const i = c.x + 512 * c.y;
+        return isOreOverlay(beforeIds[i]) ? gemGrids.ids[i] === beforeIds[i] : true;
+      }));
+const gemSecond = paintMineralCells({
+  grid, cells: selected, ids: gemGrids.ids, data: gemGrids.data, occupied,
+  family: GEM_OVERLAY_START, stage: GEM_DATA,
+});
+check('painting gems again is a no-op', gemSecond.painted === 0
+      && gemSecond.existing === gemPainted.existing + gemPainted.painted,
+      `${gemSecond.painted} more painted, ${gemSecond.existing} existing`);
+
+const gemText = writeOverlayGrids(mapText, gemGrids.ids, gemGrids.data);
+const gemPath = path.join(scratch, 'gems.map');
+fs.writeFileSync(gemPath, Buffer.from(gemText, 'latin1'));
+const gemRead = py(`
+import sys, json, hashlib
+sys.path.insert(0, ${JSON.stringify(ROOT)})
+from maptools import map_ini, overlay_layer
+text = open(sys.argv[1], 'rb').read().decode('latin1')
+layer = overlay_layer.OverlayLayer.from_sections(map_ini.read_sections(text))
+print(json.dumps({
+  'ids': hashlib.sha256(bytes(layer.ids)).hexdigest(),
+  'data': hashlib.sha256(bytes(layer.data)).hexdigest(),
+}))
+`, gemPath);
+check('the Python oracle reads our painted gems back',
+      gemRead.status === 0 && (() => {
+        const o = JSON.parse(gemRead.stdout);
+        return o.ids === sha(gemGrids.ids) && o.data === sha(gemGrids.data);
+      })(), (gemRead.stderr || '').trim());
+
 const paintedText = writeOverlayGrids(mapText, grids.ids, grids.data);
 check('the rewritten map is text', typeof paintedText === 'string');
 const paintedPath = path.join(scratch, 'painted.map');
@@ -521,6 +574,8 @@ check('清除 leaves other overlays alone',
         const i = c.x + 512 * c.y;
         return isOreOverlay(beforeIds[i]) ? grids.ids[i] === EMPTY_OVERLAY : true;
       }));
+check('清除 also removes the gems in the selection',
+      !gem || grids.ids[gem.x + 512 * gem.y] === EMPTY_OVERLAY);
 
 const clearedText = removeOreDecorations(
   writeOverlayGrids(paintedText, grids.ids, grids.data), cleared.packed);
@@ -540,6 +595,123 @@ check('the cleared map still parses and the ore is gone',
       clearedGrids
         ? (decor ? `(${decor.x},${decor.y}) id=${clearedGrids.ids[decorIndex]}` : 'no decor cell')
         : 'overlay packs do not parse');
+
+// ---------------------------------------------------------------------------
+// 5. 矿柱 (TIBTRE, a [Terrain] object)
+// ---------------------------------------------------------------------------
+const terrainMap = (t) => {
+  const map = new Map();
+  const sec = (/\[Terrain\]([\s\S]*?)(?=\n\[|$)/i.exec(t) || [])[1] || '';
+  for (const line of sec.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq < 0 || trimmed.startsWith(';') || trimmed.startsWith('[')) continue;
+    const key = Number(trimmed.slice(0, eq).trim());
+    if (Number.isInteger(key)) map.set(key, trimmed.slice(eq + 1).trim());
+  }
+  return map;
+};
+
+let treeCell = null;
+{
+  const before = terrainMap(mapText);
+  for (const [packed, name] of before) {
+    if (isPillarName(name)) continue;
+    const x = packed % 1000;
+    const y = Math.floor(packed / 1000);
+    if (x >= grid.width || y >= grid.height) continue;
+    const f = cellFlags(grid, x, y);
+    if ((f & CELL_PASSABLE) && !(f & CELL_BUILDING)) {
+      treeCell = { x, y, packed, name };
+      break;
+    }
+  }
+}
+check('a replaceable [Terrain] object exists', !!treeCell,
+      treeCell ? `${treeCell.name} at (${treeCell.x},${treeCell.y})` : 'none');
+
+if (treeCell) {
+  const pillarGrids = readOverlayGrids(mapText);
+  const placed = placePillar({
+    grid, text: mapText, ids: pillarGrids.ids, data: pillarGrids.data,
+    x: treeCell.x, y: treeCell.y,
+  });
+  check('placePillar puts a pillar on the cell',
+        placed.ok && placed.changed && isPillarName(placed.name), placed.name || placed.reason);
+  check('the object that was there is replaced',
+        placed.removedObject === treeCell.name, `${treeCell.name} -> ${placed.name}`);
+  check('the [Terrain] line now names the pillar',
+        findTerrainObject(placed.text, treeCell.packed) === placed.name);
+
+  const beforeT = terrainMap(mapText);
+  const afterT = terrainMap(placed.text);
+  check('replacing an object keeps every other [Terrain] line',
+        afterT.size === beforeT.size
+        && [...beforeT].every(([k, v]) => k === treeCell.packed
+          ? afterT.get(k) === placed.name : afterT.get(k) === v));
+  check('the pillar edit touches no other map section',
+        ['Waypoints', 'Structures', 'Map'].every((name) => {
+          const re = new RegExp('\\[' + name + '\\]([\\s\\S]*?)(?=\\n\\[|$)', 'i');
+          return (re.exec(placed.text) || [])[1] === (re.exec(mapText) || [])[1];
+        }));
+
+  const again = placePillar({
+    grid, text: placed.text, ids: pillarGrids.ids, data: pillarGrids.data,
+    x: treeCell.x, y: treeCell.y,
+  });
+  check('placing a pillar where one already is is a no-op',
+        again.ok && !again.changed && again.already, again.name);
+
+  const removed = removePillar({ text: placed.text, x: treeCell.x, y: treeCell.y });
+  check('removePillar removes only that TIBTRE',
+        removed.ok && removed.changed && removed.removed === placed.name
+        && findTerrainObject(removed.text, treeCell.packed) === null);
+  const removedT = terrainMap(removed.text);
+  check('removing the pillar keeps the other [Terrain] lines',
+        removedT.size === beforeT.size - 1
+        && [...removedT].every(([k, v]) => k !== treeCell.packed && beforeT.get(k) === v));
+
+  // A non-mineral overlay on the target is removed as the user asked; ore/gems
+  // are kept (the generator's own pillars sit on ore).
+  const overlayGrids = readOverlayGrids(mapText);
+  overlayGrids.ids[treeCell.x + 512 * treeCell.y] = 173;   // a tree/prop overlay
+  const withOverlay = placePillar({
+    grid, text: mapText, ids: overlayGrids.ids, data: overlayGrids.data,
+    x: treeCell.x, y: treeCell.y,
+  });
+  check('a non-mineral overlay on the pillar cell is removed',
+        withOverlay.ok && withOverlay.changed && withOverlay.removedOverlay === 173
+        && overlayGrids.ids[treeCell.x + 512 * treeCell.y] === EMPTY_OVERLAY,
+        `removed overlay ${withOverlay.removedOverlay}`);
+
+  // Water/cliff/outside-map and building foundations are refused.
+  let wetCell = null;
+  for (let y = 0; y < grid.height && !wetCell; ++y) {
+    for (let x = 0; x < grid.width; ++x) {
+      const f = cellFlags(grid, x, y);
+      if ((f & CELL_IN_MAP) && !(f & CELL_PASSABLE)) { wetCell = { x, y }; break; }
+    }
+  }
+  check('a water/cliff cell is refused', !!wetCell);
+  if (wetCell) {
+    const refused = placePillar({
+      grid, text: mapText, ids: pillarGrids.ids, data: pillarGrids.data,
+      x: wetCell.x, y: wetCell.y,
+    });
+    check('placePillar refuses water/cliffs', !refused.ok && /可通行|水面|崖/.test(refused.reason),
+          refused.reason);
+  }
+
+  const syntheticFlags = grid.flags.slice();
+  syntheticFlags[treeCell.y * grid.width + treeCell.x] |= CELL_BUILDING;
+  const buildingGrid = { ...grid, flags: syntheticFlags };
+  const onBuilding = placePillar({
+    grid: buildingGrid, text: mapText, ids: pillarGrids.ids, data: pillarGrids.data,
+    x: treeCell.x, y: treeCell.y,
+  });
+  check('placePillar refuses a building foundation',
+        !onBuilding.ok && /建筑/.test(onBuilding.reason), onBuilding.reason);
+}
 
 // ---------------------------------------------------------------------------
 // 5. the renderer: painted pixels must change in a real render
@@ -571,7 +743,21 @@ if (args.renderer && args.mixdir) {
     const renderPainted = paintOreCells({
       grid, cells: block ? block.cells.slice() : [], ids: renderIds, data: renderData, occupied,
     });
-    const renderText = writeOverlayGrids(mapText, renderIds, renderData);
+    let renderText = writeOverlayGrids(mapText, renderIds, renderData);
+    // Put a pillar on the tree cell in the same render: one "after" image then
+    // proves both the overlay brush and the [Terrain] edit are drawn.
+    let renderPillar = null;
+    if (treeCell) {
+      const pr = placePillar({
+        grid, text: renderText, ids: renderIds, data: renderData,
+        x: treeCell.x, y: treeCell.y,
+      });
+      if (pr.ok && pr.changed) {
+        renderPillar = pr;
+        renderText = pr.removedOverlay !== null
+          ? writeOverlayGrids(pr.text, renderIds, renderData) : pr.text;
+      }
+    }
     const renderPath = path.join(scratch, 'render-after.map');
     fs.writeFileSync(renderPath, Buffer.from(renderText, 'latin1'));
 
@@ -584,37 +770,53 @@ if (args.renderer && args.mixdir) {
     // around every painted cell centre in the two images.
     const points = (block ? block.cells : []).map((c) => {
       const q = projectCell(grid, before.meta, c.x, c.y);
-      return { x: Math.round(q.x), y: Math.round(q.y) };
+      return { x: Math.round(q.x), y: Math.round(q.y), kind: 'ore' };
     });
+    if (renderPillar) {
+      const q = projectCell(grid, before.meta, treeCell.x, treeCell.y);
+      points.push({ x: Math.round(q.x), y: Math.round(q.y), kind: 'pillar' });
+    }
     const samplePath = path.join(scratch, 'samples.json');
     fs.writeFileSync(samplePath, JSON.stringify(points));
     const pixels = py(`
 import sys, json
+from collections import Counter
 from PIL import Image
 before = Image.open(sys.argv[1]).convert('RGB')
 after = Image.open(sys.argv[2]).convert('RGB')
 points = json.load(open(sys.argv[3]))
-hit = 0
+total = Counter()
+hit = Counter()
 for p in points:
+    kind = p.get('kind', 'ore')
+    total[kind] += 1
     x, y = p['x'], p['y']
     if x < 8 or y < 8 or x + 8 >= before.width or y + 8 >= before.height:
         continue
     changed = any(before.getpixel((x + dx, y + dy)) != after.getpixel((x + dx, y + dy))
                   for dy in range(-8, 9) for dx in range(-8, 9))
-    hit += 1 if changed else 0
-print(json.dumps({'points': len(points), 'changed': hit}))
+    if changed:
+        hit[kind] += 1
+print(json.dumps({'total': total, 'hit': hit}))
 `, before.png, after.png, samplePath);
     check('the painted cells\' pixels changed in the render', pixels.status === 0,
           (pixels.stderr || '').trim());
     if (pixels.status === 0) {
       const r = JSON.parse(pixels.stdout);
+      const oreTotal = r.total.ore || 0;
+      const oreHit = r.hit.ore || 0;
       // The block is free, flat ground by construction, so every painted cell
       // should be visible; allow a little slack for a cell hidden behind its
       // neighbour's z.
       check('most painted cells are visibly different after the render',
-            r.changed >= Math.ceil(r.points * 0.9),
-            `${r.changed}/${r.points} cell windows changed`);
-      check('at least one cell actually changed', r.changed > 0);
+            oreHit >= Math.ceil(oreTotal * 0.9),
+            `${oreHit}/${oreTotal} cell windows changed`);
+      check('at least one cell actually changed', oreHit > 0);
+      if (renderPillar) {
+        check('the pillar cell is visibly different after the render',
+              (r.hit.pillar || 0) === 1,
+              `${r.hit.pillar || 0}/1 pillar window changed (${renderPillar.name})`);
+      }
     }
     check('the painted map rendered a different image',
           sha(fs.readFileSync(before.png)) !== sha(fs.readFileSync(after.png)));

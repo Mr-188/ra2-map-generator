@@ -24,8 +24,10 @@ import {
 // grid.  Pure code, exercised by tools/verify_ore.mjs under node.
 import {
   readOverlayGrids, writeOverlayGrids, readOccupiedCells, cellsInRect,
-  countSelection, paintOreCells, clearOreCells, removeOreDecorations,
-  classifyCell, CELL_EMPTY, CELL_ORE,
+  countSelection, paintMineralCells, clearMineralCells, removeOreDecorations,
+  describePillarTarget, placePillar, removePillar,
+  classifyCell, CELL_EMPTY, CELL_ORE, CELL_OTHER,
+  ORE_OVERLAY_START, GEM_OVERLAY_START, ORE_DATA, GEM_DATA,
 } from './ore.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
@@ -67,6 +69,9 @@ const oreBar = el('ore-bar');
 const oreHint = el('ore-hint');
 const oreMenu = el('ore-menu');
 const oreMenuPaint = oreMenu.querySelector('[data-act="paint"]');
+const oreMenuGems = oreMenu.querySelector('[data-act="gems"]');
+const oreMenuPillar = oreMenu.querySelector('[data-act="pillar"]');
+const oreMenuUnpillar = oreMenu.querySelector('[data-act="unpillar"]');
 const oreMenuClear = oreMenu.querySelector('[data-act="clear"]');
 
 // Object URLs for the two downloads; revoked before being replaced so a session
@@ -94,7 +99,9 @@ const oreEdit = {
   dragging: false,
   rect: null,              // { x0, y0, x1, y1 } in the image's natural pixels
   cells: [],               // the cells whose centres are inside rect
-  counts: null,            // { empty, ore, blocked, total } for the menu labels
+  counts: null,            // green-ore counts for the menu labels
+  countsGem: null,         // gem counts (same selection, other family)
+  target: null,            // { x, y, info } under the last right-click
   cache: null,             // { bytes, ids, data, occupied } for mapBytes
 };
 
@@ -2244,6 +2251,7 @@ function resetOreEdit() {
   oreEdit.rect = null;
   oreEdit.cells = [];
   oreEdit.counts = null;
+  oreEdit.target = null;
   oreEdit.cache = null;
   hideOreMenu();
 }
@@ -2293,7 +2301,7 @@ function refreshOreTools() {
   sizeOreLayer();
   drawOre();
   if (!oreEdit.rect) {
-    setOreHint('在预览图上拖拽框选一片区域，右击选「放矿石」。');
+    setOreHint('在预览图上拖拽框选一片区域，或直接在格子上右击：放矿石 / 放彩矿 / 放矿柱。');
   }
 }
 
@@ -2346,9 +2354,27 @@ function drawOre() {
   if (!w || !h) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  if (!oreEdit.rect) return;
 
   const s = w / previewImg.naturalWidth;
+  const hw = (renderMeta.tileWidth / 2) * s;
+  const hh = (renderMeta.tileHeight / 2) * s;
+
+  // The cell the menu's 矿柱 action would use.  Green/red says whether it can
+  // take one before the user commits.  Drawn last (below) so the selection fill
+  // cannot hide it.
+  const drawTarget = () => {
+    if (!oreEdit.target) return;
+    const t = oreEdit.target;
+    const p = projectCell(cellGrid, renderMeta, t.x, t.y);
+    diamond(ctx, p.x * s, p.y * s, hw, hh);
+    ctx.fillStyle = t.info.ok ? 'rgba(242,192,105,.45)' : 'rgba(224,133,122,.45)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = t.info.ok ? '#f2c069' : '#e0857a';
+    ctx.stroke();
+  };
+
+  if (!oreEdit.rect) { drawTarget(); return; }
   const r = oreEdit.rect;
   const x0 = Math.min(r.x0, r.x1) * s;
   const x1 = Math.max(r.x0, r.x1) * s;
@@ -2364,16 +2390,20 @@ function drawOre() {
       const th = (renderMeta.tileHeight / 2) * s;
       const emptyPath = new Path2D();
       const orePath = new Path2D();
+      const otherPath = new Path2D();
       for (const cell of oreEdit.cells) {
         const kind = classifyCell(cellGrid, cache.ids, cache.occupied, cell.x, cell.y);
-        if (kind !== CELL_EMPTY && kind !== CELL_ORE) continue;
+        if (kind !== CELL_EMPTY && kind !== CELL_ORE && kind !== CELL_OTHER) continue;
         const p = projectCell(cellGrid, renderMeta, cell.x, cell.y);
-        addDiamond(kind === CELL_ORE ? orePath : emptyPath, p.x * s, p.y * s, tw, th);
+        const path = kind === CELL_ORE ? orePath : (kind === CELL_OTHER ? otherPath : emptyPath);
+        addDiamond(path, p.x * s, p.y * s, tw, th);
       }
       ctx.fillStyle = 'rgba(242,192,105,.34)';
       ctx.fill(emptyPath);
       ctx.fillStyle = 'rgba(126,214,120,.32)';
       ctx.fill(orePath);
+      ctx.fillStyle = 'rgba(130,150,240,.34)';
+      ctx.fill(otherPath);
     }
   }
 
@@ -2382,6 +2412,7 @@ function drawOre() {
   ctx.strokeStyle = 'rgba(242,192,105,.95)';
   ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
   ctx.setLineDash([]);
+  drawTarget();
 }
 
 /** Recomputes the selected cells and what each one offers (menu labels). */
@@ -2399,9 +2430,10 @@ function refreshOreSelection() {
     setOreHint('框选区域里没有格子。', 'bad');
     return;
   }
-  const tone = c.empty || c.ore ? 'ok' : 'bad';
-  setOreHint(`已框选 ${c.total} 格：可放矿石 ${c.empty} 格，已有矿石 ${c.ore} 格，`
-           + `不可放 ${c.blocked} 格。右击选「放矿石」。`, tone);
+  const tone = c.empty || c.ore || c.other ? 'ok' : 'bad';
+  setOreHint(`已框选 ${c.total} 格：可放矿石 ${c.empty} 格，已有矿石 ${c.ore} 格`
+           + (c.other ? `，其他矿 ${c.other} 格` : '')
+           + `，不可放 ${c.blocked} 格。右击选「放矿石 / 放彩矿 / 放矿柱」。`, tone);
 }
 
 function clearOreSelection() {
@@ -2410,16 +2442,40 @@ function clearOreSelection() {
   oreEdit.counts = null;
   hideOreMenu();
   drawOre();
-  setOreHint('在预览图上拖拽框选一片区域，右击选「放矿石」。');
+  setOreHint('在预览图上拖拽框选一片区域，或在格子上右击选「放矿柱」。');
 }
 
 function showOreMenu(clientX, clientY) {
   const c = oreEdit.counts;
-  if (!c) return;
-  oreMenuPaint.textContent = `放矿石（${c.empty} 格）`;
-  oreMenuPaint.disabled = c.empty === 0;
-  oreMenuClear.textContent = `清除矿石（${c.ore} 格）`;
-  oreMenuClear.disabled = c.ore === 0;
+  const t = oreEdit.target;
+  const empty = c ? c.empty : 0;
+  oreMenuPaint.textContent = `放矿石（${empty} 格）`;
+  oreMenuPaint.disabled = empty === 0;
+  oreMenuGems.textContent = `放彩矿（${empty} 格）`;
+  oreMenuGems.disabled = empty === 0;
+
+  const minerals = c ? c.ore + c.other : 0;
+  oreMenuClear.textContent = `清除矿（${minerals} 格）`;
+  oreMenuClear.disabled = minerals === 0;
+
+  if (t) {
+    oreMenuPillar.textContent = `放矿柱（${t.x}, ${t.y}）`;
+    oreMenuPillar.disabled = !t.info.ok || t.info.isPillar;
+    oreMenuPillar.title = t.info.ok
+      ? (t.info.isPillar ? '这格已经是矿柱' : (t.info.existing ? `会替换 ${t.info.existing}` : '空地'))
+      : t.info.reason;
+    oreMenuUnpillar.textContent = `移除矿柱（${t.x}, ${t.y}）`;
+    oreMenuUnpillar.disabled = !t.info.isPillar;
+    oreMenuUnpillar.title = t.info.isPillar ? `移除 ${t.info.existing}` : '这格没有矿柱';
+  } else {
+    oreMenuPillar.textContent = '放矿柱（在格子上右击）';
+    oreMenuPillar.disabled = true;
+    oreMenuPillar.title = '';
+    oreMenuUnpillar.textContent = '移除矿柱';
+    oreMenuUnpillar.disabled = true;
+    oreMenuUnpillar.title = '';
+  }
+
   oreMenu.hidden = false;
   const box = oreMenu.getBoundingClientRect();
   const left = Math.max(8, Math.min(clientX, window.innerWidth - box.width - 8));
@@ -2430,59 +2486,128 @@ function showOreMenu(clientX, clientY) {
 
 function hideOreMenu() {
   oreMenu.hidden = true;
+  if (oreEdit.target) {
+    oreEdit.target = null;
+    if (!oreLayer.hidden) drawOre();
+  }
 }
 
-/** Writes the brush's result into the map bytes and re-renders. */
-function applyOreEdit(action) {
-  const cache = ensureOreContext();
-  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
-  const text = decodeLatin1(mapBytes);
-  // Fresh arrays on purpose: the cached grids belong to the map on disk, and a
-  // failed write below must not leave them half-painted.
-  const grids = readOverlayGrids(text);
-  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能放矿石。', 'bad'); return; }
-
-  const result = action === 'paint'
-    ? paintOreCells({
-        grid: cellGrid, cells: oreEdit.cells,
-        ids: grids.ids, data: grids.data, occupied: cache.occupied,
-      })
-    : clearOreCells({ cells: oreEdit.cells, ids: grids.ids, data: grids.data });
-
-  const changed = action === 'paint' ? result.painted : result.cleared;
-  if (!changed) {
-    setOreHint(action === 'paint' ? '选区里没有可放矿石的空地。' : '选区里没有矿石。', 'bad');
-    return;
-  }
-
-  let next = writeOverlayGrids(text, grids.ids, grids.data);
-  if (next === null) {
-    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
-    return;
-  }
-  // 清除矿石时把矿柱装饰树（TIBTRE）一起收掉：它们是矿石的附属物，留在草地上
-  // 就是悬空的树。 放矿石不添加装饰树（overlay 本身已经能画）。
-  if (action === 'clear') next = removeOreDecorations(next, result.packed);
-
-  mapBytes = encodeLatin1(next);
+/** Replaces mapBytes with an edited text and refreshes the download link. */
+function commitMapText(text) {
+  mapBytes = encodeLatin1(text);
   if (mapUrl) URL.revokeObjectURL(mapUrl);
   mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
   downloadEl.href = mapUrl;
   oreEdit.cache = null;
   refreshOreSelection();
   drawOre();
+}
 
-  if (action === 'paint') {
-    setOreHint(`已放 ${result.painted} 格矿石`
-      + `（${result.existing} 格已有矿石，${result.blocked} 格不可放），正在重新出图……`, 'ok');
-    mark(`ore: 已放 ${result.painted} 格矿石`
-      + `（${result.existing} 格已有矿石，${result.blocked} 格不可放），重新出图`);
-  } else {
-    setOreHint(`已清除 ${result.cleared} 格矿石，正在重新出图……`, 'ok');
-    mark(`ore: 已清除 ${result.cleared} 格矿石，重新出图`);
+/** Paints one mineral family (ore 102..113 or gems 27..38) into the selection. */
+function applyMineralEdit(family, label) {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
+  const text = decodeLatin1(mapBytes);
+  // Fresh arrays on purpose: the cached grids belong to the map on disk, and a
+  // failed write below must not leave them half-painted.
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能放矿。', 'bad'); return; }
+
+  const result = paintMineralCells({
+    grid: cellGrid, cells: oreEdit.cells,
+    ids: grids.ids, data: grids.data, occupied: cache.occupied,
+    family, stage: family === GEM_OVERLAY_START ? GEM_DATA : ORE_DATA,
+  });
+  if (!result.painted) {
+    setOreHint(`选区里没有可放${label}的空地。`, 'bad');
+    return;
   }
+
+  const next = writeOverlayGrids(text, grids.ids, grids.data);
+  if (next === null) {
+    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
+    return;
+  }
+  commitMapText(next);
+  let detail = `${result.existing} 格已有${label}`;
+  if (result.other) detail += `，${result.other} 格其他矿`;
+  detail += `，${result.blocked} 格不可放`;
+  setOreHint(`已放 ${result.painted} 格${label}（${detail}），正在重新出图……`, 'ok');
+  mark(`ore: 已放 ${result.painted} 格${label}（${detail}），重新出图`);
   // 地图变了，参数集没变 —— 和出生点编辑同一条规矩：分享码描述生成输入，
   // 不描述生成后的手工编辑。
+  startRender();
+}
+
+/** Clears any tiberium (green ore and gems) from the selection. */
+function applyClearMinerals() {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能清矿。', 'bad'); return; }
+
+  const result = clearMineralCells({ cells: oreEdit.cells, ids: grids.ids, data: grids.data });
+  if (!result.cleared) { setOreHint('选区里没有矿。', 'bad'); return; }
+
+  let next = writeOverlayGrids(text, grids.ids, grids.data);
+  if (next === null) {
+    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
+    return;
+  }
+  // 清矿时把矿柱装饰树（TIBTRE）一起收掉：它们是矿石的附属物，留在草地上
+  // 就是悬空的树。 放矿不添加装饰树（overlay 本身已经能画）。
+  next = removeOreDecorations(next, result.packed);
+  commitMapText(next);
+  setOreHint(`已清除 ${result.cleared} 格矿，正在重新出图……`, 'ok');
+  mark(`ore: 已清除 ${result.cleared} 格矿，重新出图`);
+  startRender();
+}
+
+/** The single-cell 放矿柱 action.  `target` is captured before the menu closes. */
+function applyPillar(target) {
+  const cache = ensureOreContext();
+  if (!cache || !target) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]。', 'bad'); return; }
+
+  const result = placePillar({
+    grid: cellGrid, text, ids: grids.ids, data: grids.data,
+    x: target.x, y: target.y,
+  });
+  if (!result.ok) { setOreHint(result.reason, 'bad'); return; }
+  if (!result.changed) {
+    setOreHint(`(${target.x}, ${target.y}) 已经是 ${result.name}。`, 'ok');
+    return;
+  }
+
+  let next = result.removedOverlay !== null
+    ? writeOverlayGrids(result.text, grids.ids, grids.data)
+    : result.text;
+  if (next === null) { setOreHint('写回地图失败，地图没有改动。', 'bad'); return; }
+
+  let extra = '';
+  if (result.removedObject) extra += `，替换了 ${result.removedObject}`;
+  if (result.removedOverlay !== null) extra += `，去掉了 overlay ${result.removedOverlay}`;
+  commitMapText(next);
+  setOreHint(`已在 (${target.x}, ${target.y}) 放了 ${result.name}${extra}，正在重新出图……`, 'ok');
+  mark(`ore: 矿柱 ${result.name} @ (${target.x}, ${target.y})${extra}，重新出图`);
+  startRender();
+}
+
+/** Removes a TIBTRE from the cell (other [Terrain] objects stay). */
+function applyRemovePillar(target) {
+  if (!target) return;
+  const text = decodeLatin1(mapBytes);
+  const result = removePillar({ text, x: target.x, y: target.y });
+  if (!result.changed) {
+    setOreHint(result.reason || `(${target.x}, ${target.y}) 没有矿柱。`, 'bad');
+    return;
+  }
+  commitMapText(result.text);
+  setOreHint(`已移除 (${target.x}, ${target.y}) 的 ${result.removed}，正在重新出图……`, 'ok');
+  mark(`ore: 已移除矿柱 ${result.removed} @ (${target.x}, ${target.y})，重新出图`);
   startRender();
 }
 
@@ -2532,10 +2657,24 @@ oreLayer.addEventListener('pointercancel', () => {
 oreLayer.addEventListener('contextmenu', (event) => {
   event.preventDefault();
   if (startEdit.on) return;
-  if (!oreEdit.rect || !oreEdit.counts) {
-    setOreHint('先拖拽框选一片区域，再右击。', 'bad');
+  // The cell under the pointer is what 放矿柱/移除矿柱 act on; the box selection
+  // (if any) is what the region brushes act on.  Both can be offered at once.
+  const p = toNaturalOre(event);
+  const cell = p ? pickCell(cellGrid, renderMeta, p.x, p.y) : null;
+  if (cell) {
+    const text = decodeLatin1(mapBytes);
+    oreEdit.target = {
+      x: cell.x, y: cell.y,
+      info: describePillarTarget({ grid: cellGrid, text, x: cell.x, y: cell.y }),
+    };
+  } else {
+    oreEdit.target = null;
+  }
+  if (!oreEdit.rect && !oreEdit.target) {
+    setOreHint('先拖拽框选一片区域，或在格子上右击。', 'bad');
     return;
   }
+  drawOre();
   showOreMenu(event.clientX, event.clientY);
 });
 
@@ -2543,9 +2682,14 @@ oreMenu.addEventListener('click', (event) => {
   const button = event.target.closest('button');
   if (!button) return;
   const action = button.dataset.act;
+  // Capture the target before hiding (hiding clears the highlight).
+  const target = oreEdit.target;
   hideOreMenu();
-  if (action === 'paint') applyOreEdit('paint');
-  else if (action === 'clear') applyOreEdit('clear');
+  if (action === 'paint') applyMineralEdit(ORE_OVERLAY_START, '矿石');
+  else if (action === 'gems') applyMineralEdit(GEM_OVERLAY_START, '彩矿');
+  else if (action === 'pillar') applyPillar(target);
+  else if (action === 'unpillar') applyRemovePillar(target);
+  else if (action === 'clear') applyClearMinerals();
   else if (action === 'cancel') clearOreSelection();
 });
 
