@@ -160,6 +160,12 @@ step verify_uicontract python3 tools/verify_uicontract.py
 # constants are the engine's rather than a copy.  No game directory needed.
 step verify_sharebits node tools/verify_sharebits.mjs
 
+# [Preview]/[PreviewPack]: the map-list thumbnail the page embeds into every
+# generated map.  The pack must survive a REAL LZO1X decoder (the game's), and
+# re-patching must not duplicate the sections or eat the comment block after
+# them.  Needs node, no game directory.
+step verify_preview python3 tools/verify_preview.py
+
 # The deployment path.  Offline and credential-free: it packages the real site,
 # validates the host rules in webapp/edgeone.json, and drives deploy_edgeone.sh
 # with a stub `edgeone` to prove it refuses stale bytes, a truncated renderer

@@ -14,6 +14,8 @@
 // classic script (the .NET runtime detects its host with `typeof importScripts`).
 import { encodeParams, decodeParams, enginePrefix, sizeFromIndex, indexFromSize }
   from './sharebits.js';
+import { PREVIEW_WIDTH, PREVIEW_HEIGHT, dummyPreviewSections,
+         withPreviewSections, previewSectionsFromPng } from './preview-pack.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
@@ -49,6 +51,8 @@ const previewDl = el('preview-dl');
 let mapUrl = null;
 let previewUrl = null;
 let mapBytes = null;      // the renderer runs on this thread and reads these
+let mapBaseBytes = null;  // without the embedded preview, so re-rendering is idempotent
+let mapSerial = 0;        // a render that finishes after a new generation must not patch it
 let rendererRuntime = null;
 
 // The 参数集 of the run that is in flight, and of the map currently on screen.  It
@@ -479,12 +483,18 @@ worker.addEventListener('message', async (event) => {
       if (sizeMode === 'rect') syncSize();
       break;
     case 'map': {
-      mapBytes = msg.bytes;
+      // Always carry [Preview]/[PreviewPack]: the game reads the map-list
+      // thumbnail from them, and a map without them is what the editor's
+      // writer avoids with a dummy image.  A rendered preview replaces the
+      // dummy later (embedPreview).
+      mapBaseBytes = msg.bytes;
+      ++mapSerial;
+      mapBytes = withPreviewSections(mapBaseBytes, dummyPreviewSections());
       if (mapUrl) URL.revokeObjectURL(mapUrl);
-      mapUrl = URL.createObjectURL(new Blob([msg.bytes], { type: 'application/octet-stream' }));
+      mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
       downloadEl.href = mapUrl;
       downloadEl.download = msg.name;
-      el('done').textContent = `${msg.name} · ${(msg.bytes.length / 1024).toFixed(0)} KB`;
+      el('done').textContent = `${msg.name} · ${(mapBytes.length / 1024).toFixed(0)} KB`;
       resultEl.style.display = 'block';
       setStatus('完成。', 'ok');
       goBtn.disabled = false;
@@ -503,6 +513,7 @@ worker.addEventListener('message', async (event) => {
     }
     case 'preview': {
       endRenderWatch();
+      embedPreview(msg.bytes).catch((err) => mark(`map: 预览图内嵌失败（${err}）`));
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       previewUrl = URL.createObjectURL(new Blob([msg.bytes], { type: 'image/png' }));
       previewImg.src = previewUrl;
@@ -536,6 +547,26 @@ worker.addEventListener('message', async (event) => {
       break;
   }
 });
+
+// Rebuild the map bytes with a real 120x60 thumbnail, replacing the dummy that
+// was written at generation time.  The download link and the size line are
+// updated in place; the renderer keeps using mapBaseBytes, so running this
+// twice cannot duplicate [Preview]/[PreviewPack].
+async function embedPreview(pngBytes) {
+  if (!mapBaseBytes)
+    return;
+  const serial = mapSerial;
+  const sections = await previewSectionsFromPng(pngBytes, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+  if (serial !== mapSerial)
+    return;                                     // a new map arrived while decoding
+  mapBytes = withPreviewSections(mapBaseBytes, sections);
+  if (mapUrl) URL.revokeObjectURL(mapUrl);
+  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
+  downloadEl.href = mapUrl;
+  const name = (downloadEl.download || 'out.map');
+  el('done').textContent = `${name} · ${(mapBytes.length / 1024).toFixed(0)} KB`;
+  mark(`map: 已内嵌 ${PREVIEW_WIDTH}×${PREVIEW_HEIGHT} 预览图（${(sections.length / 1024).toFixed(0)} KB）`);
+}
 
 // The rendering half runs HERE, on the main thread.
 //
@@ -573,7 +604,7 @@ async function renderOnMainThread(msg) {
       copied++;
     }
     mark(`renderer: ${copied} files handed over`);
-    fs.writeFile('/maps/render.map', mapBytes);
+    fs.writeFile('/maps/render.map', mapBaseBytes || mapBytes);
 
     // performance.now(), NOT Date.now(): elapsed time has to come from a
     // monotonic clock.  Date.now() is wall time and can be stepped by NTP or by
@@ -583,6 +614,7 @@ async function renderOnMainThread(msg) {
     const rc = Render('/maps/render.map', '/game', '/maps/render');
     if (rc !== 0) throw new Error(`渲染器返回 ${rc}`);
     const png = fs.readFile('/maps/render.png');
+    await embedPreview(png);
 
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
