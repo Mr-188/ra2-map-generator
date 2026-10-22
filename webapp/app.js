@@ -2175,6 +2175,7 @@ function applyStartEdits() {
   mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
   downloadEl.href = mapUrl;
   startEdit.original = startEdit.points.map((p) => ({ ...p }));
+  // 地图变了，参数集没变 —— 变的正是它不描述的那部分（编辑条旁边那句话说这件事）。
   mark(`starts: 已写入 ${changed} 个出生点，重新出图`);
   startRender();
 }

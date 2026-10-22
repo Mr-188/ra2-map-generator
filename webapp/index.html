@@ -509,6 +509,10 @@ a.dl svg { width: 12px; height: 12px; }
   display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;
 }
 #starts-bar .btn { width: auto; margin-top: 0; }
+.starts-note {
+  font: 400 12px/1.6 var(--mono); color: var(--ink-3);
+  padding: 0 2px; white-space: nowrap;
+}
 #starts-hint {
   margin: 0; font: 400 12.5px/1.7 var(--mono);
   letter-spacing: .03em; color: var(--ink-3);
@@ -1096,6 +1100,9 @@ a.dl svg { width: 12px; height: 12px; }
       <button id="starts-edit" class="btn" type="button">编辑出生点</button>
       <button id="starts-apply" class="btn primary" type="button" hidden>应用并重新预览</button>
       <button id="starts-reset" class="btn" type="button" hidden>还原</button>
+      <!-- 一句话就够：改出生点是生成后的手工编辑，参数集只描述生成输入，
+           所以这串码复现不出移动过的出生点。 -->
+      <span class="starts-note" id="starts-note">改出生点不进参数集</span>
       <p id="starts-hint"></p>
     </div>
     <div class="meta">

@@ -123,6 +123,14 @@ One browser-only trap worth remembering: the overlay is a `<canvas>`, which is a
 markers are drawn at a fraction of the map.  The CSS sets an explicit
 `calc(100% - 2px)` size for that reason.
 
+**参数集 does not describe the moved starts.**  The code carries generation inputs
+only (`sharebits.js`), so it reproduces the terrain — not a hand-edited map.  Rather
+than extend the format (it would cost +4 characters for one moved start and +29 for
+eight, force a version bump so older pages reject new codes, and put the codec — an
+area other work is touching — on the critical path), the editor says it in one line
+next to its own buttons: 改出生点不进参数集.  Sharing the exact edited map means
+sending the `.map` file.
+
 ## Serving
 
 `file://` will not work: the wasm module and the Worker cannot be loaded from a

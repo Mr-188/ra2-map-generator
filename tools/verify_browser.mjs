@@ -529,6 +529,7 @@ try {
         check('clicking the preview picks a cell for the selected start', moved, hint.trim());
 
         if (moved) {
+          const codeBefore = await page.$eval('#share-code', (e) => e.textContent.trim());
           const srcBefore = await page.$eval('#preview-img', (e) => e.src);
           await page.click('#starts-apply');
           await page.waitForFunction((prev) => {
@@ -541,6 +542,16 @@ try {
           check('the moved start is written into the map and re-rendered',
                 JSON.stringify(before) !== JSON.stringify(after),
                 `${before.join(' ')} -> ${after.join(' ')}`);
+
+          // 参数集 carries the generation inputs only, so it cannot reproduce a
+          // hand-moved start.  Two things have to hold: the editor says so, and the
+          // code itself is left alone (silently rewriting it would be worse).
+          const note = await page.$eval('#starts-note', (e) => e.textContent.trim());
+          check('the editor says a moved start is not part of 参数集',
+                /参数集/.test(note), note);
+          const codeAfter = await page.$eval('#share-code', (e) => e.textContent.trim());
+          check('the share code itself is unchanged by the edit',
+                codeBefore === codeAfter, `${codeBefore} vs ${codeAfter}`);
 
           // Put the map back: the steps after this read the download blob and
           // expect the freshly generated one.
