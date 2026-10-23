@@ -51,7 +51,15 @@ export LD_LIBRARY_PATH
 cp "$ROOT/engine/render/WebEntry.cs" "$SRC/CNCMaps.Renderer/WebEntry.cs"
 
 echo "[render] publishing CNCMaps for browser-wasm"
-"$DOTNET" publish "$PROJ" -c Release -r browser-wasm --self-contained -o "$OUT" -v q --nologo
+# --meta-json is how the page learns the render's cell -> pixel transform (see
+# engine/render/WebEntry.cs and webapp/starts.js).  A trimmed browser-wasm build
+# turns reflection-based System.Text.Json OFF by default, and the renderer's
+# writer swallows the resulting exception into an NLog line nobody sees in the
+# browser: the PNG appears and the JSON silently does not.  The switch keeps
+# reflection serialization available; it is one small file's worth of metadata,
+# written once per render.
+"$DOTNET" publish "$PROJ" -c Release -r browser-wasm --self-contained -o "$OUT" -v q --nologo \
+    -p:JsonSerializerIsReflectionEnabledByDefault=true
 
 # The deployable unit is the AppBundle: it holds _framework/ (dotnet.js plus one
 # .wasm per assembly) and the runtimeconfig.  The -o directory holds the managed

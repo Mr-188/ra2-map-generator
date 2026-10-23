@@ -17,6 +17,10 @@
 #   verify_webapi   the browser entry-point contract holds, byte-identically,
 #                   and (with --render) the worker's flatten+render flow produces
 #                   a preview pixel-identical to the reference render
+#   verify_starts   the preview's start-point editor: the generator's ground grid
+#                   describes the map it was written from, pixel <-> cell inverts
+#                   the renderer's own transform, and the [Waypoints] rewrite
+#                   changes exactly one number in exactly one section
 #   verify_render   the extracted loose tree renders identically to the .mix files
 #   verify_uicontract  the page and the worker agree on their message vocabulary
 #   verify_deploy   the deployment path refuses to publish unbuilt or stale bytes
@@ -136,6 +140,22 @@ if [ -f build/engine-web-node/mg_engine.js ]; then
     step verify_webapi node tools/verify_webapi.mjs \
         --web build/engine-web-node --game "$GD" --assets build/oracle_assets \
         --product webapp $RENDER_ARGS
+fi
+
+# The preview's start-point editor.  The ground grid and the [Waypoints] rewrite
+# need only the node wasm build; the pixel <-> cell transform is checked against
+# the native renderer's own --meta-json when that renderer has been built, which
+# is the only way to know webapp/starts.js matches what actually drew the image.
+if [ -f build/engine-web-node/mg_engine.js ]; then
+    GD2=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}
+    STARTS_ARGS=""
+    STARTS_RENDERER=reference_impl/ccmaps-net/CNCMaps.Renderer/bin/Release/net10.0/CNCMaps.Renderer.dll
+    if [ -f "$STARTS_RENDERER" ] && [ -d build/flat ]; then
+        STARTS_ARGS="--renderer $STARTS_RENDERER --mixdir build/flat"
+    fi
+    # shellcheck disable=SC2086
+    step verify_starts node tools/verify_starts.mjs \
+        --web build/engine-web-node --game "$GD2" --product webapp $STARTS_ARGS
 fi
 
 # The render path needs the reference renderer and the .NET SDK, neither of which

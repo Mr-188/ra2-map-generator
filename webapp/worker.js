@@ -457,9 +457,18 @@ self.onmessage = async (event) => {
         fail('the engine reported success but produced no map');
         return;
       }
+      // The ground grid: [u32 width][u32 height] then one [level][flags] pair per
+      // cell.  The page's start-point editor needs it to turn a click on the
+      // preview back into a cell (the isometric projection stacks heights) and to
+      // know whether a cell can carry a start at all.  mg_generate writes it next
+      // to the map, from the same cells the map file was written from.
+      const cells = readMemfs(engine.outputPath() + '.cells');
+      const transfer = [bytes.buffer];
+      if (cells) transfer.push(cells.buffer);
       self.postMessage(
-        { type: 'map', bytes, name: (p.outPath || 'out.map').split('/').pop() },
-        [bytes.buffer]);
+        { type: 'map', bytes, cells: cells || null,
+          name: (p.outPath || 'out.map').split('/').pop() },
+        transfer);
       return;
     }
     if (msg.type === 'cache-info') {

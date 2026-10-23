@@ -85,6 +85,52 @@ comes up with the same 参数集.  It is a hint, not a proof (1/1024 of engines 
 and it cannot see the player's own game data differing, which changes the map just as
 surely.
 
+## 出生点编辑 (moving start positions on the preview)
+
+After a render, `编辑出生点` turns the preview into an editor: the starts the
+renderer drew as red squares get a handle of their own, and dragging one (or
+clicking elsewhere with it selected) moves it.  `应用并重新预览` writes the move
+into the map and renders again; `还原` goes back to the bytes the generator
+produced.
+
+It edits **[Waypoints] and nothing else** -- the same thing a map editor does when
+you move a start.  Terrain is not regenerated, which is why this is instant and why
+the button says 重新预览 rather than 重新生成.  Everything around the move comes
+from a single owner rather than a copy:
+
+* **the cell <-> pixel transform** is the renderer's own.  `engine/render/WebEntry.cs`
+  asks for `--meta-json`, which writes the crop origin, the tile size and every
+  start's pixel next to the PNG.  Note that the transform comment in
+  `RenderEngine.cs` omits the `+1` that `Map.cs:GetStartPositionPixels` uses; the
+  code is the authority and `tools/verify_starts.mjs` pins it against a real render.
+* **the cell's height and whether it can carry a start** come from the generator:
+  `mg_generate` writes `<out>.cells` (side, then `[level][flags]` per cell, in the
+  same padded diamond the map's own cell coordinates live in).  That is what makes
+  one pixel column resolve to a single cell, and what lets the editor say "这里是水面"
+  instead of letting you drop a start into a lake.  The flag is the engine's
+  `PassabilityType_Passable`, not a guess from the image.
+* **the map format** is one number: `[Waypoints]` stores `X + 1000 * Y`
+  (`MapGenMapFile.cpp`), which is what the renderer and FA2 decode.  `[Terrain]` and
+  `[Structures]` keys are packed cells too, so the rewrite is section-scoped
+  (`rewriteWaypoint` in `starts.js`) rather than a text replacement.
+
+`starts.js` is pure code (no DOM) so `node tools/verify_starts.mjs` can drive all of
+it; the canvas and pointer handling stay in `app.js`.
+
+One browser-only trap worth remembering: the overlay is a `<canvas>`, which is a
+**replaced element**.  `position: absolute; inset: 1px` does not stretch it -- its
+`width: auto` takes the intrinsic 300x150 and the opposite inset is ignored, so the
+markers are drawn at a fraction of the map.  The CSS sets an explicit
+`calc(100% - 2px)` size for that reason.
+
+**参数集 does not describe the moved starts.**  The code carries generation inputs
+only (`sharebits.js`), so it reproduces the terrain — not a hand-edited map.  Rather
+than extend the format (it would cost +4 characters for one moved start and +29 for
+eight, force a version bump so older pages reject new codes, and put the codec — an
+area other work is touching — on the critical path), the editor says it in one line
+next to its own buttons: 改出生点不进参数集.  Sharing the exact edited map means
+sending the `.map` file.
+
 ## Serving
 
 `file://` will not work: the wasm module and the Worker cannot be loaded from a

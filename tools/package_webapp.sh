@@ -26,6 +26,9 @@ cp "$ROOT/webapp/worker.js"  "$OUT/"
 # forgets it serves a page whose 生成地图 button never works.  Copied by name like
 # everything else here - see the note under ra2.ico.
 cp "$ROOT/webapp/sharebits.js" "$OUT/"
+# 出生点编辑 (the preview's start-point editor).  app.js imports it, so a deploy
+# that forgets it breaks the module graph and the page never boots at all.
+cp "$ROOT/webapp/starts.js" "$OUT/"
 # 画廊: a page plus the one file it reads.  The generator's header links to it, so a
 # deploy that forgets these ships a 404 behind that link (and a gallery that cannot
 # read its own list).
