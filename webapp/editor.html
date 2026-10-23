@@ -31,6 +31,22 @@ body {
   overflow: hidden;
 }
 button { font: inherit; color: inherit; }
+/* Same scrollbar treatment as the generator page.  Order matters: the standard
+   scrollbar-width / scrollbar-color properties are written ONLY inside
+   @supports not selector(::-webkit-scrollbar), because Chrome 121+ lets the
+   standard properties override the ::-webkit-* rules and then falls back to the
+   system scrollbar (white panel, arrow buttons) -- exactly the out-of-place bar
+   this fixes. */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--well); }
+::-webkit-scrollbar-thumb { background: var(--rule-2); border: 3px solid var(--well); }
+::-webkit-scrollbar-thumb:hover { background: var(--amber); }
+::-webkit-scrollbar-corner { background: var(--well); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-width: thin; scrollbar-color: var(--rule-2) var(--well); }
+}
+
 [hidden] { display: none !important; }
 
 .ed-head {
