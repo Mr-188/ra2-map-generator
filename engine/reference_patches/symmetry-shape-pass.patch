@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-23 10:35:39.240828821 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-23 10:35:39.249615567 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-23 12:14:26.120229824 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-23 12:14:26.131256646 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -61,8 +61,8 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
  }
  
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-23 10:35:39.240596799 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-23 10:35:39.249756265 +0800
+--- b/MapGenerator/MapGen.h	2026-10-23 12:14:26.119995470 +0800
++++ c/MapGenerator/MapGen.h	2026-10-23 12:14:26.131374443 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -397,8 +397,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-23 10:35:39.238567959 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-23 10:35:39.249847250 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-23 12:14:26.117392749 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-23 12:14:26.131454178 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -410,7 +410,7 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
 --- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-23 10:35:39.250578319 +0800
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-23 12:14:26.132054375 +0800
 @@ -0,0 +1,475 @@
 +// ============================================================================
 +// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
@@ -889,8 +889,8 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +}
 \ No newline at end of file
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-23 10:35:39.239397644 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-23 10:35:39.250641893 +0800
+--- b/MapGenerator/MapGenHills.cpp	2026-10-23 12:14:26.118338277 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-23 12:14:26.132113459 +0800
 @@ -66,6 +66,8 @@
  
  #include "pch.h"
@@ -1857,8 +1857,8 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +    }
 +}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-23 10:35:39.238787121 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-23 10:35:39.249902353 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-23 12:14:26.117603102 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-23 12:14:26.131495081 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2193,8 +2193,8 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-23 10:35:39.239352312 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-23 10:35:39.249955806 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-23 12:14:26.118283654 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-23 12:14:26.131535433 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2308,8 +2308,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-23 10:35:39.238035290 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-23 10:35:39.250091283 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-23 12:14:26.116742035 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-23 12:14:26.131636829 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -2378,7 +2378,7 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
                  continue;
  
              west->Level -= 4;                             // 0x5a1b67
-@@ -4218,15 +4261,109 @@
+@@ -4218,18 +4261,158 @@
      }
  
      // ---- 5. Pass 2: one cliff piece per placeholder cell (sub_579620) -----
@@ -2488,7 +2488,56 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
          }
      }
  
-@@ -4626,9 +4763,18 @@
++    // [port-only] Give the bare cells OUTSIDE a CliffSet piece the ground tile for
++    // their height, so the cliff foot has a floor under it.  Without this the foot's
++    // facade stands on nothing and renders as a black wedge on every map
++    // (docs/BLACK_BLOCKS.md).
++    //
++    // The tile has to match the height: `clear01` has no frame at plateau heights and
++    // the recalc wipes it straight back to 0 (measured: filling 267 level-4 cells left
++    // the .yrm byte-identical).  `ruff01` is what the generator itself uses for high
++    // ground, so >= 8 uses that and lower levels keep the clear tile.
++    //
++    // This changes the output of every map (the user accepted that on 2026-10-23): the
++    // fill happens inside PlaceCliffs, and the later stages draw from the RNG, so the
++    // terrain that follows is reshuffled.
++    // ON by default since 2026-10-23 (user decision: maps may change).  This drops the
++    // rendered black pixels on the model map from 0.3087% to 0.2220%.  MG_FILL_FOOT=0
++    // restores the previous output byte for byte.
++    const char* fillEnv = std::getenv("MG_FILL_FOOT");
++    const bool fillFoot = (fillEnv == nullptr || fillEnv[0] != '0');
++    if (fillFoot && shoreTileIndex_ >= 0 && cellSlots_ != nullptr)
++    {
++        for (int sy = 0; sy < slotRows_; ++sy)
++            for (int sx = 0; sx < 512; ++sx)
++            {
++                MapCell* c = cellSlots_[512 * sy + sx];
++                if (c == nullptr || c->IsoTileTypeIndex != 0)
++                    continue;
++                bool touchesCliff = false;
++                for (int d = 0; d < 4 && !touchesCliff; ++d)
++                {
++                    static const int kDX[4] = { 1, -1, 0, 0 }, kDY[4] = { 0, 0, 1, -1 };
++                    const MapCell* n = CellAt(
++                        static_cast<int16_t>(static_cast<int16_t>(c->MapCoords & 0xFFFF) + kDX[d]),
++                        static_cast<int16_t>(static_cast<int16_t>(
++                            (static_cast<uint32_t>(c->MapCoords) >> 16)) + kDY[d]));
++                    if (n != nullptr && n->IsoTileTypeIndex >= shoreTileIndex_
++                        && n->IsoTileTypeIndex < shoreTileIndex_ + 40)
++                        touchesCliff = true;
++                }
++                if (!touchesCliff)
++                    continue;
++                c->IsoTileTypeIndex = (c->Level >= 8 && roughTileIndex_ >= 0)
++                                          ? roughTileIndex_ : clearTileIndex_;
++                c->Height = 0;
++            }
++    }
++
+     // ---- 6. Teardown (0x578f3x) -------------------------------------------
+     // The vanilla also destroys MouseClass::CurrentBuilding here. The port has
+     // no live object system (same note as SmoothWaterBody's), so only the
+@@ -4626,9 +4809,18 @@
      }
  
      // ---- 2. How many to fill (0x59b8xx) -----------------------------------
@@ -2507,7 +2556,7 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
  
      // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
      for (int n = 0; n < target; ++n)
-@@ -4654,5 +4800,30 @@
+@@ -4654,5 +4846,30 @@
              if (IsPlaceholderTile(nb))
                  pending.push_back(nb);
          }
@@ -2539,8 +2588,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-23 10:35:39.241047993 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-23 10:35:39.250264032 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-23 12:14:26.120423186 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-23 12:14:26.131753276 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -2587,8 +2636,8 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN b/MapGenerator/MapGenRecalc.cpp c/MapGenerator/MapGenRecalc.cpp
---- b/MapGenerator/MapGenRecalc.cpp	2026-10-23 10:35:39.237898053 +0800
-+++ c/MapGenerator/MapGenRecalc.cpp	2026-10-23 10:35:39.248360309 +0800
+--- b/MapGenerator/MapGenRecalc.cpp	2026-10-23 12:14:26.116525172 +0800
++++ c/MapGenerator/MapGenRecalc.cpp	2026-10-23 12:14:26.128136372 +0800
 @@ -425,8 +425,7 @@
          L"%s..\\%s",
          L"%s..\\..\\\u76f8\u5173INI\\%s",               // ...\<rules folder>
@@ -2611,8 +2660,8 @@ diff -ruN b/MapGenerator/MapGenRecalc.cpp c/MapGenerator/MapGenRecalc.cpp
      // ---- one TMP per tile -------------------------------------------------
      int running = 0;
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-23 10:35:39.238280233 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-23 10:35:39.250400860 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-23 12:14:26.117061729 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-23 12:14:26.131879124 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -3332,7 +3381,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
      WideCharToMultiByte(CP_ACP, 0, wpath, -1, path, MAX_PATH, nullptr, nullptr);
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-23 10:35:39.250528837 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-23 12:14:26.132005462 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//

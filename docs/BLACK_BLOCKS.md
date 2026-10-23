@@ -189,3 +189,41 @@ dotnet CNCMaps.Renderer.dll -i /tmp/base0.yrm -m ~/RA2MD -p -o /tmp/base0 -Y
 
 `MG_FILL_FOOT=1` 保留为**可开关**，默认关闭：默认行为仍然与改动前**逐字节相同**
 （`cmp` 验证）。用 28% 的黑块去换 4 处对称破损，是否值得由用户决定。
+
+## 14. 最终方案与验证（2026-10-23）
+
+### 采用的改动
+
+`MapGenMakingSub.cpp` 的 `PlaceCliffs()` 末尾（源码在 `reference_impl/`，随
+`engine/reference_patches/symmetry-shape-pass.patch` 分发）：给**紧挨 CliffSet 外侧的空格**
+按层号铺地面（>=8 用 `roughTileIndex_`，低层用 `clearTileIndex_`）。默认开启，
+`MG_FILL_FOOT=0` 可逐字节恢复原行为。
+
+### 实测
+
+| 项 | 原版 | 新默认 |
+|---|---|---|
+| 模型图渲染暗像素 | 0.3087% | **0.2220%（−28%）** |
+| verify_ramp_connectivity 低格无坡 | 2 | 2 |
+| verify_ramp_presence 单边 | 0 | **4** |
+| verify_slope_corners 不符 | 0 | **3/1533** |
+| verify_wasm | — | 通过（与原生逐字节一致） |
+
+### verify_symmetry（9 条失败，与基线同数）
+
+| 指标 | 基线 | 新默认 |
+|---|---|---|
+| 180° 高度不同 | 498 (3.58%) | 1060 (7.62%) ← 变差 |
+| 上下高度不同 | 1204 (8.65%) | 1156 (8.31%) |
+| 180° 单边 | 888 / 597 | 822 / 485 |
+| 上下单边 | 713 / 540 | 509 / 314 |
+| 180-alt 单边 | 606 | 517 |
+
+单边普遍下降，只有 180° 的高度对称变差（180°/上下本来就是既有失败项）。
+
+### 曾评估但未采用
+
+- **渲染器画布填底**（`DrawingSurface` 预填地面色）：暗像素 0.2641%（−15%），
+  不在任何可用补丁机制里（`reference_impl/ccmaps-net` 不提交，且无上游干净副本可 diff），
+  效果也不如补崖脚，**相关改动已全部撤回**。
+- 补 8 层空地 / 补全部空地 / 补坡沿接缝：0.2286%~0.2557%，都更差。
