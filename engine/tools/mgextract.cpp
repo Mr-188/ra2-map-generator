@@ -2,10 +2,9 @@
 // MIX archives.  Verifiable against tools/extract_assets.py, which does the
 // same job with the Python reader.
 //
-//   mgextract --game-dir <RA2 dir> --out <dir> [--theater 0|1] [--exe MapGenerator.exe]
+//   mgextract --game-dir <RA2 dir> --out <dir> [--theater 0|1|2] [--exe MapGenerator.exe]
 //
-// theater 0 = TEMPERATE, 1 = SNOW (the two the reference implementation can
-// tile; see engine/src/extract.cpp).
+// theater 0 = TEMPERATE, 1 = SNOW, 2 = DESERT (see engine/src/extract.cpp).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,7 +33,7 @@ int main(int argc, char** argv)
         else if (a == "-h" || a == "--help")
         {
             std::printf("usage: mgextract --game-dir <RA2 dir> --out <dir> "
-                        "[--theater 0|1] [--exe name]\n");
+                        "[--theater 0|1|2] [--exe name]\n");
             return 0;
         }
         else
@@ -46,7 +45,7 @@ int main(int argc, char** argv)
     if (opt.gameDir.empty() || opt.root.empty())
     {
         std::fprintf(stderr, "usage: mgextract --game-dir <RA2 dir> --out <dir> "
-                             "[--theater 0|1]\n");
+                             "[--theater 0|1|2]\n");
         return 2;
     }
 

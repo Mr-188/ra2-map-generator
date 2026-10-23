@@ -86,6 +86,11 @@ sh tools/verify_all.sh
 | `verify_preview` | 地图列表缩略图：页面写进每张图的 `[Preview]`/`[PreviewPack]` 必须能被**真的 LZO1X 解码器**解回 120×60 RGB 像素，两段必须是文件最前面；重复打补丁不重复 section、也不吃掉 pack 后面的注释块（`tools/verify_preview.py`） |
 | `verify_sharebits` | 参数集（分享码）：页面能产生的每一个字段与**每一档尺寸**都精确往返，种子 0（引擎会改用时钟）被拒，改动一个字符必被抓到，编码里的常量来自引擎而不是副本；码里带的 10 bit 引擎指纹用于识别"这串是不是这一版做的" |
 
+**沙漠（DESERT，`--theater 2`）**：`verify_extract` / `verify_oracle` / `verify_wasm` /
+`verify_render` 会以 `--theater 2` 各再跑一遍（`verify_all.sh` 里带 `_desert` 的步骤），
+覆盖 `desertmd.ini`、`.des`、`isodes/unitdes/desert.pal` 和 `Theater=DESERT`；
+`verify_sharebits` 已包含剧场 2 的 v2 码。
+
 **任何一条红了都不许往下走。** 加了新逻辑就加新套件，不要只靠肉眼。
 
 ---

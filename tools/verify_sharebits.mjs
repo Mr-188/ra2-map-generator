@@ -21,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   encodeParams, decodeParams, sizeFromIndex, indexFromSize, enginePrefix,
-  SIZE_STEP, RECT_MAX_SUM, MAX_SYMMETRY, MAX_INDEX, VERSION, ENGINE_UNKNOWN,
+  SIZE_STEP, RECT_MAX_SUM, MAX_SYMMETRY, MAX_INDEX, VERSION, VERSION_V2, ENGINE_UNKNOWN,
 } from '../webapp/sharebits.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,6 +53,16 @@ console.log('  layout   lengths and the reserved bits');
         `${ms.code.length} chars, ${ms.bits} bits, ${ms.code}`);
   check('rectangle + terrain seed is 20 characters', both.code.length === 20,
         `${both.code.length} chars, ${both.code}`);
+  const desert = encodeParams({ ...base, theater: 2 });
+  const desertRect = encodeParams({ ...base, theater: 2, size: 0, width: 380, height: 100 });
+  check('desert square is 14 characters / 79 bits (v2)',
+        desert.code.length === 14 && desert.bits === 79,
+        `${desert.code.length} chars, ${desert.bits} bits, ${desert.code}`);
+  check('desert integer is 15 characters / 87 bits (v2)',
+        desertRect.code.length === 15 && desertRect.bits === 87,
+        `${desertRect.code.length} chars, ${desertRect.bits} bits, ${desertRect.code}`);
+  check('temperate/snow codes stay v1', sq.code[0] !== desert.code[0],
+        `${sq.code[0]} vs ${desert.code[0]}`);
   check('the code only uses fragment-safe characters',
         [sq, rc, ms, both].every((c) => /^[A-Za-z0-9_-]+$/.test(c.code)));
 }
@@ -62,7 +72,7 @@ console.log('  fields   every combination the <select>s can produce');
 {
   let n = 0, bad = 0;
   for (const land of [0, 1, 2, 3])
-  for (const theater of [0, 1])
+  for (const theater of [0, 1, 2])
   for (const time of [0, 1, 2, 3])
   for (const players of [2, 3, 4, 5, 6, 7, 8])
   for (const ore of [0, 1, 2, 3])
@@ -161,7 +171,7 @@ console.log('  range    out-of-range input is refused by the encoder');
     ['symmetry 5 (past mirror.h)', { symmetry: 5 }],
     ['players 9', { players: 9 }],
     ['ore 4', { ore: 4 }],
-    ['theater 2', { theater: 2 }],
+    ['theater 3', { theater: 3 }],
     ['time 4', { time: 4 }],
     ['rectangle over the overlay grid', { size: 0, width: 400, height: 100 }],
     ['rectangle with a zero side', { size: 0, width: 380, height: 0 }],
@@ -225,8 +235,10 @@ console.log('  page     every option the <select>s offer is encodable');
   };
   const land = optionsOf('land');
   const symmetry = optionsOf('symmetry');
+  const theater = optionsOf('theater');
   check('the #land select exists', land !== null);
   check('the #symmetry select exists', symmetry !== null);
+  check('the #theater select exists', theater !== null);
   if (land) {
     let bad = 0;
     for (const v of land) {
@@ -243,9 +255,18 @@ console.log('  page     every option the <select>s offer is encodable');
     check(`MAX_SYMMETRY (${MAX_SYMMETRY}) is the page's largest 对称`,
           Math.max(...symmetry.map(Number)) === MAX_SYMMETRY, symmetry.join('/'));
   }
+  if (theater) {
+    let bad = 0;
+    for (const v of theater) {
+      try { decodeParams(encodeParams({ ...base, theater: Number(v) }).code); } catch { ++bad; }
+    }
+    check(`all ${theater.length} 剧场 options are encodable`, bad === 0, theater.join('/'));
+    check('the page offers DESERT (2)', theater.includes('2'), theater.join('/'));
+  }
   // The placeholder the codec writes for "no version 0" must stay refused, so a
   // future layout change bites here instead of silently misreading old codes.
   check('VERSION is 0', VERSION === 0);
+  check('VERSION_V2 is 1', VERSION_V2 === 1);
 }
 
 console.log();

@@ -29,9 +29,9 @@
 
 namespace mg {
 
-// Theater indices the reference implementation models.  Only two have a TMP
-// folder in its LoadTileCellAttrs (`温和` for everything but snow, `雪地` for
-// snow), so the extractor's tile support stops there as well.
+// Theater indices the reference implementation models.  TEMPERATE and SNOW
+// are the vanilla two; DESERT (2) is the [port-only] YR third theater added
+// by the desert work (desertmd.ini / .des / 沙漠).
 struct TheaterSpec
 {
     const char* name;        // "TEMPERATE"

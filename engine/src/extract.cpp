@@ -25,7 +25,7 @@ namespace mg {
 namespace {
 
 // ---- theater chains ------------------------------------------------------
-// Only the two theaters the reference can tile.  Source of truth:
+// The theaters the reference can tile.  Source of truth:
 // maptools/theater_assets.py THEATER_MIXES (order is the game's load order,
 // later members win).
 const char* const kTemperateChain[][2] = {
@@ -38,12 +38,24 @@ const char* const kSnowChain[][2] = {
     {"ra2.mix", "snow.mix"},
     {"ra2md.mix", "isosnomd.mix"},
 };
+// DESERT is YR-only: all four archives live in ra2md.mix.  The order follows
+// CNCMaps' YR TheaterSettings (isodesmd, desert, des, isodes); the extractor's
+// ArchiveSet treats later layers as higher priority, so this needs checking
+// against the renderer's own load order (see the gate in verify_extract).
+const char* const kDesertChain[][2] = {
+    {"ra2md.mix", "isodesmd.mix"},
+    {"ra2md.mix", "desert.mix"},
+    {"ra2md.mix", "des.mix"},
+    {"ra2md.mix", "isodes.mix"},
+};
 
 const TheaterSpec kTheaters[] = {
     {"TEMPERATE", "temperatmd.ini", "\xe6\xb8\xa9\xe5\x92\x8c", "tem",
      kTemperateChain, sizeof(kTemperateChain) / sizeof(kTemperateChain[0])},
     {"SNOW", "snowmd.ini", "\xe9\x9b\xaa\xe5\x9c\xb0", "sno",
      kSnowChain, sizeof(kSnowChain) / sizeof(kSnowChain[0])},
+    {"DESERT", "desertmd.ini", "\xe6\xb2\x99\xe6\xbc\xa0", "des",
+     kDesertChain, sizeof(kDesertChain) / sizeof(kDesertChain[0])},
 };
 
 // ---- small filesystem helpers -------------------------------------------
@@ -208,6 +220,7 @@ const TheaterSpec* theaterSpec(int theater)
 {
     if (theater == 0) return &kTheaters[0];
     if (theater == 1) return &kTheaters[1];
+    if (theater == 2) return &kTheaters[2];
     return nullptr;
 }
 
@@ -317,6 +330,61 @@ ExtractReport extractForGenerator(const ExtractOptions& opt)
             if (bytes.empty()) continue;
             emit(exeDir, e.name, bytes, std::string("x64/Release/") + e.name);
             rep.bytes += bytes.size();
+        }
+    }
+
+    // ---- theater-specific palettes --------------------------------------
+    // Temperate's four live in ra2.mix/cache.mix (the block above).  Snow's
+    // three live in the same archive; DESERT's three live in an UNNAMED nested
+    // MIX inside ra2md.mix, so they are found by scanning the small top-level
+    // entries and looking the names up by hash.
+    {
+        const auto emitPalette = [&](const char* name, const std::vector<std::uint8_t>& bytes)
+        {
+            if (bytes.empty()) return;
+            emit(exeDir, name, bytes, std::string("x64/Release/") + name);
+        };
+
+        if (std::strcmp(spec->name, "SNOW") == 0)
+        {
+            struct Pal { const char* name; };
+            static const Pal kSnowPals[] = {
+                {"snow.pal"}, {"isosno.pal"}, {"unitsno.pal"} };
+            for (const Pal& p : kSnowPals)
+            {
+                std::shared_ptr<ByteSource> src = openSource(opt.gameDir + "/ra2.mix");
+                if (!src) continue;
+                MixArchive top = MixArchive::parse(src, "ra2.mix");
+                if (!top.ok()) continue;
+                const MixEntry* cache = top.find("cache.mix");
+                if (!cache) continue;
+                MixArchive sub = MixArchive::parseNested(top, *cache, "cache.mix");
+                if (!sub.ok()) continue;
+                emitPalette(p.name, sub.read(p.name));
+            }
+        }
+        else if (std::strcmp(spec->name, "DESERT") == 0)
+        {
+            static const char* const kDesertPals[] = {
+                "desert.pal", "isodes.pal", "unitdes.pal" };
+            for (const char* name : kDesertPals)
+            {
+                std::shared_ptr<ByteSource> src = openSource(opt.gameDir + "/ra2md.mix");
+                if (!src) continue;
+                MixArchive top = MixArchive::parse(src, "ra2md.mix");
+                if (!top.ok()) continue;
+                std::vector<std::uint8_t> bytes;
+                for (const MixEntry& e : top.entries())
+                {
+                    // The palette container is ~10 KB; skip the big tile MIXes.
+                    if (e.size < 512 || e.size > 65536) continue;
+                    MixArchive sub = MixArchive::parseNested(top, e, "pal");
+                    if (!sub.ok()) continue;
+                    std::vector<std::uint8_t> b = sub.read(name);
+                    if (!b.empty()) { bytes = std::move(b); break; }
+                }
+                emitPalette(name, bytes);
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-22 16:57:48.851145285 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-22 16:57:48.857619793 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-23 09:21:43.452465112 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-23 09:21:43.460480233 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -50,9 +50,19 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
      SmoothWaterBody(0, 0);                                       // sub_57A0C0(0, 0)
  
      // Segment 5 (0x59a794 - 0x59a7c0): reset both work marks over the whole
+@@ -1998,7 +2040,8 @@
+ 
+ int RMGSettings::AmbientLight(int theater, int timeOfDay) const
+ {
+-    const std::vector<int>& v = theater ? SnowAmbientLight : TemperateAmbientLight;
++    const std::vector<int>& v =
++        TheaterIsSnow(theater) ? SnowAmbientLight : TemperateAmbientLight;
+     return ListAt(v, timeOfDay);
+ }
+ 
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-22 16:57:48.850909771 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-22 16:57:48.857722815 +0800
+--- b/MapGenerator/MapGen.h	2026-10-23 09:21:43.452174494 +0800
++++ c/MapGenerator/MapGen.h	2026-10-23 09:21:43.460594176 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -69,7 +79,57 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
  
  // ============================================================================
  // Shared numeric helpers (used by MapGen.cpp and MapGenRiver.cpp)
-@@ -457,6 +466,17 @@
+@@ -43,8 +52,49 @@
+ {
+     Temperate = 0,
+     Snow      = 1,
++    Desert    = 2,   // [port-only] YR's DESERT theater, see TheaterNameA()
+ };
+ 
++// [port-only] The vanilla port hard-coded the two theaters in four places.
++// These helpers keep the values identical for 0/1 and add DESERT for 2.
++inline bool TheaterIsSnow(int theater)   { return theater == 1; }
++inline bool TheaterIsDesert(int theater) { return theater == 2; }
++
++inline const wchar_t* TheaterControlIniW(int theater)
++{
++    if (TheaterIsSnow(theater))   return L"snowmd.ini";
++    if (TheaterIsDesert(theater)) return L"desertmd.ini";
++    return L"temperatmd.ini";
++}
++
++inline const wchar_t* TheaterControlIniUpperW(int theater)
++{
++    if (TheaterIsSnow(theater))   return L"SNOWMD.INI";
++    if (TheaterIsDesert(theater)) return L"DESERTMD.INI";
++    return L"TEMPERATMD.INI";
++}
++
++inline const wchar_t* TheaterTileFolderW(int theater)
++{
++    if (TheaterIsSnow(theater))   return L"\u96ea\u5730";   // 雪地
++    if (TheaterIsDesert(theater)) return L"\u6c99\u6f20";   // 沙漠
++    return L"\u6e29\u548c";                                  // 温和
++}
++
++inline const wchar_t* TheaterTileExtW(int theater)
++{
++    if (TheaterIsSnow(theater))   return L"sno";
++    if (TheaterIsDesert(theater)) return L"des";
++    return L"tem";
++}
++
++inline const char* TheaterNameA(int theater)
++{
++    if (TheaterIsSnow(theater))   return "SNOW";
++    if (TheaterIsDesert(theater)) return "DESERT";
++    return "TEMPERATE";
++}
++
+ // ============================================================================
+ // Time of day
+ // ============================================================================
+@@ -457,6 +507,17 @@
      // MovementZone table the starting-point stage uses, so it belongs here
      // rather than being rolled inside the generator. See GlobalMapOptions.
      GlobalMapOptions global;
@@ -87,7 +147,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
  };
  
  // ============================================================================
-@@ -962,6 +982,13 @@
+@@ -962,6 +1023,13 @@
      uint8_t ok;         // 1 stamped, 0 blocked
  };
  
@@ -101,7 +161,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
  class RandomMapGenerator
  {
  public:
-@@ -1427,6 +1454,20 @@
+@@ -1427,6 +1495,20 @@
      // Step 6 (inline at 0x5A36CB): collapse the 2x2 blocks whose slopes are
      // 5/6/7/8 or 11/12/9/10 into the 0xFFFF multi-cell-tile mark.
      void MergeSlopeBlocks();
@@ -122,7 +182,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // Port-only final sweep (runs after MergeSlopeBlocks): the micro-slopes
      // FinalizeElevationSlopes lays down did not exist when PlaceCliffs ran, so
      // a CliffSet piece can end up with a raised wall cell (L8) diagonally
-@@ -1450,8 +1491,21 @@
+@@ -1450,8 +1532,21 @@
      void ScatterRocks();
      // sub_5A4B60: best-first growth of a LAT / rock blob of `count` cells,
      // stamping work dword +0x3C with the seed's slot index.
@@ -145,7 +205,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // sub_5A45E0: plant up to `count` TREE01..TREE25 objects around the cell,
      // returning how many were planted. Route B: records MapTerrainObject.
      int ScatterTrees(MapCell* cell, int count, double probability);
-@@ -1467,6 +1521,74 @@
+@@ -1467,6 +1562,74 @@
      // CliffRamps / RampSmooth）上的树保留。同时让出生点周围少放树。
      void PruneTerrainTrees();
  
@@ -220,7 +280,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // [移植侧] 格点是否落在任一出生点的净场 6x6 内（出生点 2x2 居中、外扩
      // 2 格）。出生点在 AddTiberium / CreateLATs 之前已确定，树、岩石生成时
      // 用它避让，而不是事后改地形。
-@@ -1523,6 +1645,22 @@
+@@ -1523,6 +1686,22 @@
      // budget), false on failure (map already rolled back to all-land).
      bool GenerateRiver(int* startXY, double initialAngle, bool isTributary);
  
@@ -243,7 +303,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      // One river-mouth delta fan (replicates sub_59E740) - IMPLEMENTED.
      // Called by the river main loop's delta trigger (0x59ddf5) after all
      // six gates pass; carves a fan of water downstream of the river end
-@@ -1720,6 +1858,14 @@
+@@ -1720,6 +1899,14 @@
  
      // Cell slot array (512-stride). Diamond cells point into the pool,
      // everything else is nullptr (InvalidCell sentinel).
@@ -258,7 +318,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      MapCell* const* GetCellSlots() const { return cellSlots_; }
      int GetSlotRows() const { return slotRows_; }
      int GetCellCount() const { return cellCount_; }
-@@ -2002,6 +2148,63 @@
+@@ -2002,6 +2189,63 @@
      // col + row * CellsInX, so this inverts it). Lives in MapGenRiver.cpp next
      // to that table.
      int CliffCellsInX(int tile) const;
@@ -322,7 +382,7 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      void FillGreenPlaceholders();      // sub_59B740  fill leftovers near green
  
      // ---- Recalculating cell attributes (0x598E1F) support ----
-@@ -2180,6 +2383,10 @@
+@@ -2180,6 +2424,10 @@
      GlobalMapOptions globalOptions_;
  
      MapCell*  cellPool_;    // allocated CellClass objects (diamond cells)
@@ -334,8 +394,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:57:48.849295142 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-22 16:57:48.857795076 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-23 09:21:43.449235749 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-23 09:21:43.460675889 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -347,8 +407,8 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
 --- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-22 16:57:48.858408147 +0800
-@@ -0,0 +1,441 @@
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-23 09:21:43.461250575 +0800
+@@ -0,0 +1,470 @@
 +// ============================================================================
 +// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
 +// family (cliff01..40) and the multi-cell RAMP family (ramp01..10).
@@ -681,9 +741,38 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +    // partner, and cells outside all pieces are left exactly as the generator made
 +    // them.  Level travels with the cell, so the two halves are the same ramp turned
 +    // around - which is what tools/verify_ramp_pieces.py checks.
++    // MG_RAMP_LEAVE_BLANK=<lo-hi> leaves the ramp pieces in that slot range unstamped
++    // (both halves), so the cells render black and the user can place the art by hand to
++    // judge what the right piece is.  Diagnostic only; unset = normal behaviour.
++    int blankLo = -1, blankHi = -2;
++    if (const char* env = std::getenv("MG_RAMP_LEAVE_BLANK"))
++    {
++        int a = 0, b = 0;
++        if (std::sscanf(env, "%d%*c%d", &a, &b) == 2) { blankLo = a; blankHi = b; }
++        else if (std::sscanf(env, "%d", &a) == 1)     { blankLo = blankHi = a; }
++    }
++    // clear both halves of the blanked slots first
++    if (blankLo > 0)
++        for (int sy = 0; sy < slotRows_; ++sy)
++            for (int sx = 0; sx < 512; ++sx)
++            {
++                MapCell* c = cellSlots_[512 * sy + sx];
++                if (c == nullptr || slopeSetPiecesIndex_ < 0)
++                    continue;
++                const int k = c->IsoTileTypeIndex - slopeSetPiecesIndex_;
++                if (k < 0 || k >= 10)
++                    continue;
++                if (k + 1 < blankLo || k + 1 > blankHi)
++                    continue;
++                c->IsoTileTypeIndex = 0;
++                c->Height = 0;
++            }
++
 +    long long stamped = 0;
 +    for (const WPiece& w : wpieces)
 +    {
++        if (blankLo > 0 && w.k + 1 >= blankLo && w.k + 1 <= blankHi)
++            continue;                                  // deliberately left blank
 +        const int pk = kRampPartner[w.k] - 1;
 +        const int pw = rampH[pk];
 +        for (int n = 0; n < kCount[w.k]; ++n)
@@ -792,8 +881,8 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +}
 \ No newline at end of file
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-22 16:57:48.850046775 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-22 16:57:48.858463148 +0800
+--- b/MapGenerator/MapGenHills.cpp	2026-10-23 09:21:43.450362380 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-23 09:21:43.461311406 +0800
 @@ -66,6 +66,8 @@
  
  #include "pch.h"
@@ -1723,8 +1812,8 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +    }
 +}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-22 16:57:48.849505656 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-22 16:57:48.857839317 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-23 09:21:43.449456965 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-23 09:21:43.460719880 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2059,8 +2148,8 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-22 16:57:48.850007455 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-22 16:57:48.857881028 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-23 09:21:43.450287298 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-23 09:21:43.460758851 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2174,8 +2263,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:57:48.848720121 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-22 16:57:48.857987400 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-23 09:21:43.448526530 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-23 09:21:43.460852224 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -2405,8 +2494,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:57:48.851295648 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-22 16:57:48.858123302 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-23 09:21:43.452872404 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-23 09:21:43.460967717 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -2416,9 +2505,31 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
          const int localWidth = size_.width;             // [Map] LocalSize width
          const int localHeight = size_.height;           // [Map] LocalSize height
          const int playWidth = size_.mapWidth;           // [Map] Size width
-@@ -968,8 +968,11 @@
+@@ -875,7 +875,8 @@
+ 
+     // ---- 3. the text -------------------------------------------------------
+     const int timeOfDay = config_.timeOfDay;
+-    const bool snow = (config_.theater != 0);
++    const bool snow = TheaterIsSnow(config_.theater);
++    const bool desert = TheaterIsDesert(config_.theater);
+ 
+     std::string text;
+     text += "; Generated by the MapGenerator random map generator (RMG port)\n";
+@@ -957,7 +958,7 @@
+     text += "MultiplayerOnly=";
+     text += Int(config_.multiplayer ? 1 : 0);
+     text += "\n";
+-    text += "IceGrowthEnabled=yes\n";
++    text += desert ? "IceGrowthEnabled=no\n" : "IceGrowthEnabled=yes\n";
+     text += "VeinGrowthEnabled=yes\n";
+     text += "TiberiumGrowthEnabled=yes\n";
+     text += "IgnoreGlobalAITriggers=no\n";
+@@ -966,10 +967,13 @@
+     text += "[Map]\n";
+     text += "Size=0,0," + Int(size_.mapWidth) + "," + Int(size_.mapHeight) + "\n";
      text += "Theater=";
-     text += snow ? "SNOW" : "TEMPERATE";
+-    text += snow ? "SNOW" : "TEMPERATE";
++    text += TheaterNameA(config_.theater);
      text += "\n";
 -    // [Map] LocalSize is the visible rect, i.e. the port's VisibleRect.
 -    text += "LocalSize=2,5," + Int(size_.width) + "," + Int(size_.height) + "\n\n";
@@ -2430,9 +2541,33 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
  
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
+diff -ruN b/MapGenerator/MapGenRecalc.cpp c/MapGenerator/MapGenRecalc.cpp
+--- b/MapGenerator/MapGenRecalc.cpp	2026-10-23 09:21:43.448352435 +0800
++++ c/MapGenerator/MapGenRecalc.cpp	2026-10-23 09:21:43.459351312 +0800
+@@ -425,8 +425,7 @@
+         L"%s..\\%s",
+         L"%s..\\..\\\u76f8\u5173INI\\%s",               // ...\<rules folder>
+     };
+-    const wchar_t* const iniName =
+-        (theater == 1) ? L"snowmd.ini" : L"temperatmd.ini";
++    const wchar_t* const iniName = TheaterControlIniW(theater);
+ 
+     wchar_t wini[MAX_PATH] = L"";
+     bool found = false;
+@@ -465,8 +464,8 @@
+     // ---- the theater's art folder ----------------------------------------
+     wchar_t artDir[MAX_PATH];
+     swprintf_s(artDir, L"%s..\\..\\Tile\u8d44\u6e90\\%s\\", wdir,
+-               (theater == 1) ? L"\u96ea\u5730" : L"\u6e29\u548c");
+-    const wchar_t* const ext = (theater == 1) ? L"sno" : L"tem";
++               TheaterTileFolderW(theater));
++    const wchar_t* const ext = TheaterTileExtW(theater);
+ 
+     // ---- one TMP per tile -------------------------------------------------
+     int running = 0;
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-22 16:57:48.849043887 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-22 16:57:48.858234884 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-23 09:21:43.448894490 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-23 09:21:43.461071650 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -3140,9 +3275,19 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  void RandomMapGenerator::PlaceWaterDetailTile(int tileIndex, int packedCoords,
                                                int genCode, int level)
  {
+@@ -3967,8 +4512,7 @@
+         slash[1] = L'\0';
+ 
+     wchar_t wpath[MAX_PATH];
+-    swprintf_s(wpath, L"%s%s", wdir,
+-               theater == 1 ? L"SNOWMD.INI" : L"TEMPERATMD.INI");
++    swprintf_s(wpath, L"%s%s", wdir, TheaterControlIniUpperW(theater));
+ 
+     char path[MAX_PATH];
+     WideCharToMultiByte(CP_ACP, 0, wpath, -1, path, MAX_PATH, nullptr, nullptr);
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-22 16:57:48.858360066 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-23 09:21:43.461200623 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//

@@ -32,8 +32,7 @@ from maptools.game_dir import find_game_dir  # noqa: E402
 
 # One fixed argument set.  Determinism is already covered by verify_oracle.py;
 # what matters here is that both builds agree on the bytes.
-ARGS = ["--land", "1", "--theater", "0", "--size", "1", "--players", "2",
-        "--seed", "20260913"]
+ARGS = ["--land", "1", "--size", "1", "--players", "2", "--seed", "20260913"]
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -47,6 +46,7 @@ def main() -> int:
     ap.add_argument("--wasm-js", default=str(ROOT / "build" / "engine-wasm" / "mgconsole.js"))
     ap.add_argument("--mgextract", default=str(ROOT / "build" / "engine" / "mgextract"))
     ap.add_argument("--game-dir", default=None)
+    ap.add_argument("--theater", type=int, default=0)
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
@@ -77,15 +77,17 @@ def main() -> int:
     try:
         assets = work / "assets"
         proc = run([args.mgextract, "--game-dir", str(game), "--out", str(assets),
-                    "--theater", "0"])
+                    "--theater", str(args.theater)])
         if proc.returncode != 0:
             print(proc.stderr, file=sys.stderr)
             return 1
 
         results: dict[str, Path] = {}
         for label, cmd in (
-            ("native", [str(native), "--root", str(assets)] + ARGS),
-            ("wasm", [node, str(wasm_js), "--root", str(assets)] + ARGS),
+            ("native", [str(native), "--root", str(assets)] + ARGS +
+                       ["--theater", str(args.theater)]),
+            ("wasm", [node, str(wasm_js), "--root", str(assets)] + ARGS +
+                     ["--theater", str(args.theater)]),
         ):
             out = work / f"{label}.map"
             proc = run(cmd + ["--out", str(out)])
