@@ -1,0 +1,195 @@
+// [Preview] / [PreviewPack] writer for generated maps.
+//
+// RA2/YR read the map-list thumbnail from two INI sections that must be the
+// FIRST sections of the file:
+//
+//   [Preview]
+//   Size=0,0,W,H
+//   [PreviewPack]
+//   1=<base64>
+//   2=<base64>
+//   ...
+//
+// The base64 decodes to a sequence of framed blocks:
+//     uint16 compressedLength
+//     uint16 rawLength
+//     compressedLength bytes of LZO1X
+// and the concatenated raw blocks are W*H*3 bytes of 24-bit RGB (R, G, B).
+//
+// Channel order is NOT BGR: WAE's writer stores R,G,B, and CnCNet's
+// MapPreviewExtractor reads the decompressed array as 24-bit RGB and then swaps
+// R/B only to fill GDI+'s Bgr24 buffer.  Writing BGR here swaps red and blue in
+// every thumbnail.
+//
+// This module writes a valid LZO1X stream using only the literal-run form
+// (control byte n+17 for n <= 238, otherwise 0 + 255-byte chunks + (n-18) then
+// the 0x11 0x00 0x00 marker).  That is legal for the game's decoder and keeps
+// this file free of any LZO compressor; the preview is 120x60, so the size
+// cost is a few tens of KB, not a whole map.
+//
+// The format was derived from the shipped maps' bytes (a stock map's
+// [PreviewPack] decodes to a 120x60 RGB image) and from the RA2 map writer
+// contract; no editor code is copied.
+
+export const PREVIEW_WIDTH = 120;
+export const PREVIEW_HEIGHT = 60;
+
+const BLOCK_SIZE = 8192;
+const LINE_LENGTH = 70;
+
+/** LZO1X-1 literal-only stream for `bytes` (length >= 1). */
+function lzoLiteralStream(bytes) {
+  const out = new Uint8Array(bytes.length + 40);
+  let o = 0;
+  const n = bytes.length;
+  if (n <= 238) {
+    out[o++] = n + 17;
+  } else {
+    out[o++] = 0;
+    let t = n - 18;
+    while (t > 255) { t -= 255; out[o++] = 0; }
+    out[o++] = t;
+  }
+  out.set(bytes, o);
+  o += n;
+  out[o++] = 0x11;
+  out[o++] = 0x00;
+  out[o++] = 0x00;
+  return out.subarray(0, o);
+}
+
+function bytesToBase64(bytes) {
+  // btoa() exists in browsers and in Node >= 16; feed it in chunks so a large
+  // preview cannot overflow the argument list.
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk)
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(binary);
+}
+
+/** 24-bit RGB bytes (R, G, B) from an RGBA byte array (canvas ImageData). */
+export function rgbaToRgb(rgba, width, height) {
+  const out = new Uint8Array(width * height * 3);
+  for (let i = 0, o = 0; i < width * height * 4; i += 4) {
+    out[o++] = rgba[i];
+    out[o++] = rgba[i + 1];
+    out[o++] = rgba[i + 2];
+  }
+  return out;
+}
+
+/** [Preview] + [PreviewPack] text for a W*H 24-bit RGB buffer. */
+export function buildPreviewSections(rgb, width, height) {
+  const framed = [];
+  for (let off = 0; off < rgb.length; off += BLOCK_SIZE) {
+    const raw = rgb.subarray(off, Math.min(off + BLOCK_SIZE, rgb.length));
+    const packed = lzoLiteralStream(raw);
+    framed.push(packed.length & 0xff, (packed.length >> 8) & 0xff,
+                raw.length & 0xff, (raw.length >> 8) & 0xff);
+    for (let i = 0; i < packed.length; ++i) framed.push(packed[i]);
+  }
+
+  const b64 = bytesToBase64(Uint8Array.from(framed));
+  let text = `[Preview]\nSize=0,0,${width},${height}\n\n[PreviewPack]\n`;
+  let line = 1;
+  for (let i = 0; i < b64.length; i += LINE_LENGTH)
+    text += `${line++}=${b64.slice(i, i + LINE_LENGTH)}\n`;
+  return text + '\n';
+}
+
+/** A valid but featureless 120x60 preview, so a map is never section-less. */
+export function dummyPreviewSections() {
+  const rgb = new Uint8Array(PREVIEW_WIDTH * PREVIEW_HEIGHT * 3);
+  // A dark blue-grey like a map list's empty background, with a faint diagonal
+  // so a thumbnail never looks like a decoding failure.
+  for (let y = 0; y < PREVIEW_HEIGHT; ++y) {
+    for (let x = 0; x < PREVIEW_WIDTH; ++x) {
+      const v = 24 + ((x + y) & 15);
+      const o = (y * PREVIEW_WIDTH + x) * 3;
+      rgb[o] = v + 16;        // R
+      rgb[o + 1] = v + 8;     // G
+      rgb[o + 2] = v;         // B
+    }
+  }
+  return buildPreviewSections(rgb, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+}
+
+/** The existing [Preview]/[PreviewPack] text at the head of a map, if any. */
+function leadingPreviewLength(bytes) {
+  // The file is INI text; the sections we write are ASCII and sit at offset 0.
+  // The base64 pack is tens of KB, so the whole file has to be scanned - a
+  // 4 KB window finds no section marker and the second patch would duplicate
+  // the sections (measured: 27 -> 28 sections).
+  const head = new TextDecoder('latin1').decode(bytes);
+  if (!head.startsWith('[Preview]'))
+    return 0;
+  // Skip past BOTH sections: the first \n[ after [Preview] is [PreviewPack].
+  const pack = head.indexOf('[PreviewPack]');
+  if (pack < 0)
+    return 0;
+  // Consume only the numbered pack lines (and the blank line we write after
+  // them).  The rest of the file may start with a comment block before
+  // [Header]; skipping to the next '[' would delete it (measured: 177 bytes of
+  // "; Generated by ..." disappeared on the second patch).
+  let pos = head.indexOf('\n', pack);
+  if (pos < 0)
+    return head.length;
+  ++pos;
+  for (;;) {
+    const nl = head.indexOf('\n', pos);
+    const line = head.slice(pos, nl < 0 ? head.length : nl).trim();
+    if (line !== '' && !/^\d+=/.test(line))
+      return pos;
+    if (nl < 0)
+      return head.length;
+    pos = nl + 1;
+  }
+}
+
+/** Map bytes without the leading [Preview]/[PreviewPack] sections. */
+export function stripPreviewSections(mapBytes) {
+  const skip = leadingPreviewLength(mapBytes);
+  return skip ? mapBytes.subarray(skip) : mapBytes;
+}
+
+/** Map bytes with `sections` prepended, replacing any leading preview sections. */
+export function withPreviewSections(mapBytes, sections) {
+  const skip = leadingPreviewLength(mapBytes);
+  const head = new TextEncoder().encode(sections);
+  const body = mapBytes.subarray(skip);
+  const out = new Uint8Array(head.length + body.length);
+  out.set(head, 0);
+  out.set(body, head.length);
+  return out;
+}
+
+/**
+ * Browser helper: decode a rendered PNG and build the preview sections.
+ * Uses createImageBitmap + a canvas (both main-thread browser APIs).
+ */
+export async function previewSectionsFromPng(pngBytes,
+                                              width = PREVIEW_WIDTH,
+                                              height = PREVIEW_HEIGHT) {
+  const blob = new Blob([pngBytes], { type: 'image/png' });
+  let bitmap;
+  try {
+    // Let the decoder downscale: the rendered map can be thousands of pixels
+    // wide, and a full-size bitmap plus getImageData is the slowest part.
+    bitmap = await createImageBitmap(blob, {
+      resizeWidth: width, resizeHeight: height, resizeQuality: 'high',
+    });
+  } catch (err) {
+    bitmap = await createImageBitmap(blob);
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  const rgba = ctx.getImageData(0, 0, width, height).data;
+  bitmap.close?.();
+  return buildPreviewSections(rgbaToRgb(rgba, width, height), width, height);
+}
