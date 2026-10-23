@@ -267,6 +267,9 @@ async function ensureRenderer() {
   const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
   const Render = exports?.CNCMaps?.WebEntry?.Render;
   if (typeof Render !== 'function') throw new Error('渲染器模块里没有 CNCMaps.WebEntry.Render');
+  const RenderStart = exports?.CNCMaps?.WebEntry?.RenderStart;
+  const RenderUpdate = exports?.CNCMaps?.WebEntry?.RenderUpdate;
+  const RenderStop = exports?.CNCMaps?.WebEntry?.RenderStop;
   const fs = runtime.Module.FS;
   for (const dir of ['/game', '/maps']) {
     try { fs.mkdir(dir); } catch (err) { /* already */ }
@@ -277,7 +280,14 @@ async function ensureRenderer() {
   state.renderer = runtime;
   state.renderFs = fs;
   state.Render = Render;
-  log(`渲染器就绪：${state.assets.length} 个素材文件`);
+  // The editor prefers the persistent pair: RenderStart loads VFS/rules/art/
+  // theater once, RenderUpdate re-reads the map into that context.  An older
+  // renderer without them falls back to a full Render per edit.
+  state.RenderStart = typeof RenderStart === 'function' ? RenderStart : null;
+  state.RenderUpdate = typeof RenderUpdate === 'function' ? RenderUpdate : null;
+  state.RenderStop = typeof RenderStop === 'function' ? RenderStop : null;
+  log(`渲染器就绪：${state.assets.length} 个素材文件`
+    + `${state.RenderStart && state.RenderUpdate ? '（增量会话）' : ''}`);
 }
 
 async function renderNow() {
@@ -290,7 +300,23 @@ async function renderNow() {
     const fs = state.renderFs;
     fs.writeFile('/maps/render.map', state.bytes);
     const started = performance.now();
-    const rc = state.Render('/maps/render.map', '/game', '/maps/render');
+    let rc;
+    if (state.RenderStart && state.RenderUpdate) {
+      if (state.sessionStarted) {
+        rc = state.RenderUpdate('/maps/render.map', '/maps/render');
+        if (rc !== 0) {
+          log('增量渲染失败；回退整图渲染');
+          state.sessionStarted = false;
+          rc = state.RenderStart('/maps/render.map', '/game', '/maps/render');
+          if (rc === 0) state.sessionStarted = true;
+        }
+      } else {
+        rc = state.RenderStart('/maps/render.map', '/game', '/maps/render');
+        if (rc === 0) state.sessionStarted = true;
+      }
+    } else {
+      rc = state.Render('/maps/render.map', '/game', '/maps/render');
+    }
     if (rc !== 0) throw new Error(`渲染器返回 ${rc}`);
     const png = fs.readFile('/maps/render.png');
     try {
@@ -1106,6 +1132,7 @@ async function loadFromSession() {
     return;
   }
   state.session = session;
+  state.sessionStarted = false;
   state.mapName = session.name || 'out.map';
   state.theater = Number(session.theater) || 0;
   state.bytes = new Uint8Array(session.current);
@@ -1207,6 +1234,9 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('beforeunload', () => {
   if (state.mapUrl) URL.revokeObjectURL(state.mapUrl);
   if (state.pngUrl) URL.revokeObjectURL(state.pngUrl);
+  if (state.RenderStop) {
+    try { state.RenderStop(); } catch (err) { /* process is going away */ }
+  }
 });
 
 loadFromSession().catch((err) => {

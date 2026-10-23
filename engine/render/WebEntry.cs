@@ -11,13 +11,43 @@
 // same argument vector works natively, which is what identifies trimming as the
 // cause rather than the arguments.  ConfigureFromSettings is the supported way
 // in, and it is what the GUI uses too.
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices.JavaScript;
 using CNCMaps.Engine;
+using CNCMaps.Engine.Map;
+using CNCMaps.FileFormats;
+using CNCMaps.FileFormats.Map;
+using CNCMaps.FileFormats.VirtualFileSystem;
 using CNCMaps.Shared;
 
 namespace CNCMaps {
 	public static partial class WebEntry {
+		// The editor's interactive session: the first render keeps VFS/rules/art/
+		// theater/map alive (RenderSettings.KeepAlive); every later edit calls
+		// RenderUpdate, which re-reads the same map into that Map and draws again.
+		private static RenderEngine _sessionEngine;
+		private static Map _sessionMap;
+		private static RenderSettings _sessionSettings;
+
+		private static RenderSettings MakeSettings(string mapPath, string mixDir, string outPath,
+			bool keepAlive, bool markStart) {
+			return new RenderSettings {
+				InputFile = mapPath,
+				OutputFile = outPath,
+				MixFilesDirectories = new List<string> { mixDir },
+				Engine = EngineType.YurisRevenge,
+				SavePNG = true,
+				// PngWriter's level<=3 branch is deflate Fastest; pixels are lossless.
+				PNGQuality = 3,
+				MarkStartPos = markStart,
+				StartPositionMarking = StartPositionMarking.Squared,
+				MetadataOutFile = outPath + ".json",
+				KeepAlive = keepAlive,
+			};
+		}
 		/// <summary>
 		/// Renders one map.
 		/// </summary>
@@ -27,42 +57,82 @@ namespace CNCMaps {
 		/// <returns>0 on success, -1 if the settings were rejected.</returns>
 		[JSExport]
 		public static int Render(string mapPath, string mixDir, string outPath) {
-			var settings = new RenderSettings {
-				InputFile = mapPath,
-				OutputFile = outPath,
-				MixFilesDirectories = new List<string> { mixDir },
-				Engine = EngineType.YurisRevenge,
-				SavePNG = true,
-				// Deflate level 3 is PngWriter's "Fastest" branch (4 is Optimal);
-				// this PNG is an on-screen preview, and the editor re-encodes one
-				// after every edit.  Pixels are unchanged (PNG is lossless); only
-				// the file size moves.
-				PNGQuality = 3,
-				// Mark the start positions, as the renderer's own CLI does with
-				// `--mark-start-pos --start-pos-squared` (red squares, 2x2 cells at the
-				// default marker size).  tools/verify_render.py passes the same two flags
-				// to the native renderer, so the page's "pixel-identical to a native
-				// CNCMaps render" caption stays true - turning this on in only one of the
-				// two paths would break exactly that claim.  The markers come from
-				// [Waypoints] / the map's starting points, so a map with fewer than 8
-				// players gets one square per real start and none for the 0,0 padding
-				// (DrawStartPositions skips nothing, but the padding entries all land on
-				// the same corner tile - kept as upstream draws them).
-				MarkStartPos = true,
-				StartPositionMarking = StartPositionMarking.Squared,
-				// The page lets the player move the start positions on the preview and
-				// re-render, so it has to turn a click in the saved PNG back into a map
-				// cell.  The renderer already resolves that transform exactly - the crop
-				// origin, the tile size and every start position's surface pixel - and
-				// writes it next to the image with `--meta-json`.  Asking for the same
-				// file here means the page never keeps its own copy of the projection,
-				// which is the rule the whole project follows: one implementation, and
-				// the UI reads it.
-				MetadataOutFile = outPath + ".json",
-			};
+			// Generation preview: start markers on (the native renderer's own
+			// `--mark-start-pos --start-pos-squared` flags), one-shot.
+			var settings = MakeSettings(mapPath, mixDir, outPath, false, true);
 			var engine = new RenderEngine();
 			if (!engine.ConfigureFromSettings(settings)) return -1;
 			return (int)engine.Execute();
+		}
+
+		/// <summary>
+		/// Editor session start: the same render as Render(), but without start
+		/// markers (the editor draws its own overlay) and with KeepAlive so
+		/// RenderUpdate can reuse the loaded VFS/rules/art/theater/map.
+		/// </summary>
+		[JSExport]
+		public static int RenderStart(string mapPath, string mixDir, string outPath) {
+			_sessionEngine = null;
+			_sessionMap = null;
+			_sessionSettings = null;
+			var settings = MakeSettings(mapPath, mixDir, outPath, true, false);
+			var engine = new RenderEngine();
+			if (!engine.ConfigureFromSettings(settings)) return -1;
+			var rc = (int)engine.Execute();
+			if (rc == 0 && engine.LastMap != null) {
+				_sessionEngine = engine;
+				_sessionMap = engine.LastMap;
+				_sessionSettings = settings;
+			}
+			return rc;
+		}
+
+		/// <summary>
+		/// Re-renders the same map after an edit, reusing the session's loaded
+		/// renderer state.  Returns -2 when no session is alive and -3 when the
+		/// map is not the same theater/size (caller falls back to RenderStart).
+		/// </summary>
+		[JSExport]
+		public static int RenderUpdate(string mapPath, string outPath) {
+			if (_sessionMap == null || _sessionSettings == null) return -2;
+			try {
+				var mapStream = File.Open(mapPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+				var mixMap = new MixFile(mapStream, mapPath, 0, mapStream.Length, false, false);
+				VirtualFile vmapFile;
+				if (mixMap.IsValid()) {
+					var mapArchive = new MixFile(mapStream, Path.GetFileName(mapPath), true);
+					var mixEntry = System.Linq.Enumerable.OrderByDescending(
+						mapArchive.Index, me => me.Value.Length).First();
+					vmapFile = mapArchive.OpenFile(mixEntry.Key);
+				} else {
+					vmapFile = new VirtualFile(mapStream, Path.GetFileName(mapPath), true);
+				}
+				var mapFile = new MapFile(vmapFile, Path.GetFileName(mapPath));
+				if (!_sessionMap.Reload(mapFile)) return -3;
+
+				_sessionMap.StartPosMarking = StartPositionMarking.None;
+				_sessionMap.MarkOreFields = false;
+				_sessionMap.Progress = null;
+				_sessionMap.Draw();
+
+				var saveRect = _sessionMap.GetSizePixels(SizeMode.Auto);
+				var ds = _sessionMap.GetDrawingSurface();
+				saveRect.Intersect(new System.Drawing.Rectangle(0, 0, ds.Width, ds.Height));
+				_sessionSettings.OutputFile = outPath;
+				_sessionSettings.OutputDir = "";
+				ds.SavePNG(outPath + ".png", _sessionSettings.PNGQuality, saveRect);
+				ds.FreeNonBitmap();
+				return 0;
+			} catch (System.Exception) {
+				return -4;
+			}
+		}
+
+		[JSExport]
+		public static void RenderStop() {
+			_sessionEngine = null;
+			_sessionMap = null;
+			_sessionSettings = null;
 		}
 	}
 }
