@@ -33,6 +33,11 @@ namespace CNCMaps {
 				MixFilesDirectories = new List<string> { mixDir },
 				Engine = EngineType.YurisRevenge,
 				SavePNG = true,
+				// Deflate level 3 is PngWriter's "Fastest" branch (4 is Optimal);
+				// this PNG is an on-screen preview, and the editor re-encodes one
+				// after every edit.  Pixels are unchanged (PNG is lossless); only
+				// the file size moves.
+				PNGQuality = 3,
 				// Mark the start positions, as the renderer's own CLI does with
 				// `--mark-start-pos --start-pos-squared` (red squares, 2x2 cells at the
 				// default marker size).  tools/verify_render.py passes the same two flags
