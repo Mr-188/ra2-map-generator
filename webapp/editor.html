@@ -166,6 +166,18 @@ button { font: inherit; color: inherit; }
   font: 400 11.5px/1.6 var(--mono); text-decoration: underline; cursor: pointer;
 }
 .mini-link:hover { color: var(--amber-2); }
+
+/* neutral building ownership */
+.slot-row { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 8px; }
+.slot {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border: 1px solid var(--rule-2); border-radius: 3px;
+  background: var(--panel-2); color: var(--ink-2);
+  font: 500 11.5px/1.3 var(--mono); cursor: pointer;
+}
+.slot:hover { border-color: var(--amber); color: var(--amber-2); }
+.slot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.tool[disabled] { opacity: .38; cursor: not-allowed; }
 .side-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #hint { margin: 10px 0 0; font-size: 12px; line-height: 1.65; color: var(--ink-3); white-space: pre-wrap; }
 #hint.ok { color: var(--amber-2); }
@@ -222,6 +234,10 @@ button { font: inherit; color: inherit; }
     <button class="tool" type="button" data-tool="build-CAOUTP"><span class="k">9</span><span class="t">放科技维修厂</span></button>
     <div class="tool-sub">悬停看地基，点击放置</div>
 
+    <div class="rail-h">归属</div>
+    <button class="tool" type="button" data-tool="owner" id="owner-tool"><span class="k">H</span><span class="t">改归属</span></button>
+    <div class="tool-sub">点建筑/拖框选中，再到右栏选号位</div>
+
     <div class="rail-h">出生点</div>
     <button class="tool" type="button" data-tool="start"><span class="k">0</span><span class="t">改出生点</span></button>
     <div class="tool-sub">拖红方块，或点一下把选中的出生点放过去</div>
@@ -270,6 +286,15 @@ button { font: inherit; color: inherit; }
       <div id="start-list" class="start-list"></div>
       <p class="mini" id="start-current">选中 —</p>
       <p class="mini">拖红方块，或点一个目标格；改动可撤销，且不进参数集。</p>
+    </div>
+
+    <div id="owner-panel" hidden>
+      <div class="side-h">中立建筑归属</div>
+      <p class="mini" id="owner-count">未选中中立建筑</p>
+      <div class="slot-row" id="owner-slots"></div>
+      <p class="mini">先框选或点选建筑（油井/科技商店/科技维修厂…），再点号位；「中立」清除。
+        归属写进触发器（开局 event 8 → action 14，目标码 4475+号位-1），
+        房主字段仍是 Neutral，所以预览图的建筑颜色不会变，角标是编辑器画的。</p>
     </div>
 
     <div class="side-h">选区</div>

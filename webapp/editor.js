@@ -24,6 +24,10 @@ import {
   BUILDING_TYPES, buildingType, describeBuildingPlacement, placeBuilding,
   readStructures, structureOccupiedCells,
 } from './buildings.js';
+import {
+  SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
+  assignable, structureCells,
+} from './houses.js';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -75,6 +79,9 @@ const state = {
   selectedStart: -1,
   startPoints: [],
   structures: [],
+  handovers: new Map(),    // structure index -> { slot, tag, trigger, name }
+  slotCount: 2,            // players on this map ([Header] NumberStartingPoints)
+  ownerMultiplayer: true,  // false on a single-player .map (the tool is refused)
   rendering: false,
   renderDirty: false,
   renderer: null,
@@ -365,7 +372,18 @@ function parseMapState() {
   for (const index of state.structureCells) occupied.add(index);
   state.occupied = occupied;
   state.structures = readStructures(state.text);
+  state.handovers = readHandovers(state.text);
+  state.slotCount = playerSlots(state.text);
+  state.ownerMultiplayer = isMultiplayerMap(state.text);
   state.startPoints = readWaypoints(state.text).filter((w) => w.number < 8);
+  const ownerTool = el('owner-tool');
+  if (ownerTool) {
+    ownerTool.disabled = !state.ownerMultiplayer;
+    ownerTool.title = state.ownerMultiplayer
+      ? '给中立建筑指定开局归哪个玩家号位'
+      : '单人 .map 不支持按号位归属（触发器只能按房主名）';
+  }
+  updateOwnerPanel();
   if (state.startPoints.length && state.selectedStart >= state.startPoints.length) {
     state.selectedStart = 0;
   }
@@ -537,6 +555,11 @@ const TOOLS = {
     title: '移除矿柱',
     help: '点一个格子，删掉该格的 TIBTRE 矿柱；其他地形对象不动。',
   },
+  owner: {
+    title: '改归属',
+    help: '先框选或点一栋中立建筑（油井/科技商店/科技维修厂…），再到右栏点号位；'
+      + '「中立」清除。只改 [Structures] 的标签和触发器，不改房主字段。',
+  },
   start: {
     title: '改出生点',
     help: '拖红方块改落点，或先点红方块再点目标格。只改 [Waypoints]。',
@@ -621,6 +644,11 @@ function setTool(tool) {
     setHint('拖拽框选；切到放矿石等工具后按框选方式执行。', 'ok');
   } else if (tool === 'brush') {
     setHint('左键涂抹选择，右键删除；切到放矿石等工具后按自由方式执行。', 'ok');
+  } else if (tool === 'owner') {
+    setHint(state.ownerMultiplayer
+      ? '框选或点一栋中立建筑，然后到右栏选号位。'
+      : '单人 .map 没有玩家号位，这一步只在多人图里可用。',
+      state.ownerMultiplayer ? 'ok' : 'bad');
   } else if (tool === 'ore' || tool === 'gems' || tool === 'clear') {
     setHint(state.areaMode === 'box'
       ? '在图上拖一个框，松开后对框内区域执行。'
@@ -641,6 +669,7 @@ function setTool(tool) {
   updateStartPanel();
   if (state.selCells.length) refreshSelectionCounts();
   else updateStatsPanel();
+  updateOwnerPanel();
   draw();
 }
 
@@ -685,8 +714,18 @@ function draw() {
   const tw = (state.meta.tileWidth / 2) * s;
   const th = (state.meta.tileHeight / 2) * s;
 
-  // selection cells, coloured for the active family (green unless gems)
-  if (state.selCells.length) {
+  // selection cells: blue for the owner tool, mineral colours otherwise
+  if (state.selCells.length && state.tool === 'owner') {
+    for (const c of state.selCells) {
+      const p = projectCell(state.grid, state.meta, c.x, c.y);
+      diamond(ctx, p.x * s, p.y * s, tw, th);
+      ctx.fillStyle = 'rgba(120,170,255,.26)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(190,220,255,.75)';
+      ctx.stroke();
+    }
+  } else if (state.selCells.length) {
     const family = state.actionKind === 'gems' ? GEM_OVERLAY_START : ORE_OVERLAY_START;
     const empty = new Path2D();
     const same = new Path2D();
@@ -736,6 +775,23 @@ function draw() {
     }
   }
 
+  // owner tool: highlight the whole foundation under the pointer
+  if (state.tool === 'owner' && state.hoverCell) {
+    const st = structureAtCell(state.hoverCell);
+    if (st) {
+      const ok = assignable(state.text, st);
+      for (const c of structureCells(st.type, st.x, st.y)) {
+        const p = projectCell(state.grid, state.meta, c.x, c.y);
+        diamond(ctx, p.x * s, p.y * s, tw, th);
+        ctx.fillStyle = ok ? 'rgba(120,170,255,.30)' : 'rgba(224,133,122,.28)';
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = ok ? 'rgba(190,220,255,.9)' : 'rgba(240,160,150,.9)';
+        ctx.stroke();
+      }
+    }
+  }
+
   // while dragging a start, show where it would land
   if (state.dragging === 'start' && state.startPoints.length && state.selectedStart >= 0) {
     const pt = state.startPoints[state.selectedStart];
@@ -779,6 +835,29 @@ function draw() {
       ctx.strokeText(String(pt.number), p.x * s, p.y * s + 1);
       ctx.fillStyle = '#f4f4f5';
       ctx.fillText(String(pt.number), p.x * s, p.y * s + 1);
+    }
+  }
+
+  // assigned neutral buildings: the renderer keeps them grey (the owner field
+  // never changes), so the editor marks them with the slot number.
+  if (state.handovers.size) {
+    for (const st of state.structures) {
+      const h = state.handovers.get(st.index);
+      if (!h) continue;
+      const p = projectCell(state.grid, state.meta, st.x, st.y);
+      const r = Math.max(6, Math.min(tw, th) * 0.52);
+      ctx.beginPath();
+      ctx.arc(p.x * s, p.y * s, r, 0, Math.PI * 2);
+      ctx.fillStyle = SLOT_COLORS[(h.slot - 1) % SLOT_COLORS.length];
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(12,13,16,.85)';
+      ctx.stroke();
+      ctx.font = `600 ${Math.max(9, Math.round(r * 1.15))}px ui-monospace, monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(String(h.slot), p.x * s, p.y * s + 0.5);
     }
   }
 
@@ -828,6 +907,7 @@ function refreshSelectionCounts() {
   const family = state.actionKind === 'gems' ? GEM_OVERLAY_START : ORE_OVERLAY_START;
   state.counts = countSelection(state.grid, state.ids, state.occupied, state.selCells, family);
   updateStatsPanel();
+  updateOwnerPanel();
 }
 
 function setSelectionFromRect(rect) {
@@ -844,6 +924,7 @@ function clearSelection(redraw = true) {
   state.lastBrushKey = null;
   state.counts = null;
   updateStatsPanel();
+  updateOwnerPanel();
   if (redraw) draw();
 }
 
@@ -869,6 +950,121 @@ function brushPaint(natural, erase = false) {
   draw();
 }
 
+
+// ---------------------------------------------------------------------------
+// neutral building ownership (webapp/houses.js does the map rewrite)
+// ---------------------------------------------------------------------------
+// Slot colours are editor-only: the renderer keeps a Neutral building grey, so
+// the badge on the overlay is the only place a player slot is visible.
+const SLOT_COLORS = [
+  '#4d7fff', '#e05a4f', '#e0c14f', '#58c46a',
+  '#e08a4f', '#a06fdf', '#4fc9d8', '#e06fb0',
+];
+
+function structureAtCell(cell) {
+  if (!cell) return null;
+  return state.structures.find((st) =>
+    structureCells(st.type, st.x, st.y).some((c) => c.x === cell.x && c.y === cell.y)) || null;
+}
+
+/** The neutral, assignable buildings covered by the current cell selection. */
+function ownerTargets() {
+  if (!state.selCells.length) return [];
+  const cells = new Set(state.selCells.map((c) => `${c.x},${c.y}`));
+  return state.structures.filter((st) => assignable(state.text, st)
+    && structureCells(st.type, st.x, st.y).some((c) => cells.has(`${c.x},${c.y}`)));
+}
+
+/** Click without dragging: make the building under the pointer the selection. */
+function selectStructureAt(cell) {
+  const st = structureAtCell(cell);
+  if (!st) { clearSelection(); setHint('这里没有建筑。', 'bad'); return; }
+  state.selCells = structureCells(st.type, st.x, st.y)
+    .filter((c) => c.x >= 0 && c.y >= 0 && c.x < 512 && c.y < 512)
+    .filter((c) => cellFlags(state.grid, c.x, c.y) & CELL_IN_MAP);
+  state.selKeys = new Set(state.selCells.map((c) => `${c.x},${c.y}`));
+  state.selection = null;
+  refreshSelectionCounts();
+  updateOwnerPanel();
+  const ok = assignable(state.text, st);
+  setHint(ok
+    ? `选中 ${st.type}（#[${st.index}]）${state.handovers.has(st.index)
+        ? `，当前 ${state.handovers.get(st.index).slot} 号位` : '，当前中立'}。`
+    : `${st.type} 不是可归属的中立建筑（桥修小屋/已有归属的房主字段）。`, ok ? 'ok' : 'bad');
+}
+
+function updateOwnerPanel() {
+  const panel = el('owner-panel');
+  if (!panel) return;
+  panel.hidden = state.tool !== 'owner';
+  if (panel.hidden) return;
+  const row = el('owner-slots');
+  const count = el('owner-count');
+  if (!row || !count) return;
+
+  row.textContent = '';
+  if (state.ownerMultiplayer) {
+    const add = (slot, label) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'slot';
+      btn.dataset.slot = slot === null ? 'neutral' : String(slot);
+      if (slot !== null) {
+        const dot = document.createElement('i');
+        dot.style.background = SLOT_COLORS[(slot - 1) % SLOT_COLORS.length];
+        btn.append(dot);
+      }
+      btn.append(document.createTextNode(label));
+      btn.addEventListener('click', () => applyOwner(slot));
+      row.append(btn);
+    };
+    add(null, '中立');
+    for (let i = 1; i <= state.slotCount; ++i) add(i, String(i));
+  }
+
+  if (!state.ownerMultiplayer) {
+    count.textContent = '单人 .map：没有玩家号位，不能按号位归属。';
+    return;
+  }
+  const picked = ownerTargets();
+  if (!picked.length) {
+    count.textContent = '未选中中立建筑';
+    return;
+  }
+  const bySlot = new Map();
+  let ours = 0;
+  for (const st of picked) {
+    const h = state.handovers.get(st.index);
+    if (h) { ours++; bySlot.set(h.slot, (bySlot.get(h.slot) || 0) + 1); }
+  }
+  const detail = [...bySlot.entries()].sort((a, b) => a[0] - b[0])
+    .map(([slot, n]) => `${slot} 号位 ×${n}`).join('、');
+  count.textContent = `选中 ${picked.length} 栋中立建筑`
+    + (ours ? `（已归属 ${detail}）` : '（都还是中立）');
+}
+
+function applyOwner(slot) {
+  if (!state.ownerMultiplayer) {
+    setHint('单人 .map 不支持按号位归属：触发器只能按房主名，号位编码 4475+ 是多人专属。', 'bad');
+    return;
+  }
+  const picked = ownerTargets();
+  if (!picked.length) {
+    setHint('先框选或点选一栋中立建筑（油井、科技商店、科技维修厂 …）。', 'bad');
+    return;
+  }
+  const res = applyHandovers({
+    text: state.text, structures: state.structures,
+    indices: picked.map((st) => st.index), slot,
+  });
+  if (!res.ok) { setHint(res.reason, 'bad'); return; }
+  if (!res.changed) { setHint('这些建筑已经是这个归属了。', ''); return; }
+  commitEdit(encodeLatin1(res.text), slot === null
+    ? `已把 ${res.assigned.length} 栋中立建筑改回中立（删掉对应触发器）。`
+    : `已把 ${res.assigned.length} 栋中立建筑给 ${slot} 号位`
+      + `（动作 14 的目标码 ${SLOT_BASE + slot - 1}）。`);
+  log(`编辑：中立建筑归属 #${res.assigned.join(' #')} → ${slot === null ? '中立' : slot + ' 号位'}`);
+}
 
 // ---------------------------------------------------------------------------
 // edits
@@ -1007,7 +1203,7 @@ overlay.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     return;
   }
-  if (state.tool === 'select') {
+  if (state.tool === 'select' || state.tool === 'owner') {
     state.dragging = 'box';
     state.dragStart = p;
     state.selection = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
@@ -1121,9 +1317,13 @@ overlay.addEventListener('pointerup', (event) => {
     const r = state.selection;
     const dragged = r ? Math.hypot(r.x1 - r.x0, r.y1 - r.y0) : 0;
     state.dragging = null;
-    if (!r || dragged < 4) { clearSelection(); draw(); return; }
+    if (!r || dragged < 4) {
+      if (state.tool === 'owner') { selectStructureAt(state.hoverCell); draw(); return; }
+      clearSelection(); draw(); return;
+    }
     setSelectionFromRect(r);
     draw();
+    if (state.tool === 'owner') { updateOwnerPanel(); return; }
     applyCurrentArea();
     return;
   }
@@ -1347,6 +1547,7 @@ window.addEventListener('keydown', (event) => {
   const tools = {
     1: 'select', b: 'brush', 2: 'ore', 3: 'gems', 4: 'clear', 5: 'pillar', 6: 'unpillar',
     7: 'build-CAOILD', 8: 'build-CAMACH', 9: 'build-CAOUTP', 0: 'start',
+    h: 'owner',
   };
   if (tools[k]) setTool(tools[k]);
   else if (tools[k.toLowerCase()]) setTool(tools[k.toLowerCase()]);

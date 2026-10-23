@@ -21,6 +21,9 @@
 #                   describes the map it was written from, pixel <-> cell inverts
 #                   the renderer's own transform, and the [Waypoints] rewrite
 #                   changes exactly one number in exactly one section
+#   verify_houses   the editor's neutral-building handover: [Structures] tag +
+#                   trigger/event/action (4475+slot-1), multiplayer only, clear
+#                   removes exactly those lines, foreign triggers stay intact
 #   verify_ore      the preview's ore brush: Format80 matches the Python oracle in
 #                   both directions, the [OverlayPack]/[OverlayDataPack] rewrite
 #                   changes nothing else, the brush skips water/gems/objects, and
@@ -180,6 +183,10 @@ if [ -f build/engine-web-node/mg_engine.js ]; then
     step verify_ore node tools/verify_ore.mjs \
         --web build/engine-web-node --game "$GD3" --product webapp $ORE_ARGS
 fi
+
+# The editor's neutral-building ownership tool (webapp/houses.js).  Pure node:
+# the rewrite is a text transform, so it needs neither the engine nor a browser.
+step verify_houses node tools/verify_houses.mjs
 
 # The preview's neutral tech buildings (oil derrick / machine shop / outpost).
 # The map side needs only the node wasm build; the pixel evidence also needs the
