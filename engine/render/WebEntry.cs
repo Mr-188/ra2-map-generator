@@ -108,6 +108,12 @@ namespace CNCMaps {
 					vmapFile = new VirtualFile(mapStream, Path.GetFileName(mapPath), true);
 				}
 				var mapFile = new MapFile(vmapFile, Path.GetFileName(mapPath));
+				// Execute() resets the renderer's RNG before every full render; the
+				// reuse path has to do the same *before* the map objects are rebuilt,
+				// because tiberium art is chosen while they are loaded.  Otherwise the
+				// update continues the previous RNG and a few thousand ore pixels
+				// differ from a fresh render.
+				CNCMaps.Shared.Utility.Rand.Reset();
 				if (!_sessionMap.Reload(mapFile)) return -3;
 
 				_sessionMap.StartPosMarking = StartPositionMarking.None;
