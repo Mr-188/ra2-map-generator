@@ -97,11 +97,18 @@
 
 ### 3.1 读 TMP
 
-- `CNCMaps.FileFormats/TmpFile.cs`，`TileImageAttr.Read`：
+- `CNCMaps.FileFormats/TmpFile.cs`，`TileImageAttr.Read`：每格头里依次读
+  `Height / TerrainType / RampType` 三个字节。
+
+- **实测（2026-10-23，直接读 `build/oracle_assets/Tile资源/温和/slopeNN.tem`）**：
+  这 20 个文件的头部和"标准 TMP"的字段顺序不同（RA2 的 .tem 是 13 个 int32 之后才到
+  标志字），按 CNCMaps 的顺序直接解会得到 `RampType = 0` 这种假值。真正的三字节在
+  `0xCDCDCDCD` 填充标记之后：
   ```
-  Height = f.ReadByte(); TerrainType = f.ReadByte(); RampType = f.ReadByte();
+  slope01..04  -> RampType 1..4        slope06..10 -> RampType 6..10
   ```
-  → 坡型字节在 TMP 每格头的固定位置。
+  **坡型就是片号**，与 OpenRA2 的 `temperat.yaml` 一致。`slope05` 那次探针没命中填充
+  标记（文件里没有 `0xCDCDCDCD`），属于扫描方式的偏差，不是文件异常。
 
 ### 3.2 坡沿修补（**我们渲染器里已有的官方逻辑**）
 
