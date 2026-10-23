@@ -14,6 +14,7 @@
 #                   out-of-range parameters itself
 #   verify_symmetry the mirror mapping is exact, and the reflections the product
 #                   offers are the ones the tile set can actually serve
+#   verify_coast    one unplaceable shore stamp cannot wipe the rest of the coast
 #   verify_webapi   the browser entry-point contract holds, byte-identically,
 #                   and (with --render) the worker's flatten+render flow produces
 #                   a preview pixel-identical to the reference render
@@ -135,6 +136,11 @@ fi
 # Needs no game directory: it is arithmetic over the cell set plus the 40
 # footprints read out of the reference implementation.
 step verify_symmetry python3 tools/verify_symmetry.py
+
+# The coastline's shore art.  The reference chains both shore passes through one
+# shared `ok` flag, so a single unplaceable stamp used to cost the rest of the
+# whole-map coast pass -- no beach at all, silently (see tools/verify_coast.py).
+step verify_coast python3 tools/verify_coast.py
 
 if [ -f build/engine-web-node/mg_engine.js ]; then
     GD=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}

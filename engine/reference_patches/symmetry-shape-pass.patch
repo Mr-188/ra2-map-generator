@@ -1,6 +1,6 @@
 diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
---- b/MapGenerator/MapGen.cpp	2026-10-23 12:14:26.120229824 +0800
-+++ c/MapGenerator/MapGen.cpp	2026-10-23 12:14:26.131256646 +0800
+--- b/MapGenerator/MapGen.cpp	2026-10-23 16:16:00.332057418 +0800
++++ c/MapGenerator/MapGen.cpp	2026-10-23 16:16:00.340710733 +0800
 @@ -809,6 +809,48 @@
      // above. GrowPatch's own sub_57A0C0(genCode, 1) call is followed by a
      // reclaim sweep (0x59c449) that turns those temporary shore tiles back
@@ -61,8 +61,8 @@ diff -ruN b/MapGenerator/MapGen.cpp c/MapGenerator/MapGen.cpp
  }
  
 diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
---- b/MapGenerator/MapGen.h	2026-10-23 12:14:26.119995470 +0800
-+++ c/MapGenerator/MapGen.h	2026-10-23 12:14:26.131374443 +0800
+--- b/MapGenerator/MapGen.h	2026-10-23 16:16:00.331689588 +0800
++++ c/MapGenerator/MapGen.h	2026-10-23 16:16:00.340828360 +0800
 @@ -4,6 +4,15 @@
  #include <cstddef>
  #include <string>
@@ -397,8 +397,8 @@ diff -ruN b/MapGenerator/MapGen.h c/MapGenerator/MapGen.h
      int       slotRows_;    // slot array height (W' + H' + 1)
      int       cellCount_;   // number of diamond cells
 diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
---- b/MapGenerator/MapGenCleanup.cpp	2026-10-23 12:14:26.117392749 +0800
-+++ c/MapGenerator/MapGenCleanup.cpp	2026-10-23 12:14:26.131454178 +0800
+--- b/MapGenerator/MapGenCleanup.cpp	2026-10-23 16:16:00.328603398 +0800
++++ c/MapGenerator/MapGenCleanup.cpp	2026-10-23 16:16:00.340908224 +0800
 @@ -45,6 +45,8 @@
  
  void RandomMapGenerator::Cleanup()
@@ -410,7 +410,7 @@ diff -ruN b/MapGenerator/MapGenCleanup.cpp c/MapGenerator/MapGenCleanup.cpp
      workCells_ = nullptr;
 diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartner.cpp
 --- b/MapGenerator/MapGenCliffPartner.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-23 12:14:26.132054375 +0800
++++ c/MapGenerator/MapGenCliffPartner.cpp	2026-10-23 16:16:00.341490876 +0800
 @@ -0,0 +1,475 @@
 +// ============================================================================
 +// MapGenCliffPartner.cpp - [port-only] left-right mirror partners for the cliff
@@ -889,8 +889,8 @@ diff -ruN b/MapGenerator/MapGenCliffPartner.cpp c/MapGenerator/MapGenCliffPartne
 +}
 \ No newline at end of file
 diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
---- b/MapGenerator/MapGenHills.cpp	2026-10-23 12:14:26.118338277 +0800
-+++ c/MapGenerator/MapGenHills.cpp	2026-10-23 12:14:26.132113459 +0800
+--- b/MapGenerator/MapGenHills.cpp	2026-10-23 16:16:00.329319307 +0800
++++ c/MapGenerator/MapGenHills.cpp	2026-10-23 16:16:00.341549789 +0800
 @@ -66,6 +66,8 @@
  
  #include "pch.h"
@@ -1857,8 +1857,8 @@ diff -ruN b/MapGenerator/MapGenHills.cpp c/MapGenerator/MapGenHills.cpp
 +    }
 +}
 diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
---- b/MapGenerator/MapGenLAT.cpp	2026-10-23 12:14:26.117603102 +0800
-+++ c/MapGenerator/MapGenLAT.cpp	2026-10-23 12:14:26.131495081 +0800
+--- b/MapGenerator/MapGenLAT.cpp	2026-10-23 16:16:00.328758927 +0800
++++ c/MapGenerator/MapGenLAT.cpp	2026-10-23 16:16:00.340950216 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2193,8 +2193,8 @@ diff -ruN b/MapGenerator/MapGenLAT.cpp c/MapGenerator/MapGenLAT.cpp
              pool[nextNode].packed = nb->MapCoords;      // 0x5a4e2f
              pool[nextNode].priority = key;
 diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
---- b/MapGenerator/MapGenMaking.cpp	2026-10-23 12:14:26.118283654 +0800
-+++ c/MapGenerator/MapGenMaking.cpp	2026-10-23 12:14:26.131535433 +0800
+--- b/MapGenerator/MapGenMaking.cpp	2026-10-23 16:16:00.329283345 +0800
++++ c/MapGenerator/MapGenMaking.cpp	2026-10-23 16:16:00.340995929 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2308,8 +2308,8 @@ diff -ruN b/MapGenerator/MapGenMaking.cpp c/MapGenerator/MapGenMaking.cpp
      // [SNAPSHOT-OFF] SaveStageSnapshot("FillGreenPlaceholders");
  }
 diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
---- b/MapGenerator/MapGenMakingSub.cpp	2026-10-23 12:14:26.116742035 +0800
-+++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-23 12:14:26.131636829 +0800
+--- b/MapGenerator/MapGenMakingSub.cpp	2026-10-23 16:16:00.328087619 +0800
++++ c/MapGenerator/MapGenMakingSub.cpp	2026-10-23 16:16:00.341109485 +0800
 @@ -4104,6 +4104,49 @@
  // Decompile: 5A19E0.c (579B70.c, 486380.c).
  void RandomMapGenerator::FixCliffLevels()
@@ -2378,7 +2378,7 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
                  continue;
  
              west->Level -= 4;                             // 0x5a1b67
-@@ -4218,18 +4261,158 @@
+@@ -4218,18 +4261,164 @@
      }
  
      // ---- 5. Pass 2: one cliff piece per placeholder cell (sub_579620) -----
@@ -2501,11 +2501,13 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +    // This changes the output of every map (the user accepted that on 2026-10-23): the
 +    // fill happens inside PlaceCliffs, and the later stages draw from the RNG, so the
 +    // terrain that follows is reshuffled.
-+    // ON by default since 2026-10-23 (user decision: maps may change).  This drops the
-+    // rendered black pixels on the model map from 0.3087% to 0.2220%.  MG_FILL_FOOT=0
-+    // restores the previous output byte for byte.
++    // OFF by default (user decision 2026-10-23, reverting the earlier default-on):
++    // filling beside every cliff foot lowered the model map's dark pixels 0.3087% ->
++    // 0.2220% but left the worst patches untouched (they are the cliff pieces' own
++    // shadowed facades, not missing ground - docs/BLACK_BLOCKS.md 15), and it reshuffles
++    // the map because the later stages draw from the RNG.  MG_FILL_FOOT=1 turns it on.
 +    const char* fillEnv = std::getenv("MG_FILL_FOOT");
-+    const bool fillFoot = (fillEnv == nullptr || fillEnv[0] != '0');
++    const bool fillFoot = (fillEnv != nullptr && fillEnv[0] == '1');
 +    if (fillFoot && shoreTileIndex_ >= 0 && cellSlots_ != nullptr)
 +    {
 +        for (int sy = 0; sy < slotRows_; ++sy)
@@ -2514,6 +2516,10 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                MapCell* c = cellSlots_[512 * sy + sx];
 +                if (c == nullptr || c->IsoTileTypeIndex != 0)
 +                    continue;
++                // A cliff's facade faces the viewer, so the black shows on the bare
++                // cells BEHIND the wall as well as beside it: the predicate counts any
++                // of the four orthogonal neighbours, which covers the row above a
++                // 8-level cliff (measured: (96..103, 42..43) were the worst offenders).
 +                bool touchesCliff = false;
 +                for (int d = 0; d < 4 && !touchesCliff; ++d)
 +                {
@@ -2537,7 +2543,7 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
      // ---- 6. Teardown (0x578f3x) -------------------------------------------
      // The vanilla also destroys MouseClass::CurrentBuilding here. The port has
      // no live object system (same note as SmoothWaterBody's), so only the
-@@ -4626,9 +4809,18 @@
+@@ -4626,9 +4815,18 @@
      }
  
      // ---- 2. How many to fill (0x59b8xx) -----------------------------------
@@ -2556,7 +2562,7 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
  
      // ---- 3. Fill, spreading outwards (0x59b8xx) ---------------------------
      for (int n = 0; n < target; ++n)
-@@ -4654,5 +4846,30 @@
+@@ -4654,5 +4852,30 @@
              if (IsPlaceholderTile(nb))
                  pending.push_back(nb);
          }
@@ -2588,8 +2594,8 @@ diff -ruN b/MapGenerator/MapGenMakingSub.cpp c/MapGenerator/MapGenMakingSub.cpp
 +                     mirroredFills);
  }
 diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
---- b/MapGenerator/MapGenMapFile.cpp	2026-10-23 12:14:26.120423186 +0800
-+++ c/MapGenerator/MapGenMapFile.cpp	2026-10-23 12:14:26.131753276 +0800
+--- b/MapGenerator/MapGenMapFile.cpp	2026-10-23 16:16:00.332200706 +0800
++++ c/MapGenerator/MapGenMapFile.cpp	2026-10-23 16:16:00.341227662 +0800
 @@ -828,7 +828,7 @@
      if (config_.multiplayer)
      {
@@ -2636,8 +2642,8 @@ diff -ruN b/MapGenerator/MapGenMapFile.cpp c/MapGenerator/MapGenMapFile.cpp
      text += "[Lighting]\n";
      text += "Ambient=" + Real(LightFactor(snow ? settings_.SnowAmbientLight
 diff -ruN b/MapGenerator/MapGenRecalc.cpp c/MapGenerator/MapGenRecalc.cpp
---- b/MapGenerator/MapGenRecalc.cpp	2026-10-23 12:14:26.116525172 +0800
-+++ c/MapGenerator/MapGenRecalc.cpp	2026-10-23 12:14:26.128136372 +0800
+--- b/MapGenerator/MapGenRecalc.cpp	2026-10-23 16:16:00.327947322 +0800
++++ c/MapGenerator/MapGenRecalc.cpp	2026-10-23 16:16:00.339762441 +0800
 @@ -425,8 +425,7 @@
          L"%s..\\%s",
          L"%s..\\..\\\u76f8\u5173INI\\%s",               // ...\<rules folder>
@@ -2660,8 +2666,8 @@ diff -ruN b/MapGenerator/MapGenRecalc.cpp c/MapGenerator/MapGenRecalc.cpp
      // ---- one TMP per tile -------------------------------------------------
      int running = 0;
 diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
---- b/MapGenerator/MapGenRiver.cpp	2026-10-23 12:14:26.117061729 +0800
-+++ c/MapGenerator/MapGenRiver.cpp	2026-10-23 12:14:26.131879124 +0800
+--- b/MapGenerator/MapGenRiver.cpp	2026-10-23 16:16:00.328318192 +0800
++++ c/MapGenerator/MapGenRiver.cpp	2026-10-23 16:16:00.341323807 +0800
 @@ -1,4 +1,4 @@
 -﻿// ============================================================================
 +// ============================================================================
@@ -2747,7 +2753,102 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
              int variant;
              do
              {
-@@ -1587,6 +1623,8 @@
+@@ -1430,6 +1466,12 @@
+ //      "if (!ok) break;" - so a failure stops that pass, but the following
+ //      passes still run and break out immediately. The returned value is the
+ //      LAST pass's result, exactly like vanilla returning the shared `j`.
++//      PORT-SIDE EXCEPTION: for the whole-map call SmoothWaterBody(0, 0) only
++//      (GenerateTerrain, MapGen.cpp:854) a failed shore stamp is skipped and
++//      both shore passes keep going -- there is no rollback there, and aborting
++//      the pass costs the entire remaining coastline. Every other call site
++//      (river, lake, GrowPatch) keeps the vanilla chain; see the block above
++//      pass 3 for the measurement.
+ //
+ // RNG note: SelectShoreTile consumes exactly one RandomFloatRange(0, 5) per
+ // visited cell, so passes 3 + 4 together consume 2 * (diamond cell count)
+@@ -1491,32 +1533,70 @@
+     if (ok)
+         FillUnsolvableShoreCorners(genCode);
+ 
+-    // Pass 3: shore tile selection, first round.
++    // -----------------------------------------------------------------------
++    // [移植侧] 整图海岸趟：一格盖不上，不要连累整条海岸线。
++    //
++    // 参考实现把两趟选片的返回值串进同一个 `ok`（loop 顶 `if (!ok) break;`，
++    // 0x57b125 的链），所以第一格盖不上就**两趟全停**。对河/湖/岛生长那几处这是
++    // 对的：false 是"这条河作废、整片回滚"的开关，调用方随后确实会回滚。
++    //
++    // 但 GenerateTerrain 的整图那一趟（MapGen.cpp:854 的 SmoothWaterBody(0, 0)）
++    // 没有任何回滚：一格的失败只意味着"这一张岸片没铺上"，却被放大成"这条海岸线
++    // 剩下的格子一张岸片都不铺"。实测（参数集 I4I6cmf4FJg_8KUwAGA：大岛屿群、
++    // 180°、size 46.7、8 人、seed 2470428836、mapSeed 2214529619）：
++    //   - 失败格 (132,90) 选的岸片锚在 (131,89)，那里同一趟已经铺了 shore27，
++    //     两张片的朝向差落在 kShoreVariantTurn 的 3..5 → PlaceIsoTile false
++    //     （MapGenRiver.cpp 的 0x57b72b 分支）；
++    //   - 中止后，贴水陆地格里只有 233/886 有岸件，海岸渲染成纯硬阶梯；
++    //   - 只把这一趟改成"跳过并继续"后是 884/886，海岸恢复。
++    //
++    // 所以只在 genCode == 0 && flag == 0（唯一一处整图调用，没有回滚可言）里继续；
++    // 河/湖/GrowPatch 的调用点保持参考实现的语义不变。RNG 不动（每格仍然恰好
++    // 一次抽取），没有失败的地图逐字节不变；有失败的地图本来就没有海岸线可保。
++    // 验收：tools/verify_coast.py 固定这组参数，断言岸件覆盖率与确定性。
++    // -----------------------------------------------------------------------
++    const bool keepGoingOnFailedShoreStamp = (genCode == 0 && flag == 0);
++    long long skippedShoreStamps = 0;
++    const auto runShorePass = [&](int mode) -> bool
+     {
+         CellIterator it;
+         it.Reset(cellSlots_, size_.mapWidth);
++        bool passOk = ok;
+         while (MapCell* cell = it.Next())
+         {
+-            if (!ok)
++            if (!passOk)
++                break;
++            if (SelectShoreTile(cell, mode, genCode, flag))
++                continue;
++            if (!keepGoingOnFailedShoreStamp)
++            {
++                passOk = false;
+                 break;
+-            ok = SelectShoreTile(cell, 1, genCode, flag);
++            }
++            ++skippedShoreStamps;
+         }
++        return passOk;
++    };
++
++    // Pass 3: shore tile selection, first round.
++    {
++        ok = runShorePass(1);
+         // [SNAPSHOT-OFF] SaveStageSnapshot("SelectShoreTile");
+     }
+ 
+     // Pass 4: shore tile selection, second round - its result is the return.
+     {
+-        CellIterator it;
+-        it.Reset(cellSlots_, size_.mapWidth);
+-        while (MapCell* cell = it.Next())
+-        {
+-            if (!ok)
+-                break;
+-            ok = SelectShoreTile(cell, 2, genCode, flag);
+-        }
++        ok = runShorePass(2);
+         // [SNAPSHOT-OFF] SaveStageSnapshot("SelectShoreTile2");
+     }
+ 
++    if (skippedShoreStamps > 0)
++    {
++        std::fprintf(stderr, "[shore] whole-map coast pass: %lld stamp(s) could not be "
++                     "placed and were skipped; the rest of the coastline was still "
++                     "painted\n", skippedShoreStamps);
++    }
++
+     return ok;
+ }
+ 
+@@ -1587,6 +1667,8 @@
      {
          const int tx = tips[k].first;
          const int ty = tips[k].second;
@@ -2756,7 +2857,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  
          // Flatten the tip and make it real water of this body.
          MapCell* tip = cellSlots_[512 * ty + tx];
-@@ -2000,9 +2038,19 @@
+@@ -2000,9 +2082,19 @@
          return true;
  
      // 4a. Foreign-water pollution test.
@@ -2776,7 +2877,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  
      // 4b. Flatten and set the water base tile.
      cell->Height = 0;
-@@ -2171,8 +2219,39 @@
+@@ -2171,8 +2263,39 @@
  
  bool RandomMapGenerator::SelectShoreTile(MapCell* cell, int mode, int genCode, int flag)
  {
@@ -2817,7 +2918,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  
      // Trigger coordinates, used by the shore anchor / placement tail.
      const int cellX = cell->MapCoords & 0xFFFF;
-@@ -2673,6 +2752,8 @@
+@@ -2673,6 +2796,8 @@
        { 4, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 4, 0, 0, 4, 0 } },  // dcliff02
  };
  
@@ -2826,7 +2927,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  // The footprint of one isotile, resolved from the family tables by the very
  // rule PlaceIsoTile applies: the shore set (42), the cliff set (40), the
  // cliff/water pieces (28), the destroyable cliffs (2) and the four waterfall
-@@ -3169,6 +3250,375 @@
+@@ -3169,6 +3294,375 @@
      return kCliffFootprints[slot].w;
  }
  
@@ -3202,7 +3303,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  // ---------------------------------------------------------------------------
  // IsRampArtCell / IsCliffWallRiding / CliffPieceHitsRamp / TrimCliffPieceForRamp
  // - port-only pre-stamp ramp-collision handling for PlaceCliffPiece.
-@@ -3742,6 +4192,55 @@
+@@ -3742,6 +4236,55 @@
  // ---------------------------------------------------------------------------
  void RandomMapGenerator::DecorateWaterTiles()
  {
@@ -3258,7 +3359,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
      CellIterator it;
      it.Reset(cellSlots_, size_.mapWidth);
      while (MapCell* cell = it.Next())
-@@ -3762,36 +4261,45 @@
+@@ -3762,36 +4305,45 @@
          bool variant = !plain;                            // -> LABEL_22
          if (plain)
          {
@@ -3325,7 +3426,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
              const int sub = (n242 < 240) ? (n242 / 40) : (247 - n242);
  
              const int packedCoords = cell->MapCoords;
-@@ -3839,6 +4347,43 @@
+@@ -3839,6 +4391,43 @@
  // be hard-coded to 2x2: DecorateWaterTiles (the eight water detail tiles,
  // waterTileIndex_ + 0..7, all full 2x2 rectangles with Z = 0) and
  // CorrectCliffTiles (CliffSet pieces - width 1 or 2, height up to 3).
@@ -3369,7 +3470,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
  void RandomMapGenerator::PlaceWaterDetailTile(int tileIndex, int packedCoords,
                                                int genCode, int level)
  {
-@@ -3967,8 +4512,7 @@
+@@ -3967,8 +4556,7 @@
          slash[1] = L'\0';
  
      wchar_t wpath[MAX_PATH];
@@ -3381,7 +3482,7 @@ diff -ruN b/MapGenerator/MapGenRiver.cpp c/MapGenerator/MapGenRiver.cpp
      WideCharToMultiByte(CP_ACP, 0, wpath, -1, path, MAX_PATH, nullptr, nullptr);
 diff -ruN b/MapGenerator/MapGenSymmetry.cpp c/MapGenerator/MapGenSymmetry.cpp
 --- b/MapGenerator/MapGenSymmetry.cpp	1970-01-01 08:00:00.000000000 +0800
-+++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-23 12:14:26.132005462 +0800
++++ c/MapGenerator/MapGenSymmetry.cpp	2026-10-23 16:16:00.341443873 +0800
 @@ -0,0 +1,1387 @@
 +// MapGenSymmetry.cpp - [移植侧] the symmetry passes.
 +//
