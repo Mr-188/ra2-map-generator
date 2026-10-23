@@ -85,18 +85,16 @@ comes up with the same 参数集.  It is a hint, not a proof (1/1024 of engines 
 and it cannot see the player's own game data differing, which changes the map just as
 surely.
 
-## 出生点编辑 (moving start positions on the preview)
+## 出生点编辑（在编辑器页）
 
-After a render, `编辑出生点` turns the preview into an editor: the starts the
-renderer drew as red squares get a handle of their own, and dragging one (or
-clicking elsewhere with it selected) moves it.  `应用并重新预览` writes the move
-into the map and renders again; `还原` goes back to the bytes the generator
-produced.
+生成页不再提供出生点编辑，统一放到 `editor.html`：生成并渲染后点
+**在编辑器中打开**，左侧选 **改出生点**，右侧会列出每名玩家的出生点。
+点数字选中，拖红方块或点目标格移动；每次移动只改 **[Waypoints]**，
+进撤销栈，改动不进参数集。
 
-It edits **[Waypoints] and nothing else** -- the same thing a map editor does when
-you move a start.  Terrain is not regenerated, which is why this is instant and why
-the button says 重新预览 rather than 重新生成.  Everything around the move comes
-from a single owner rather than a copy:
+Terrain is not regenerated, which is why this is instant and why the editor
+只重新渲染预览而不是重新生成。  Everything around the move comes from a single
+owner rather than a copy:
 
 * **the cell <-> pixel transform** is the renderer's own.  `engine/render/WebEntry.cs`
   asks for `--meta-json`, which writes the crop origin, the tile size and every
@@ -115,7 +113,7 @@ from a single owner rather than a copy:
   (`rewriteWaypoint` in `starts.js`) rather than a text replacement.
 
 `starts.js` is pure code (no DOM) so `node tools/verify_starts.mjs` can drive all of
-it; the canvas and pointer handling stay in `app.js`.
+it; the canvas and pointer handling stay in the page.
 
 One browser-only trap worth remembering: the overlay is a `<canvas>`, which is a
 **replaced element**.  `position: absolute; inset: 1px` does not stretch it -- its

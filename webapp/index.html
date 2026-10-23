@@ -484,7 +484,7 @@ a.dl svg { width: 12px; height: 12px; }
   padding: 0 24px 48px;
 }
 #preview { display: none; }
-/* The start-point and ore editors draw over the image, so they share one box:
+/* The ore brush draws over the image, so it sits in this box:
    each canvas is positioned against this wrapper and sized to the image's
    DISPLAYED box, while all picking happens in the image's NATURAL pixels
    (starts.js / ore.js). */
@@ -493,7 +493,7 @@ a.dl svg { width: 12px; height: 12px; }
   display: block; width: 100%; height: auto;
   border: 1px solid var(--rule); background: #000;
 }
-#starts-layer, #ore-layer {
+#ore-layer {
   /* The image has a 1px border, so the canvas sits on its CONTENT box (1px in,
      2px smaller) or every click and every drawn marker is off by that border.
      The size is explicit rather than `inset` alone on purpose: a canvas is a
@@ -504,21 +504,12 @@ a.dl svg { width: 12px; height: 12px; }
   width: calc(100% - 2px); height: calc(100% - 2px);
   display: block; cursor: crosshair;
   touch-action: none;            /* a drag must not scroll the page on touch */
-}#starts-bar { display: none; }
-#starts-bar.on {
-  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;
 }
-#starts-bar .btn { width: auto; margin-top: 0; }
 .starts-note {
   font: 400 12px/1.6 var(--mono); color: var(--ink-3);
   padding: 0 2px; white-space: nowrap;
 }
-#starts-hint {
-  margin: 0; font: 400 12.5px/1.7 var(--mono);
-  letter-spacing: .03em; color: var(--ink-3);
-}
-#starts-hint.bad { color: #e0857a; }
-#starts-hint.ok { color: var(--amber-2); }
+.pv-actions { justify-content: flex-end; margin: 0 0 10px; }
 /* 矿石绘制：拖框 -> 右击菜单。 提示条只在渲染器给出坐标元数据时才出现。 */
 #ore-bar { display: none; margin-top: 10px; }
 #ore-bar.on { display: block; }
@@ -1118,21 +1109,19 @@ a.dl svg { width: 12px; height: 12px; }
 <section class="band">
   <div class="sec" id="preview">
     <h2 class="sec-h">渲染预览<span class="sec-n">CNCMaps · WASM</span></h2>
+    <div class="meta-actions pv-actions">
+      <button id="open-editor" class="btn" type="button" hidden>在编辑器中打开</button>
+      <a class="dl" id="preview-dl" download="preview.png">
+        下载预览图
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="square" aria-hidden="true">
+          <path d="M12 3v13M6.5 11 12 16.5 17.5 11M4 20h16"></path>
+        </svg>
+      </a>
+    </div>
     <div class="pv">
       <img id="preview-img" alt="地图预览">
-      <canvas id="starts-layer" hidden></canvas>
       <canvas id="ore-layer" hidden></canvas>
-    </div>
-    <!-- 出生点编辑：拖红方块改落点，应用后只改地图的 [Waypoints]，再重新出图。
-         落点校验用引擎自己的可通行性（不去猜地形），所以这里不需要重复地形规则。 -->
-    <div id="starts-bar">
-      <button id="starts-edit" class="btn" type="button">编辑出生点</button>
-      <button id="starts-apply" class="btn primary" type="button" hidden>应用并重新预览</button>
-      <button id="starts-reset" class="btn" type="button" hidden>还原</button>
-      <!-- 一句话就够：改出生点是生成后的手工编辑，参数集只描述生成输入，
-           所以这串码复现不出移动过的出生点。 -->
-      <span class="starts-note" id="starts-note">改出生点不进参数集</span>
-      <p id="starts-hint"></p>
     </div>
     <!-- 矿石绘制：在预览图上拖框选区，右击菜单把选区里所有可放的空地铺上
          矿石（绿）或彩矿；也可以直接在单个格子上右击放/移除矿柱。
@@ -1158,16 +1147,6 @@ a.dl svg { width: 12px; height: 12px; }
     </div>
     <div class="meta">
       <p class="cap" id="preview-cap"></p>
-      <div class="meta-actions">
-      <button id="open-editor" class="btn" type="button" hidden>在编辑器中打开</button>
-      <a class="dl" id="preview-dl" download="preview.png">
-        下载预览图
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="square" aria-hidden="true">
-          <path d="M12 3v13M6.5 11 12 16.5 17.5 11M4 20h16"></path>
-        </svg>
-      </a>
-      </div>
     </div>
   </div>
 </section>

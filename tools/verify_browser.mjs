@@ -453,121 +453,13 @@ try {
     check('the preview marks the start positions (red squares)',
           marks.red >= 1000, `${marks.red} red px, box ${JSON.stringify(marks.box)}`);
 
-    // ---- the start-point editor -----------------------------------------
-    //
-    // The feature's claim is "click the picture, the marker moves, the picture
-    // comes back".  That spans every piece (worker -> main thread -> renderer
-    // metadata -> [Waypoints] rewrite), so this is the only honest place to test
-    // it.  The click target is the amber marker the editor itself draws, read
-    // back off the overlay canvas -- which also catches the failure this had
-    // once: the overlay drawn somewhere other than the renderer's red square,
-    // because a canvas is a replaced element and `inset` alone does not stretch
-    // it (it kept its intrinsic 300x150).
-    const editorOn = await page.$eval('#starts-bar', (e) => e.classList.contains('on'))
-      .catch(() => false);
-    check('the start-point editor is offered after a render', editorOn);
-
-    if (editorOn) {
-      const waypointLines = async () => {
-        const href = await page.$eval('#download', (a) => a.href);
-        return await page.evaluate(async (url) => {
-          const buf = await (await fetch(url)).arrayBuffer();
-          const text = new TextDecoder('latin1').decode(buf);
-          const sec = (/\[Waypoints\]([\s\S]*?)(?=\n\[|$)/i.exec(text) || [])[1] || '';
-          return sec.split('\n').map((s) => s.trim()).filter((s) => /^\d+\s*=/.test(s));
-        }, href);
-      };
-
-      const before = await waypointLines();
-      check('the map carries start waypoints', before.length > 0, before.join(' '));
-
-      await page.click('#starts-edit');
-      check('the editor opens on the preview',
-            await page.$eval('#starts-layer', (e) => !e.hidden));
-
-      const spot = await page.evaluate(() => {
-        const img = document.getElementById('preview-img');
-        const cv = document.getElementById('starts-layer');
-        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-        let n = 0, sx = 0, sy = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          if (d[i + 3] < 180) continue;
-          if (Math.abs(d[i] - 242) < 30 && Math.abs(d[i + 1] - 192) < 40
-              && Math.abs(d[i + 2] - 105) < 60) {
-            const p = i / 4;
-            n++; sx += p % cv.width; sy += Math.floor(p / cv.width);
-          }
-        }
-        if (!n) return null;
-        const r = cv.getBoundingClientRect();
-        const k = r.width / cv.width;
-        return { x: r.left + (sx / n) * k, y: r.top + (sy / n) * k,
-                 cellW: 60 * (r.width / img.naturalWidth), n };
-      });
-      check('the editor draws the selected start on the preview', !!spot,
-            spot ? `${spot.n} amber px` : 'none');
-
-      if (spot) {
-        // One cell to the side: starts sit on cleared ground, so the neighbour is
-        // ground too.  Directions are tried because a start can sit at the edge of
-        // its clearing.
-        const dx = spot.cellW / 2;
-        const dy = spot.cellW / 4;
-        const targets = [
-          { x: spot.x + dx, y: spot.y + dy },
-          { x: spot.x - dx, y: spot.y - dy },
-          { x: spot.x + dx, y: spot.y - dy },
-          { x: spot.x - dx, y: spot.y + dy },
-        ];
-        let moved = false;
-        let hint = '';
-        for (const t of targets) {
-          await page.mouse.click(t.x, t.y);
-          hint = await page.$eval('#starts-hint', (e) => e.textContent);
-          if (/出生点\s*\d+\s*→/.test(hint)) { moved = true; break; }
-        }
-        check('clicking the preview picks a cell for the selected start', moved, hint.trim());
-
-        if (moved) {
-          const codeBefore = await page.$eval('#share-code', (e) => e.textContent.trim());
-          const srcBefore = await page.$eval('#preview-img', (e) => e.src);
-          await page.click('#starts-apply');
-          await page.waitForFunction((prev) => {
-            const i = document.getElementById('preview-img');
-            const err = document.getElementById('error')?.textContent || '';
-            if (err) return 'error:' + err;
-            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
-          }, { timeout: args.timeout, polling: 500 }, srcBefore);
-          const after = await waypointLines();
-          check('the moved start is written into the map and re-rendered',
-                JSON.stringify(before) !== JSON.stringify(after),
-                `${before.join(' ')} -> ${after.join(' ')}`);
-
-          // 参数集 carries the generation inputs only, so it cannot reproduce a
-          // hand-moved start.  Two things have to hold: the editor says so, and the
-          // code itself is left alone (silently rewriting it would be worse).
-          const note = await page.$eval('#starts-note', (e) => e.textContent.trim());
-          check('the editor says a moved start is not part of 参数集',
-                /参数集/.test(note), note);
-          const codeAfter = await page.$eval('#share-code', (e) => e.textContent.trim());
-          check('the share code itself is unchanged by the edit',
-                codeBefore === codeAfter, `${codeBefore} vs ${codeAfter}`);
-
-          // Put the map back: the steps after this read the download blob and
-          // expect the freshly generated one.
-          const srcReset = await page.$eval('#preview-img', (e) => e.src);
-          await page.click('#starts-reset');
-          await page.waitForFunction((prev) => {
-            const i = document.getElementById('preview-img');
-            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
-          }, { timeout: args.timeout, polling: 500 }, srcReset);
-          const restored = await waypointLines();
-          check('还原 restores the generated map',
-                JSON.stringify(restored) === JSON.stringify(before), restored.join(' '));
-        }
-      }
-      await page.click('#starts-edit').catch(() => {});
-    }
+    // The generator page no longer hosts the start-point editor: that moved to
+    // editor.html, where the same render metadata and .cells sidecar are used.
+    const startUiLeft = await page.$$eval(
+      '#starts-bar, #starts-edit, #starts-layer, #starts-apply, #starts-reset',
+      (ns) => ns.length);
+    check('the generator no longer offers the start editor', startUiLeft === 0,
+          `${startUiLeft} start-editor nodes`);
 
     // ---- the ore brush -----------------------------------------------------
     //
@@ -604,6 +496,10 @@ try {
         }, href);
       };
 
+      // The page scrolls the preview into view smoothly; measure after that
+      // settles, otherwise a drag uses coordinates from a moving image.
+      await page.evaluate(() => document.getElementById('preview')?.scrollIntoView({ block: 'start' }));
+      await new Promise((r) => setTimeout(r, 250));
       const box = await page.$eval('#preview-img', (e) => {
         const r = e.getBoundingClientRect();
         return { left: r.left, top: r.top, width: r.width, height: r.height };
