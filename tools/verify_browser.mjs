@@ -778,6 +778,58 @@ try {
           const logPillar = await page.$eval('#log', (e) => e.textContent);
           check('the run log records the pillar edit', /矿柱 TIBTRE0[1-3]/.test(logPillar));
         }
+
+        // ---- 放中立建筑：油井（2×2） ---------------------------------
+        // The tree now carries the building art, so this also checks the whole
+        // path from the menu to a real [Structures] line and a re-render.
+        const buildSpots = [
+          [0.50, 0.50], [0.46, 0.44], [0.54, 0.56], [0.42, 0.54], [0.58, 0.46],
+          [0.50, 0.36], [0.50, 0.64], [0.38, 0.46], [0.62, 0.54], [0.44, 0.60],
+          [0.60, 0.40], [0.34, 0.58], [0.66, 0.42], [0.48, 0.32], [0.52, 0.68],
+        ];
+        let buildSpot = null;
+        for (const [fx, fy] of buildSpots) {
+          const px = box.left + box.width * fx;
+          const py = box.top + box.height * fy;
+          await page.mouse.click(px, py, { button: 'right' });
+          const item = await page.$eval('#ore-menu [data-act="build-CAOILD"]', (b) => ({
+            disabled: b.disabled, label: b.textContent.trim(), title: b.title,
+          })).catch(() => null);
+          if (item && !item.disabled) { buildSpot = { px, py, ...item }; break; }
+        }
+        check('right-click on flat ground offers 放油井', !!buildSpot,
+              buildSpot ? buildSpot.label : 'no valid 2x2 foundation under the tried points');
+
+        if (buildSpot) {
+          check('the oil-derrick item names its foundation',
+                /放油井（2×2）/.test(buildSpot.label), buildSpot.label);
+          const beforeBuild = await mapSections();
+          const codeBuild = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcBuild = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="build-CAOILD"]');
+          const built = await page.waitForFunction((prev) => {
+            const i = document.getElementById('preview-img');
+            const err = document.getElementById('error')?.textContent || '';
+            if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/放了油井/.test(hint)) return false;
+            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+          }, { timeout: args.timeout, polling: 500 }, srcBuild);
+          check('the building is written and re-rendered', (await built.jsonValue()) === true);
+
+          const afterBuild = await mapSections();
+          const newLine = (afterBuild.structures || '').split('\n')
+            .find((l) => /,CAOILD,/.test(l) && !(beforeBuild.structures || '').includes(l));
+          check('a Neutral CAOILD [Structures] line appears',
+                !!newLine && /^\d+=Neutral,CAOILD,256,\d+,\d+,0,None,0,0,1,0,0,None,None,None,1,0$/
+                  .test(newLine.trim()),
+                newLine ? newLine.trim() : 'no new line');
+          check('the building edit leaves [Waypoints] and the share code alone',
+                afterBuild.waypoints === beforeBuild.waypoints
+                && codeBuild === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logBuild = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the building edit', /中立建筑 CAOILD/.test(logBuild));
+        }
       }
     }
 

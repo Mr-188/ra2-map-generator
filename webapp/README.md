@@ -175,6 +175,38 @@ What the brushes write is the map's own mineral layer:
 Like the start editor, this is a manual edit and the 参数集 does not describe it —
 regenerating from the code gives back the generated map, not the painted one.
 
+## 中立建筑 (placing a neutral tech building)
+
+Right-clicking a cell also offers the three neutral tech buildings the user picked:
+科技钻油井 (CAOILD, 2×2), 科技机器商店 (CAMACH, 3×3) and 科技前哨站 (CAOUTP, 4×3,
+the one with the repair dock — labelled 科技维修厂 in the menu).  Hovering an item
+draws the exact foundation; clicking it appends a real `[Structures]` line:
+
+```
+INDEX=OWNER,TYPE,256,X,Y,0,None,0,0,1,0,0,None,None,None,1,0
+```
+
+The owner is the map's neutral house — `Neutral` on a multiplayer map,
+`Neutral House` on a single-player one (the generator writes both layouts).  The
+foundation is validated against the `<out>.cells` sidecar: every cell must be in
+the map, passable, not a building foundation, and at the **same Level** as the
+anchor (a building cannot sit on a slope).  Overlays (ore/gems included) and
+`[Terrain]` objects under the footprint are removed, as asked; an existing
+building is refused instead.  Buildings added by the page live only in
+`[Structures]`, so their footprints are merged into the occupancy set used by the
+ore and pillar brushes too.
+
+**The renderer needed the art.** The extracted loose tree used to carry only
+theater tiles and INIs, so CNCMaps drew **no buildings at all** — a map with an
+oil derrick rendered as empty ground.  `engine/src/extract.cpp` now also pulls
+the six neutral tech buildings' SHP art (theater-specific and generic variants)
+and the outpost's `OUTP.vxl`/`.hva` turret, plus both theaters' palettes, into
+`x64/Release`.  The browser cache version was bumped so older caches (which lack
+those files) are discarded instead of silently hiding the buildings.  The names
+are the renderer's own NewTheater resolution (temperate `CTOILD`/`CTHOSP`/…,
+snow `CAOILD`/`CAHOSP`/…, generic `CGMACH`/`CGPOWR`), verified with the
+renderer's `CCMAPS_VFS_TRACE` output and then by a real render.
+
 ## Serving
 
 `file://` will not work: the wasm module and the Worker cannot be loaded from a
@@ -211,6 +243,11 @@ python3 -m http.server 8000
   (replaces a tree, keeps every other `[Terrain]` line, refuses water/buildings,
   removes only TIBTRE), and — when the native renderer and a loose game tree are
   available — a real render whose painted cells' and pillar cell's pixels changed.
+* The **中立建筑** is verified by `tools/verify_buildings.mjs`: the three
+  foundations against the generator's sidecar (water/cliff/slope/existing-building
+  refusal), the exact `[Structures]` line and owner for both map layouts, the
+  overlay/terrain cleanup, a Python section-by-section comparison, and a real
+  render from **only the extracted loose tree** proving the building is drawn.
 * The **画廊** (`gallery.html` + `gallery.js`) is the other half of 参数集: a catalogue
   whose list is a hand-editable text file (`gallery.txt`, one line per map:
   `参数集 | 作者 | 日期 | 标题 | 描述`, only the first field required) and whose every

@@ -530,7 +530,8 @@ a.dl svg { width: 12px; height: 12px; }
 #ore-hint.ok { color: var(--amber-2); }
 #ore-menu {
   position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 2px;
-  min-width: 196px; padding: 6px; background: var(--panel);
+  min-width: 196px; max-height: calc(100vh - 16px); overflow-y: auto;
+  padding: 6px; background: var(--panel);
   border: 1px solid var(--rule-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .55);
 }
 #ore-menu[hidden] { display: none; }
@@ -543,6 +544,7 @@ a.dl svg { width: 12px; height: 12px; }
   background: var(--well); color: var(--amber-2); border-color: var(--rule);
 }
 #ore-menu button:disabled { color: var(--ink-3); opacity: .5; cursor: default; }
+.ore-sep { height: 1px; margin: 4px 2px; background: var(--rule); }
 .meta {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-top: 10px;
@@ -1145,6 +1147,11 @@ a.dl svg { width: 12px; height: 12px; }
       <button type="button" data-act="pillar" role="menuitem" disabled>放矿柱</button>
       <button type="button" data-act="unpillar" role="menuitem" disabled>移除矿柱</button>
       <button type="button" data-act="clear" role="menuitem" disabled>清除矿</button>
+      <div class="ore-sep" role="separator"></div>
+      <button type="button" data-act="build-CAOILD" role="menuitem" disabled>放油井</button>
+      <button type="button" data-act="build-CAMACH" role="menuitem" disabled>放科技商店</button>
+      <button type="button" data-act="build-CAOUTP" role="menuitem" disabled>放科技维修厂</button>
+      <div class="ore-sep" role="separator"></div>
       <button type="button" data-act="cancel" role="menuitem">取消框选</button>
     </div>
     <div class="meta">

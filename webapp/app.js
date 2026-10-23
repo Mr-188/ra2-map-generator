@@ -26,9 +26,15 @@ import {
   readOverlayGrids, writeOverlayGrids, readOccupiedCells, cellsInRect,
   countSelection, paintMineralCells, clearMineralCells, removeOreDecorations,
   describePillarTarget, placePillar, removePillar,
-  classifyCell, CELL_EMPTY, CELL_ORE, CELL_OTHER,
+  classifyCell, CELL_EMPTY, CELL_ORE, CELL_OTHER, overlayIndex,
   ORE_OVERLAY_START, GEM_OVERLAY_START, ORE_DATA, GEM_DATA,
 } from './ore.js';
+// Neutral tech buildings: [Structures] entries with the game's own types and
+// foundations, validated against the same sidecar.
+import {
+  BUILDING_TYPES, buildingType, describeBuildingPlacement, placeBuilding,
+  structureOccupiedCells,
+} from './buildings.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
@@ -73,6 +79,10 @@ const oreMenuGems = oreMenu.querySelector('[data-act="gems"]');
 const oreMenuPillar = oreMenu.querySelector('[data-act="pillar"]');
 const oreMenuUnpillar = oreMenu.querySelector('[data-act="unpillar"]');
 const oreMenuClear = oreMenu.querySelector('[data-act="clear"]');
+const oreBuildButtons = {};
+for (const t of BUILDING_TYPES) {
+  oreBuildButtons[t.id] = oreMenu.querySelector(`[data-act="build-${t.id}"]`);
+}
 
 // Object URLs for the two downloads; revoked before being replaced so a session
 // that generates many maps does not leak blob storage.
@@ -101,7 +111,8 @@ const oreEdit = {
   cells: [],               // the cells whose centres are inside rect
   counts: null,            // green-ore counts for the menu labels
   countsGem: null,         // gem counts (same selection, other family)
-  target: null,            // { x, y, info } under the last right-click
+  target: null,            // { x, y, info, buildings } under the last right-click
+  buildPreview: null,      // building type whose footprint is highlighted
   cache: null,             // { bytes, ids, data, occupied } for mapBytes
 };
 
@@ -2252,6 +2263,7 @@ function resetOreEdit() {
   oreEdit.cells = [];
   oreEdit.counts = null;
   oreEdit.target = null;
+  oreEdit.buildPreview = null;
   oreEdit.cache = null;
   hideOreMenu();
 }
@@ -2271,11 +2283,16 @@ function ensureOreContext() {
     oreEdit.cache = null;
     return null;
   }
+  // The sidecar knows every foundation the generator placed; buildings this
+  // page adds exist only in [Structures], so merge their footprints in as well
+  // (otherwise ore could be painted under a building placed a minute ago).
+  const occupied = readOccupiedCells(text);
+  for (const index of structureOccupiedCells(text)) occupied.add(index);
   oreEdit.cache = {
     bytes: mapBytes,
     ids: grids.ids,
     data: grids.data,
-    occupied: readOccupiedCells(text),
+    occupied,
   };
   return oreEdit.cache;
 }
@@ -2412,6 +2429,25 @@ function drawOre() {
   ctx.strokeStyle = 'rgba(242,192,105,.95)';
   ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
   ctx.setLineDash([]);
+
+  // Hovering a building item in the menu shows exactly which cells its
+  // foundation would cover (and whether that foundation is valid).
+  const preview = oreEdit.buildPreview;
+  const target = oreEdit.target;
+  if (preview && target && target.buildings && target.buildings[preview.id]) {
+    const info = target.buildings[preview.id];
+    const tw = (renderMeta.tileWidth / 2) * s;
+    const th = (renderMeta.tileHeight / 2) * s;
+    for (const cell of info.cells) {
+      const p = projectCell(cellGrid, renderMeta, cell.x, cell.y);
+      diamond(ctx, p.x * s, p.y * s, tw, th);
+      ctx.fillStyle = info.ok ? 'rgba(120,170,255,.38)' : 'rgba(224,133,122,.38)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = info.ok ? 'rgba(190,220,255,.9)' : 'rgba(240,160,150,.9)';
+      ctx.stroke();
+    }
+  }
   drawTarget();
 }
 
@@ -2476,6 +2512,18 @@ function showOreMenu(clientX, clientY) {
     oreMenuUnpillar.title = '';
   }
 
+  for (const type of BUILDING_TYPES) {
+    const button = oreBuildButtons[type.id];
+    const info = t && t.buildings ? t.buildings[type.id] : null;
+    button.textContent = `放${type.short}（${type.width}×${type.height}）`;
+    button.disabled = !info || !info.ok;
+    button.title = info
+      ? (info.ok
+        ? `${type.full} · ${type.role}；会清掉地基上的矿/树`
+        : info.reason)
+      : '先在格子上右击';
+  }
+
   oreMenu.hidden = false;
   const box = oreMenu.getBoundingClientRect();
   const left = Math.max(8, Math.min(clientX, window.innerWidth - box.width - 8));
@@ -2486,6 +2534,7 @@ function showOreMenu(clientX, clientY) {
 
 function hideOreMenu() {
   oreMenu.hidden = true;
+  oreEdit.buildPreview = null;
   if (oreEdit.target) {
     oreEdit.target = null;
     if (!oreLayer.hidden) drawOre();
@@ -2596,6 +2645,37 @@ function applyPillar(target) {
   startRender();
 }
 
+/** Places one neutral tech building at the captured target cell. */
+function applyBuilding(typeId, target) {
+  const type = buildingType(typeId);
+  const cache = ensureOreContext();
+  if (!type || !cache || !target) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]。', 'bad'); return; }
+  const structures = structureOccupiedCells(text);
+
+  const result = placeBuilding({
+    grid: cellGrid, text, ids: grids.ids, data: grids.data,
+    type, x: target.x, y: target.y, occupied: structures,
+  });
+  if (!result.ok) { setOreHint(result.reason, 'bad'); return; }
+
+  let next = result.clearedOverlays > 0
+    ? writeOverlayGrids(result.text, grids.ids, grids.data)
+    : result.text;
+  if (next === null) { setOreHint('写回地图失败，地图没有改动。', 'bad'); return; }
+
+  let extra = '';
+  if (result.clearedOverlays) extra += `，清掉 ${result.clearedOverlays} 格 overlay`;
+  if (result.removedObjects.length) extra += `，去掉 ${result.removedObjects.length} 个地形对象`;
+  commitMapText(next);
+  setOreHint(`已在 (${target.x}, ${target.y}) 放了${type.short}（${type.full}）`
+    + `${extra}，正在重新出图……`, 'ok');
+  mark(`ore: 已放中立建筑 ${type.id} @ (${target.x}, ${target.y})${extra}，重新出图`);
+  startRender();
+}
+
 /** Removes a TIBTRE from the cell (other [Terrain] objects stay). */
 function applyRemovePillar(target) {
   if (!target) return;
@@ -2661,12 +2741,21 @@ oreLayer.addEventListener('contextmenu', (event) => {
   // (if any) is what the region brushes act on.  Both can be offered at once.
   const p = toNaturalOre(event);
   const cell = p ? pickCell(cellGrid, renderMeta, p.x, p.y) : null;
+  oreEdit.buildPreview = null;
   if (cell) {
     const text = decodeLatin1(mapBytes);
-    oreEdit.target = {
-      x: cell.x, y: cell.y,
-      info: describePillarTarget({ grid: cellGrid, text, x: cell.x, y: cell.y }),
-    };
+    const structures = structureOccupiedCells(text);
+    let info = describePillarTarget({ grid: cellGrid, text, x: cell.x, y: cell.y });
+    if (structures.has(overlayIndex(cell.x, cell.y))) {
+      info = { ok: false, reason: '这里有建筑，不能放矿柱。', existing: info.existing, isPillar: false };
+    }
+    const buildings = {};
+    for (const type of BUILDING_TYPES) {
+      buildings[type.id] = describeBuildingPlacement({
+        grid: cellGrid, type, x: cell.x, y: cell.y, occupied: structures,
+      });
+    }
+    oreEdit.target = { x: cell.x, y: cell.y, info, buildings };
   } else {
     oreEdit.target = null;
   }
@@ -2691,7 +2780,23 @@ oreMenu.addEventListener('click', (event) => {
   else if (action === 'unpillar') applyRemovePillar(target);
   else if (action === 'clear') applyClearMinerals();
   else if (action === 'cancel') clearOreSelection();
+  else if (action.startsWith('build-')) applyBuilding(action.slice('build-'.length), target);
 });
+
+// Hovering a building item previews its foundation on the map.
+for (const type of BUILDING_TYPES) {
+  const button = oreBuildButtons[type.id];
+  button.addEventListener('mouseenter', () => {
+    if (button.disabled) return;
+    oreEdit.buildPreview = type;
+    drawOre();
+  });
+  button.addEventListener('mouseleave', () => {
+    if (!oreEdit.buildPreview) return;
+    oreEdit.buildPreview = null;
+    drawOre();
+  });
+}
 
 // Clicking anywhere else dismisses the menu; the canvas pointerdown above also
 // closes it before starting a new box.

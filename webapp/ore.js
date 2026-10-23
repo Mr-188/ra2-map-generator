@@ -302,7 +302,7 @@ function findSection(text, name) {
   return found;
 }
 
-function sectionBody(text, name) {
+export function sectionBody(text, name) {
   const found = findSection(text, name);
   if (!found) return null;
   return { ...found, body: text.slice(found.bodyStart, found.bodyEnd) };
