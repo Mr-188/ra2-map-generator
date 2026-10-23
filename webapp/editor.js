@@ -69,9 +69,8 @@ const state = {
   counts: null,
   hover: null,            // { x, y } natural pixel
   hoverCell: null,        // { x, y, z }
-  targetCell: null,       // { x, y }
   buildPreview: null,     // building type, for a hovered placement
-  dragging: null,         // 'box' | 'start'
+  dragging: null,         // box / brush / area-brush / start / click / pan
   dragStart: null,
   selectedStart: -1,
   startPoints: [],
