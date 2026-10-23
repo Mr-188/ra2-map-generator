@@ -754,7 +754,7 @@ try {
           const mapName = await editorPage.$eval('#map-name', (e) => e.textContent.trim());
           check('the editor loaded the generated map', /^\S+\.(yrm|map)$/i.test(mapName), mapName);
           const toolCount = await editorPage.$$eval('.tool', (ns) => ns.length);
-          check('the editor has the unified tool palette', toolCount >= 10, `${toolCount} tools`);
+          check('the editor has the unified tool palette', toolCount >= 8, `${toolCount} tools`);
 
           const editorSections = async () => {
             const href = await editorPage.$eval('#download-map', (a) => a.href);
@@ -822,12 +822,14 @@ try {
           check('a box selection leaves cells for the ore action', actionReady);
           if (actionReady) {
             const beforeAction = await editorSections();
-            await editorPage.click('[data-tool="ore"]');
+            check('the ore action is enabled only with a selection',
+                  await editorPage.$eval('#apply-ore', (e) => !e.disabled));
+            await editorPage.click('#apply-ore');
             await editorPage.waitForFunction(
               () => /已放 \d+ 格矿石/.test(document.getElementById('hint')?.textContent || ''),
               { timeout: 60000 });
             const afterAction = await editorSections();
-            check('clicking 放矿石 applies to the existing selection',
+            check('the 放矿石 command applies to the existing selection',
                   afterAction.overlay !== beforeAction.overlay
                   && afterAction.overlayData !== beforeAction.overlayData
                   && afterAction.waypoints === beforeAction.waypoints
@@ -872,7 +874,7 @@ try {
           }
 
           const beforeEditor = await editorSections();
-          await editorPage.click('[data-tool="ore"]');
+          await editorPage.click('[data-tool="select"]');
           let paintedHint = '';
           for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.48],
             [0.58, 0.52], [0.50, 0.44], [0.50, 0.58], [0.38, 0.56], [0.62, 0.44]]) {
@@ -883,11 +885,18 @@ try {
             await editorPage.mouse.move(ex + Math.min(90, ebox.width * 0.07),
                                         ey + Math.min(60, ebox.height * 0.07), { steps: 6 });
             await editorPage.mouse.up();
+            const empty = await editorPage.$eval('#sel-empty', (e) => e.textContent.trim());
+            if (!(Number(empty) > 0)) { await editorPage.click('#sel-clear'); continue; }
+            await editorPage.click('#apply-ore');
+            await editorPage.waitForFunction(
+              () => /已放 \d+ 格矿石/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
             paintedHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
             if (/已放 \d+ 格矿石/.test(paintedHint)) break;
+            await editorPage.click('#sel-clear');
           }
-          check('dragging with the ore tool paints and reports', /已放 \d+ 格矿石/.test(paintedHint),
-                paintedHint.trim());
+          check('box selection + 放矿石 command paints and reports',
+                /已放 \d+ 格矿石/.test(paintedHint), paintedHint.trim());
           if (/已放 \d+ 格矿石/.test(paintedHint)) {
             const afterEditor = await editorSections();
             check('the editor edit changes only the overlay sections',
