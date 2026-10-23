@@ -36,12 +36,26 @@ from maptools.game_dir import find_game_dir  # noqa: E402
 from maptools.mix_file import MixArchive, hash_filename, open_mix  # noqa: E402
 from maptools.tileset_names import load_tileset_ini  # noqa: E402
 
-THEATER = 0  # TEMPERATE
+THEATER = 0  # selected by --theater
 CONTROL_INI = "temperatmd.ini"
 TILE_DIR = "Tile资源/温和"
 TILE_EXT = "tem"
 CHAIN = (("ra2.mix", "isotemp.mix"), ("ra2.mix", "temperat.mix"),
          ("ra2md.mix", "isotemmd.mix"))
+
+# The three theaters the extractor supports.  Keep in sync with
+# engine/src/extract.cpp's kTheaters.
+THEATERS = {
+    0: dict(control="temperatmd.ini", dir="Tile资源/温和", ext="tem",
+            chain=(("ra2.mix", "isotemp.mix"), ("ra2.mix", "temperat.mix"),
+                   ("ra2md.mix", "isotemmd.mix"))),
+    1: dict(control="snowmd.ini", dir="Tile资源/雪地", ext="sno",
+            chain=(("ra2.mix", "isosnow.mix"), ("ra2.mix", "snow.mix"),
+                   ("ra2md.mix", "isosnomd.mix"))),
+    2: dict(control="desertmd.ini", dir="Tile资源/沙漠", ext="des",
+            chain=(("ra2md.mix", "isodesmd.mix"), ("ra2md.mix", "desert.mix"),
+                   ("ra2md.mix", "des.mix"), ("ra2md.mix", "isodes.mix"))),
+}
 COMMON = (("ra2md.mix", "localmd.mix"),)
 EXE_REL = "x64/Release/MapGenerator.exe"
 
@@ -91,8 +105,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mgextract", default=str(ROOT / "build" / "engine" / "mgextract"))
     ap.add_argument("--game-dir", default=None)
+    ap.add_argument("--theater", type=int, default=0, choices=sorted(THEATERS))
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
+
+    global THEATER, CONTROL_INI, TILE_DIR, TILE_EXT, CHAIN
+    spec = THEATERS[args.theater]
+    THEATER = args.theater
+    CONTROL_INI = spec["control"]
+    TILE_DIR = spec["dir"]
+    TILE_EXT = spec["ext"]
+    CHAIN = spec["chain"]
 
     exe = Path(args.mgextract)
     if not exe.is_file():
@@ -117,8 +140,8 @@ def main() -> int:
 
         # ---- 1. layout ---------------------------------------------------
         expect = [EXE_REL, "x64/Release/rulesmd.ini", "x64/Release/artmd.ini",
-                  "x64/Release/rmgmd.ini", "x64/Release/temperatmd.ini",
-                  "x64/Release/RULESMD.INI", "x64/Release/TEMPERATMD.INI"]
+                  "x64/Release/rmgmd.ini", f"x64/Release/{CONTROL_INI}",
+                  "x64/Release/RULESMD.INI", f"x64/Release/{CONTROL_INI.upper()}"]
         for rel in expect:
             # the exe itself is never written -- it is the synthetic module path
             if rel == EXE_REL:
@@ -128,7 +151,7 @@ def main() -> int:
         print(f"  layout  {len(expect) - 1} expected files present under {out}")
 
         # ---- 2. INI bytes -------------------------------------------------
-        for name in ("rulesmd.ini", "artmd.ini", "temperatmd.ini", "rmgmd.ini"):
+        for name in ("rulesmd.ini", "artmd.ini", CONTROL_INI, "rmgmd.ini"):
             want = python_ini_bytes(game, name)
             if not want:
                 continue
@@ -179,6 +202,8 @@ def main() -> int:
                 failures.append(f"object art missing from the extraction: {name}")
 
         repo_tiles = ROOT / "reference_impl" / "src" / "Tile资源" / "温和"
+        if THEATER != 0:
+            repo_tiles = ROOT / "reference_impl" / "src" / "Tile资源" / "__none__"
         if repo_tiles.is_dir():
             theirs = {p.name.lower() for p in repo_tiles.glob(f"*.{TILE_EXT}")}
             gap = (requested & theirs) - written

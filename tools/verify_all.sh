@@ -101,6 +101,11 @@ if [ -n "$GAME" ]; then
     step verify_mix     python3 tools/verify_mix.py --game-dir "$GAME"
     step verify_extract python3 tools/verify_extract.py --game-dir "$GAME"
     step verify_oracle  python3 tools/verify_oracle.py --game-dir "$GAME"
+    # DESERT (2) is a [port-only] third theater; the same suites run again with
+    # --theater 2 so the new extraction chain / INI / extension can never rot
+    # while only temperate and snow are exercised.
+    step verify_extract_desert python3 tools/verify_extract.py --game-dir "$GAME" --theater 2
+    step verify_oracle_desert  python3 tools/verify_oracle.py --game-dir "$GAME" --theater 2
 else
     step verify_mix     python3 tools/verify_mix.py
     step verify_extract python3 tools/verify_extract.py
@@ -110,6 +115,7 @@ fi
 if [ -f build/engine-wasm/mgconsole.js ]; then
     if [ -n "$GAME" ]; then
         step verify_wasm python3 tools/verify_wasm.py --game-dir "$GAME"
+        step verify_wasm_desert python3 tools/verify_wasm.py --game-dir "$GAME" --theater 2
     else
         step verify_wasm python3 tools/verify_wasm.py
     fi
@@ -163,6 +169,7 @@ fi
 if [ -f reference_impl/ccmaps-net/CNCMaps.Renderer/CNCMaps.Renderer.csproj ]; then
     if [ -n "$GAME" ]; then
         step verify_render python3 tools/verify_render.py --game-dir "$GAME"
+        step verify_render_desert python3 tools/verify_render.py --game-dir "$GAME" --theater 2
     else
         step verify_render python3 tools/verify_render.py
     fi

@@ -8,6 +8,11 @@
 //
 // Layout (v1), MSB first.  `mode` picks the geometry field:
 //
+// v2 exists for DESERT: the v1 theater field is one bit, so a desert run would
+// decode as temperate.  v2 widens theater to two bits and shifts everything
+// after it by one bit.  v1 codes keep decoding exactly as before; only a code
+// that names theater 2 is written as v2.
+//
 //   bit   n   field
 //    0    2   version       0 = this layout; anything else is refused
 //    2    2   land          0..3   (the page's four environments; 4 = 3, same map)
@@ -76,7 +81,8 @@
 // seeds R250 with them (MapGen.cpp:104) and the map is a function of that stream.
 // Measured by flipping each bit of two base seeds: 64/64 flips changed the md5.
 
-export const VERSION = 0;
+export const VERSION = 0;          // v1: theater is one bit (0..1)
+export const VERSION_V2 = 1;       // v2: theater is two bits (0..2, DESERT)
 export const SIZE_STEP = 0.1;      // the engine's kSizeSliderStep (mg_size_step)
 export const RECT_MAX_SUM = 495;   // the engine's MaxRectCellSum (mg_rect_max_sum)
 export const MAX_INDEX = 1023;     // 10 bits
@@ -175,7 +181,8 @@ export function encodeParams(p, opts = {}) {
   const seed = p.seed >>> 0;
   need(seed !== 0, '全局种子为 0：引擎会用时钟现取，这个参数集无法复现同一张地图');
   need(Number.isInteger(p.land) && p.land >= 0 && p.land <= 3, `环境 ${p.land} 不在 0..3`);
-  need(p.theater === 0 || p.theater === 1, `剧场 ${p.theater} 不在 0..1`);
+  need(Number.isInteger(p.theater) && p.theater >= 0 && p.theater <= 2,
+       `剧场 ${p.theater} 不在 0..2`);
   need(Number.isInteger(p.time) && p.time >= 0 && p.time <= 3, `时间 ${p.time} 不在 0..3`);
   need(Number.isInteger(p.players) && p.players >= 2 && p.players <= 8,
        `玩家数 ${p.players} 不在 2..8`);
@@ -208,9 +215,12 @@ export function encodeParams(p, opts = {}) {
   }
 
   const b = new Bits();
-  b.put(VERSION, 2);
+  // v1 unless this code names DESERT, so every temperate/snow code stays
+  // byte-identical to what older pages wrote and can still be read by them.
+  const v2 = p.theater === 2;
+  b.put(v2 ? VERSION_V2 : VERSION, 2);
   b.put(p.land, 2);
-  b.put(p.theater, 1);
+  b.put(p.theater, v2 ? 2 : 1);
   b.put(p.time, 2);
   b.put(p.players - 2, 3);
   b.put(p.ore, 2);
@@ -248,9 +258,11 @@ export function decodeParams(code, opts = {}) {
   // CRC's position depends on the layout (a rectangle is 8 bits longer, a terrain
   // seed 32), so a decoder cannot even find the checksum until it knows the layout.
   // That is also why this field cannot be replaced by a date or a fingerprint.
-  need(version === VERSION, `参数集版本 ${version} 不认识（或没复制全，请刷新页面再试）`);
+  need(version === VERSION || version === VERSION_V2,
+       `参数集版本 ${version} 不认识（或没复制全，请刷新页面再试）`);
   const land = b.get(2);
-  const theater = b.get(1);
+  const theater = b.get(version === VERSION_V2 ? 2 : 1);
+  need(theater <= 2, `参数集里的剧场是 ${theater}，本页只认识 0..2`);
   const time = b.get(2);
   const players = b.get(3) + 2;
   const ore = b.get(2);

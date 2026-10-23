@@ -107,7 +107,8 @@ def main() -> int:
         THEATER_INI_DIR.append(work / "x64" / "Release")
 
         tiles = list((work / "Tile资源").rglob("*.tem")) + \
-                list((work / "Tile资源").rglob("*.sno"))
+                list((work / "Tile资源").rglob("*.sno")) + \
+                list((work / "Tile资源").rglob("*.des"))
         print(f"  extract  {len(tiles)} theater tiles, "
               f"{sum(p.stat().st_size for p in tiles) / 1e6:.1f} MB")
         if len(tiles) < 100:

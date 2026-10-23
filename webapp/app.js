@@ -808,7 +808,8 @@ function coversTheater(theater) {
   return man.theaters.includes(theater);
 }
 function theaterNames(list) {
-  return (list || []).map((n) => (n === 1 ? '雪地' : '温和')).join(' + ') || '未知';
+  const names = { 0: '温和', 1: '雪地', 2: '沙漠' };
+  return (list || []).map((n) => names[n] || `剧场${n}`).join(' + ') || '未知';
 }
 // What the generate button needs: either the picked archives (this visit) or a cache
 // that covers the theatre the current selection names.
@@ -840,7 +841,7 @@ function renderCacheNote() {
     const names = theaterNames([...failedTheaters.keys()]);
     cacheEl.textContent = `素材部分缓存：${theaterNames([...extractedTheaters])}可用；`
       + `${names}这次没提取成功（${[...failedTheaters.values()][0]}）。`
-      + '温和/雪地都能生成，但要用' + names + '请先再选一次游戏目录。';
+      + '温和/雪地/沙漠都能生成，但要用' + names + '请先再选一次游戏目录。';
     cacheClearBtn.hidden = !man;
     refreshGoButton();
     return;

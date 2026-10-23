@@ -32,7 +32,7 @@ void usage()
         "                   land-type branch treats them together and the option tables\n"
         "                   are indexed by the rolled n3 - see MapGenStartpoint.cpp:670.\n"
         "                   The page therefore offers 内陆 only; 4 stays as an alias.)\n"
-        "  --theater 0|1    TEMPERATE (0) or SNOW (1)\n"
+        "  --theater 0|1|2  TEMPERATE (0), SNOW (1) or DESERT (2)\n"
         "  --time 0..3      morning / day / dusk / night (the GUI's 时间 row)\n"
         "  --size N         map size slider, fractional: 0..useful (see --size-range)\n"
         "  --width N        explicit visible width  } given TOGETHER they replace --size\n"

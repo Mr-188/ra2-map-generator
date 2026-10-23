@@ -401,8 +401,8 @@ self.onmessage = async (event) => {
       self.postMessage({ type: 'progress', stage: 'extracting' });
       // A folder pick asks for ALL theatres (`all`): one extraction pass covers the
       // whole product, so 随机 in the 剧场 row can never land on "not cached yet".
-      // mg_extract only adds files, so the tree accumulates and one cache holds both.
-      const want = msg.all ? [0, 1] : [msg.theater | 0];
+      // mg_extract only adds files, so the tree accumulates and one cache holds all three.
+      const want = msg.all ? [0, 1, 2] : [msg.theater | 0];
       // Per-theatre outcomes.  A theatre that fails must NOT take the other one down
       // with it: a pick used to be all-or-nothing, so one bad theatre left the page
       // with no cache and no way to generate even for the theatre that worked
