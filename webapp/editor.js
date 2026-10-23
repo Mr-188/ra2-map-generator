@@ -63,7 +63,6 @@ const state = {
   selection: null,        // { x0, y0, x1, y1 } natural pixels (box mode)
   selCells: [],           // selected cells, from the box or the brush
   selKeys: new Set(),     // "x,y" for O(1) brush add/remove
-  selectMode: 'box',      // 'box' | 'add' | 'erase'
   lastBrushKey: null,
   counts: null,
   hover: null,            // { x, y } natural pixel
@@ -510,20 +509,24 @@ function updateDownload() {
 // ---------------------------------------------------------------------------
 const TOOLS = {
   select: {
-    title: '框选 / 查看',
-    help: '框选，或切到涂抹添加/删除自由涂抹选区；选区可留给放矿/清矿用。',
+    title: '框选',
+    help: '拖拽框选；框完后点放矿石/放彩矿/清除矿直接对选区执行。',
+  },
+  brush: {
+    title: '自由选择（涂抹）',
+    help: '左键涂抹加进选区，右键涂抹删除；框完/涂完后点放矿石等直接执行。',
   },
   ore: {
     title: '放矿石（绿）',
-    help: '拖一个框，松开后把框里所有可放空地铺成绿矿；已有矿和其他矿不动。',
+    help: '有选区时点这个工具直接对选区执行；没选区也可在图上拖框。已有矿/其他矿不动。',
   },
   gems: {
     title: '放彩矿',
-    help: '拖一个框，松开后把可放空地铺成彩矿（宝石矿）；已有矿不动。',
+    help: '有选区时点这个工具直接对选区执行；没选区也可在图上拖框。已有矿不动。',
   },
   clear: {
     title: '清除矿',
-    help: '拖一个框，清掉选区里所有矿（绿矿+彩矿）和对应矿柱装饰树。',
+    help: '有选区时点这个工具直接清掉选区里的矿和对应矿柱装饰树；没选区也可拖框。',
   },
   pillar: {
     title: '放矿柱',
@@ -608,11 +611,9 @@ function setTool(tool) {
   el('tool-help').textContent = info.help;
   state.buildPreview = tool.startsWith('build-') ? buildingType(tool.slice(6)) : null;
   if (tool === 'select') {
-    setHint(state.selectMode === 'box'
-      ? '拖拽框选，或切到涂抹添加/删除自由涂抹选区。'
-      : state.selectMode === 'add'
-        ? '按住左键涂抹，把格子加进选区。'
-        : '按住左键涂抹，把格子移出选区。', 'ok');
+    setHint('拖拽框选；框完后点放矿石/放彩矿/清除矿直接执行。', 'ok');
+  } else if (tool === 'brush') {
+    setHint('左键涂抹添加，右键涂抹删除；涂完点放矿石等直接执行。', 'ok');
   }
   if (tool === 'start' && state.startPoints.length) {
     if (state.selectedStart < 0 || state.selectedStart >= state.startPoints.length) {
@@ -625,11 +626,23 @@ function setTool(tool) {
   state.dragStart = null;
   state.hover = null;
   state.lastBrushKey = null;
+  if (tool === 'brush') state.selection = null;
   updateStartPanel();
-  updateSelectModeUI();
   if (state.selCells.length) refreshSelectionCounts();
   else updateStatsPanel();
   draw();
+
+  // Selection and action are separate now: after 框选/自由选择, clicking
+  // 放矿石/放彩矿/清除矿 applies to the existing selection instead of
+  // requiring another drag.  With no selection the tool keeps its old
+  // drag-a-box behavior.
+  if (state.selCells.length) {
+    if (tool === 'ore') applyMineral(ORE_OVERLAY_START, '矿石');
+    else if (tool === 'gems') applyMineral(GEM_OVERLAY_START, '彩矿');
+    else if (tool === 'clear') applyClear();
+  } else if (tool === 'ore' || tool === 'gems' || tool === 'clear') {
+    setHint('先框选或自由涂抹一个区域，再点这个工具；也可以直接在图上拖框。', 'ok');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -836,7 +849,7 @@ function clearSelection(redraw = true) {
 }
 
 /** Adds/removes the cell under the pointer to the freeform selection. */
-function brushPaint(natural) {
+function brushPaint(natural, erase = false) {
   if (!state.grid || !state.meta || !natural) return;
   const cell = cellAt(natural);
   if (!cell) return;
@@ -844,7 +857,7 @@ function brushPaint(natural) {
   const key = `${cell.x},${cell.y}`;
   if (key === state.lastBrushKey) return;
   state.lastBrushKey = key;
-  if (state.selectMode === 'erase') {
+  if (erase) {
     if (!state.selKeys.has(key)) return;
     state.selKeys.delete(key);
     state.selCells = state.selCells.filter((c) => c.x !== cell.x || c.y !== cell.y);
@@ -857,25 +870,6 @@ function brushPaint(natural) {
   draw();
 }
 
-function updateSelectModeUI() {
-  const panel = el('select-mode');
-  panel.hidden = state.tool !== 'select';
-  for (const b of panel.querySelectorAll('[data-select]')) {
-    b.classList.toggle('on', b.dataset.select === state.selectMode);
-  }
-}
-
-function setSelectMode(mode) {
-  state.selectMode = mode;
-  if (mode !== 'box') state.selection = null;
-  state.lastBrushKey = null;
-  updateSelectModeUI();
-  const text = mode === 'box' ? '拖拽框选，或查看选区分类。'
-    : mode === 'add' ? '按住左键涂抹，把格子加进选区；切到放矿工具后选区还在。'
-    : '按住左键涂抹，把格子移出选区；只改选区，不改地图。';
-  setHint(text, 'ok');
-  draw();
-}
 
 // ---------------------------------------------------------------------------
 // edits
@@ -987,7 +981,7 @@ overlay.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     return;
   }
-  if (event.button !== 0) return;
+  if (event.button !== 0 && !(event.button === 2 && state.tool === 'brush')) return;
   const natural = toNatural(event);
   if (!natural) return;
   const p = clampNatural(natural);
@@ -995,12 +989,12 @@ overlay.addEventListener('pointerdown', (event) => {
   state.hoverCell = cellAt(p);
   overlay.setPointerCapture(event.pointerId);
 
-  if (state.tool === 'select' && state.selectMode !== 'box') {
-    state.dragging = 'brush';
+  if (state.tool === 'brush') {
+    const erase = event.button === 2;
+    state.dragging = erase ? 'brush-erase' : 'brush-add';
     state.lastBrushKey = null;
     state.selection = null;
-    brushPaint(p);
-    overlay.setPointerCapture(event.pointerId);
+    brushPaint(p, erase);
     event.preventDefault();
     return;
   }
@@ -1055,8 +1049,8 @@ overlay.addEventListener('pointermove', (event) => {
   updateCellReadout(cell);
   if (state.dragging === 'box') {
     state.selection = { x0: state.dragStart.x, y0: state.dragStart.y, x1: p.x, y1: p.y };
-  } else if (state.dragging === 'brush') {
-    brushPaint(p);
+  } else if (state.dragging === 'brush-add' || state.dragging === 'brush-erase') {
+    brushPaint(p, state.dragging === 'brush-erase');
     return;
   }
   draw();
@@ -1074,8 +1068,8 @@ overlay.addEventListener('pointerup', (event) => {
     state.hoverCell = cellAt(p);
     updateCellReadout(state.hoverCell);
   }
-  if (state.dragging === 'brush') {
-    if (p) brushPaint(p);
+  if (state.dragging === 'brush-add' || state.dragging === 'brush-erase') {
+    if (p) brushPaint(p, state.dragging === 'brush-erase');
     state.dragging = null;
     state.lastBrushKey = null;
     draw();
@@ -1107,6 +1101,9 @@ overlay.addEventListener('pointerup', (event) => {
   }
 });
 
+overlay.addEventListener('contextmenu', (event) => {
+  if (state.tool === 'brush') event.preventDefault();
+});
 overlay.addEventListener('pointercancel', () => { state.dragging = null; draw(); });
 overlay.addEventListener('pointerleave', () => {
   if (state.dragging) return;
@@ -1268,12 +1265,8 @@ el('reload-session').addEventListener('click', loadFromSession);
 // ---------------------------------------------------------------------------
 // toolbar wiring
 // ---------------------------------------------------------------------------
-updateSelectModeUI();
 for (const b of document.querySelectorAll('.tool')) {
   b.addEventListener('click', () => setTool(b.dataset.tool));
-}
-for (const b of document.querySelectorAll('#select-mode [data-select]')) {
-  b.addEventListener('click', () => setSelectMode(b.dataset.select));
 }
 el('sel-clear').addEventListener('click', () => {
   clearSelection();
@@ -1312,10 +1305,11 @@ window.addEventListener('keydown', (event) => {
   if (k === '+' || k === '=') { zoomBy(1.2); return; }
   if (k === '-') { zoomBy(1 / 1.2); return; }
   const tools = {
-    1: 'select', 2: 'ore', 3: 'gems', 4: 'clear', 5: 'pillar', 6: 'unpillar',
+    1: 'select', b: 'brush', 2: 'ore', 3: 'gems', 4: 'clear', 5: 'pillar', 6: 'unpillar',
     7: 'build-CAOILD', 8: 'build-CAMACH', 9: 'build-CAOUTP', 0: 'start',
   };
   if (tools[k]) setTool(tools[k]);
+  else if (tools[k.toLowerCase()]) setTool(tools[k.toLowerCase()]);
 });
 
 // leave the page with a clean object URL lifetime

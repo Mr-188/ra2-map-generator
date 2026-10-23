@@ -778,34 +778,67 @@ try {
             const r = e.getBoundingClientRect();
             return { left: r.left, top: r.top, width: r.width, height: r.height };
           });
-          // freeform selection: brush add/erase on top of the box
-          await editorPage.click('[data-tool="select"]');
-          check('the editor offers brush selection',
-                await editorPage.$eval('#select-mode', (e) => !e.hidden));
+          // freeform selection: the brush is a browsing tool next to the box
+          await editorPage.click('[data-tool="brush"]');
+          check('the brush is a browsing tool and highlights',
+                await editorPage.$eval('[data-tool="brush"]', (e) => e.classList.contains('on')));
           const selTotal = async () => {
             const t = await editorPage.$eval('#sel-total', (e) => e.textContent.trim());
             return t === '—' ? 0 : Number(t);
           };
-          await editorPage.click('#select-mode [data-select="add"]');
           const bx = ebox.left + ebox.width * 0.50;
           const by = ebox.top + ebox.height * 0.50;
           await editorPage.mouse.move(bx - 40, by - 20);
-          await editorPage.mouse.down();
+          await editorPage.mouse.down({ button: 'left' });
           await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
-          await editorPage.mouse.up();
+          await editorPage.mouse.up({ button: 'left' });
           const brushAdded = await selTotal();
           check('the brush paints cells into the selection', brushAdded > 0,
                 `${brushAdded} cells`);
-          await editorPage.click('#select-mode [data-select="erase"]');
           await editorPage.mouse.move(bx - 40, by - 20);
-          await editorPage.mouse.down();
+          await editorPage.mouse.down({ button: 'right' });
           await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
-          await editorPage.mouse.up();
+          await editorPage.mouse.up({ button: 'right' });
           const brushErased = await selTotal();
-          check('the brush erases cells from the selection', brushErased < brushAdded,
+          check('right-drag erases cells from the selection', brushErased < brushAdded,
                 `${brushAdded} -> ${brushErased}`);
           await editorPage.click('#sel-clear');
           check('clear selection empties the brush selection', (await selTotal()) === 0);
+
+          // Selection and action are separate: after a box, clicking 放矿石
+          // applies to that selection without another drag.
+          await editorPage.click('[data-tool="select"]');
+          let actionReady = false;
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46]]) {
+            const x = ebox.left + ebox.width * fx;
+            const y = ebox.top + ebox.height * fy;
+            await editorPage.mouse.move(x, y);
+            await editorPage.mouse.down();
+            await editorPage.mouse.move(x + 90, y + 60, { steps: 6 });
+            await editorPage.mouse.up();
+            const empty = await editorPage.$eval('#sel-empty', (e) => e.textContent.trim());
+            if (Number(empty) > 0) { actionReady = true; break; }
+          }
+          check('a box selection leaves cells for the ore action', actionReady);
+          if (actionReady) {
+            const beforeAction = await editorSections();
+            await editorPage.click('[data-tool="ore"]');
+            await editorPage.waitForFunction(
+              () => /已放 \d+ 格矿石/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            const afterAction = await editorSections();
+            check('clicking 放矿石 applies to the existing selection',
+                  afterAction.overlay !== beforeAction.overlay
+                  && afterAction.overlayData !== beforeAction.overlayData
+                  && afterAction.waypoints === beforeAction.waypoints
+                  && afterAction.terrain === beforeAction.terrain
+                  && afterAction.structures === beforeAction.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            await editorPage.click('#sel-clear');
+          }
 
           // start points are editable here too, with the same undo
           await editorPage.click('[data-tool="start"]');
