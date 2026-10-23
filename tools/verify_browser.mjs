@@ -778,6 +778,35 @@ try {
             const r = e.getBoundingClientRect();
             return { left: r.left, top: r.top, width: r.width, height: r.height };
           });
+          // freeform selection: brush add/erase on top of the box
+          await editorPage.click('[data-tool="select"]');
+          check('the editor offers brush selection',
+                await editorPage.$eval('#select-mode', (e) => !e.hidden));
+          const selTotal = async () => {
+            const t = await editorPage.$eval('#sel-total', (e) => e.textContent.trim());
+            return t === '—' ? 0 : Number(t);
+          };
+          await editorPage.click('#select-mode [data-select="add"]');
+          const bx = ebox.left + ebox.width * 0.50;
+          const by = ebox.top + ebox.height * 0.50;
+          await editorPage.mouse.move(bx - 40, by - 20);
+          await editorPage.mouse.down();
+          await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
+          await editorPage.mouse.up();
+          const brushAdded = await selTotal();
+          check('the brush paints cells into the selection', brushAdded > 0,
+                `${brushAdded} cells`);
+          await editorPage.click('#select-mode [data-select="erase"]');
+          await editorPage.mouse.move(bx - 40, by - 20);
+          await editorPage.mouse.down();
+          await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
+          await editorPage.mouse.up();
+          const brushErased = await selTotal();
+          check('the brush erases cells from the selection', brushErased < brushAdded,
+                `${brushAdded} -> ${brushErased}`);
+          await editorPage.click('#sel-clear');
+          check('clear selection empties the brush selection', (await selTotal()) === 0);
+
           // start points are editable here too, with the same undo
           await editorPage.click('[data-tool="start"]');
           const startCount = await editorPage.$$eval('#start-list button', (ns) => ns.length);

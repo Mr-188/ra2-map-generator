@@ -161,6 +161,19 @@ button { font: inherit; color: inherit; }
 .start-list button:hover { border-color: var(--amber); color: var(--amber-2); }
 .start-list button.on { background: #241f14; border-color: var(--amber); color: var(--amber-2); }
 .mini { margin: 0 0 5px; font: 400 11.5px/1.6 var(--mono); color: var(--ink-3); }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; margin: 2px 0 5px; }
+.seg button {
+  flex: 1 1 auto; padding: 6px 8px; border: 1px solid var(--rule-2);
+  background: var(--panel-2); color: var(--ink-3);
+  font: 500 11.5px/1.2 var(--mono); cursor: pointer;
+}
+.seg button:hover { border-color: var(--amber); color: var(--amber-2); }
+.seg button.on { background: #241f14; border-color: var(--amber); color: var(--amber-2); }
+.mini-link {
+  padding: 0; border: 0; background: none; color: var(--ink-3);
+  font: 400 11.5px/1.6 var(--mono); text-decoration: underline; cursor: pointer;
+}
+.mini-link:hover { color: var(--amber-2); }
 .side-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #hint { margin: 10px 0 0; font-size: 12px; line-height: 1.65; color: var(--ink-3); white-space: pre-wrap; }
 #hint.ok { color: var(--amber-2); }
@@ -263,6 +276,17 @@ button { font: inherit; color: inherit; }
       <div id="start-list" class="start-list"></div>
       <p class="mini" id="start-current">选中 —</p>
       <p class="mini">拖红方块，或点一个目标格；改动可撤销，且不进参数集。</p>
+    </div>
+
+    <div id="select-mode" hidden>
+      <div class="side-h">选区方式</div>
+      <div class="seg">
+        <button type="button" data-select="box" class="on">框选</button>
+        <button type="button" data-select="add">涂抹添加</button>
+        <button type="button" data-select="erase">涂抹删除</button>
+      </div>
+      <button id="sel-clear" type="button" class="mini-link">清空选区</button>
+      <p class="mini">涂抹删除只改选区，不改地图；切换工具后选区保留。</p>
     </div>
 
     <div class="side-h">选区</div>
