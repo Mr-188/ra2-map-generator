@@ -337,6 +337,10 @@ function parseMapState() {
   state.occupied = occupied;
   state.structures = readStructures(state.text);
   state.startPoints = readWaypoints(state.text).filter((w) => w.number < 8);
+  if (state.startPoints.length && state.selectedStart >= state.startPoints.length) {
+    state.selectedStart = 0;
+  }
+  updateStartPanel();
   updateMapStats();
   updateDownload();
 }
@@ -518,6 +522,53 @@ function toolInfo(tool) {
   return { title: tool, help: '' };
 }
 
+function startCellInfo(cell) {
+  if (!cell) return { ok: false, reason: '这里没有格子。' };
+  const flags = cellFlags(state.grid, cell.x, cell.y);
+  if (!(flags & CELL_IN_MAP)) return { ok: false, reason: '这格出了地图。' };
+  if (!(flags & CELL_PASSABLE) || (flags & CELL_BUILDING)) {
+    return { ok: false, reason: '这格不能站人（水面/崖/建筑）。' };
+  }
+  if (state.startPoints.some((p, i) => i !== state.selectedStart
+      && p.x === cell.x && p.y === cell.y)) {
+    return { ok: false, reason: '这格已经有别的出生点。' };
+  }
+  return { ok: true, reason: '' };
+}
+
+function updateStartPanel() {
+  const panel = el('start-panel');
+  const show = state.tool === 'start';
+  panel.hidden = !show;
+  if (!show) return;
+  const list = el('start-list');
+  list.textContent = '';
+  if (!state.startPoints.length) {
+    el('start-current').textContent = '这张地图没有出生点。';
+    return;
+  }
+  if (state.selectedStart < 0 || state.selectedStart >= state.startPoints.length) {
+    state.selectedStart = 0;
+  }
+  for (let i = 0; i < state.startPoints.length; ++i) {
+    const pt = state.startPoints[i];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = String(pt.number);
+    b.title = `出生点 ${pt.number} @ (${pt.x}, ${pt.y})`;
+    b.classList.toggle('on', i === state.selectedStart);
+    b.addEventListener('click', () => {
+      state.selectedStart = i;
+      updateStartPanel();
+      draw();
+      setHint(`选中出生点 ${pt.number}；拖红方块或点目标格。`, 'ok');
+    });
+    list.appendChild(b);
+  }
+  const pt = state.startPoints[state.selectedStart];
+  el('start-current').textContent = `选中 出生点 ${pt.number} · (${pt.x}, ${pt.y})`;
+}
+
 function setTool(tool) {
   state.tool = tool;
   for (const b of document.querySelectorAll('.tool')) {
@@ -527,12 +578,17 @@ function setTool(tool) {
   el('tool-title').textContent = info.title;
   el('tool-help').textContent = info.help;
   state.buildPreview = tool.startsWith('build-') ? buildingType(tool.slice(6)) : null;
-  if (tool === 'start' && state.selectedStart < 0 && state.startPoints.length) {
-    state.selectedStart = 0;
+  if (tool === 'start' && state.startPoints.length) {
+    if (state.selectedStart < 0 || state.selectedStart >= state.startPoints.length) {
+      state.selectedStart = 0;
+    }
+    setHint(`选中出生点 ${state.startPoints[state.selectedStart].number}；`
+      + '拖红方块，或点目标格。', 'ok');
   }
   state.dragging = null;
   state.dragStart = null;
   state.hover = null;
+  updateStartPanel();
   if (state.selection) refreshSelectionCounts();
   else updateStatsPanel();
   draw();
@@ -627,6 +683,30 @@ function draw() {
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = 'rgba(255,210,122,.95)';
       ctx.stroke();
+    }
+  }
+
+  // while dragging a start, show where it would land
+  if (state.dragging === 'start' && state.startPoints.length && state.selectedStart >= 0) {
+    const pt = state.startPoints[state.selectedStart];
+    const cell = state.hoverCell;
+    if (cell) {
+      const info = startCellInfo(cell);
+      const p = projectCell(state.grid, state.meta, cell.x, cell.y);
+      diamond(ctx, p.x * s, p.y * s, tw, th);
+      ctx.fillStyle = info.ok ? 'rgba(242,192,105,.42)' : 'rgba(224,133,122,.42)';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = info.ok ? '#f2c069' : '#e0857a';
+      ctx.stroke();
+      ctx.font = '600 12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(12,13,16,.9)';
+      ctx.strokeText(String(pt.number), p.x * s, p.y * s + 1);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(String(pt.number), p.x * s, p.y * s + 1);
     }
   }
 
@@ -799,14 +879,8 @@ function applyStartMove() {
   const pt = state.startPoints[state.selectedStart];
   if (!pt) return;
   if (pt.x === state.hoverCell.x && pt.y === state.hoverCell.y) return;
-  const flags = cellFlags(state.grid, state.hoverCell.x, state.hoverCell.y);
-  if (!(flags & CELL_IN_MAP) || !(flags & CELL_PASSABLE) || (flags & CELL_BUILDING)) {
-    setHint('出生点要放在可通行、没有建筑的地面上。', 'bad');
-    return;
-  }
-  const clash = state.startPoints.some((p, i) => i !== state.selectedStart
-    && p.x === state.hoverCell.x && p.y === state.hoverCell.y);
-  if (clash) { setHint('这格已经有别的出生点。', 'bad'); return; }
+  const info = startCellInfo(state.hoverCell);
+  if (!info.ok) { setHint(info.reason, 'bad'); return; }
   const next = rewriteWaypoint(state.text, pt.number, state.hoverCell.x, state.hoverCell.y);
   if (next === null) { setHint('地图里没有这个出生点。', 'bad'); return; }
   commitEdit(encodeLatin1(next), `出生点 ${pt.number} → (${state.hoverCell.x}, ${state.hoverCell.y})。`);
@@ -856,8 +930,10 @@ overlay.addEventListener('pointerdown', (event) => {
       if (d < bestD) { bestD = d; best = i; }
     }
     if (bestD <= 18) state.selectedStart = best;
+    if (state.selectedStart < 0 && state.startPoints.length) state.selectedStart = 0;
     state.dragging = 'start';
     state.dragStart = p;
+    updateStartPanel();
     draw();
     event.preventDefault();
     return;

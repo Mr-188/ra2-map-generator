@@ -137,6 +137,14 @@ button { font: inherit; color: inherit; }
 .stats b { font-weight: 500; color: var(--ink-2); text-align: right; }
 .stats b.ok { color: var(--green); }
 .stats b.bad { color: var(--red); }
+.start-list { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 8px; }
+.start-list button {
+  min-width: 30px; height: 28px; padding: 0 8px; border: 1px solid var(--rule-2);
+  background: var(--panel-2); color: var(--ink-2); font: 500 12px/1 var(--mono); cursor: pointer;
+}
+.start-list button:hover { border-color: var(--amber); color: var(--amber-2); }
+.start-list button.on { background: #241f14; border-color: var(--amber); color: var(--amber-2); }
+.mini { margin: 0 0 5px; font: 400 11.5px/1.6 var(--mono); color: var(--ink-3); }
 .side-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #hint { margin: 10px 0 0; font-size: 12px; line-height: 1.65; color: var(--ink-3); white-space: pre-wrap; }
 #hint.ok { color: var(--amber-2); }
@@ -233,6 +241,13 @@ button { font: inherit; color: inherit; }
     <div class="side-h">当前工具</div>
     <p id="tool-title">框选 / 查看</p>
     <p id="tool-help">拖拽框选，查看选区里的格子分类。不会改地图。</p>
+
+    <div id="start-panel" hidden>
+      <div class="side-h">出生点</div>
+      <div id="start-list" class="start-list"></div>
+      <p class="mini" id="start-current">选中 —</p>
+      <p class="mini">拖红方块，或点一个目标格；改动可撤销，且不进参数集。</p>
+    </div>
 
     <div class="side-h">选区</div>
     <div class="stats">

@@ -878,12 +878,43 @@ try {
               };
             }, href);
           };
-          const beforeEditor = await editorSections();
-          await editorPage.click('[data-tool="ore"]');
           const ebox = await editorPage.$eval('#map-img', (e) => {
             const r = e.getBoundingClientRect();
             return { left: r.left, top: r.top, width: r.width, height: r.height };
           });
+          // start points are editable here too, with the same undo
+          await editorPage.click('[data-tool="start"]');
+          const startCount = await editorPage.$$eval('#start-list button', (ns) => ns.length);
+          check('the editor exposes the start points', startCount >= 1, `${startCount} starts`);
+          const beforeStart = await editorSections();
+          let startHint = '';
+          let startMoved = false;
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.46],
+            [0.58, 0.54], [0.50, 0.42], [0.50, 0.60]]) {
+            const sx = ebox.left + ebox.width * fx;
+            const sy = ebox.top + ebox.height * fy;
+            await editorPage.mouse.click(sx, sy);
+            startHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/出生点 \d+ →/.test(startHint)) { startMoved = true; break; }
+          }
+          check('clicking a cell moves the selected start', startMoved, startHint.trim());
+          if (startMoved) {
+            const afterStart = await editorSections();
+            check('the start edit changes only [Waypoints]',
+                  afterStart.waypoints !== beforeStart.waypoints
+                  && afterStart.terrain === beforeStart.terrain
+                  && afterStart.structures === beforeStart.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            const undoneStart = await editorSections();
+            check('undo restores the start point',
+                  undoneStart.waypoints === beforeStart.waypoints);
+          }
+
+          const beforeEditor = await editorSections();
+          await editorPage.click('[data-tool="ore"]');
           let paintedHint = '';
           for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.48],
             [0.58, 0.52], [0.50, 0.44], [0.50, 0.58], [0.38, 0.56], [0.62, 0.44]]) {
