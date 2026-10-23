@@ -21,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKER = ROOT / "webapp" / "worker.js"
 APP = ROOT / "webapp" / "app.js"
+EDITOR = ROOT / "webapp" / "editor.js"
 
 
 def main() -> int:
@@ -60,6 +61,16 @@ def main() -> int:
     missing = sorted(sent - worker_handles)
     if missing:
         failures.append(f"the page sends these and the worker ignores them: {missing}")
+
+    # The editor is a second page talking to the same worker.  Its messages
+    # (boot / assets-from-cache / collect / assets) have to be understood too.
+    if EDITOR.exists():
+        editor = EDITOR.read_text(encoding="utf-8")
+        esent = set(re.findall(r"postMessage\(\{\s*type:\s*'([a-zA-Z0-9_-]+)'", editor))
+        emiss = sorted(esent - worker_handles)
+        if emiss:
+            failures.append(f"the editor sends these and the worker ignores them: {emiss}")
+        print(f"  editor sends : {', '.join(sorted(esent))}")
 
     # The worker must stay a CLASSIC worker.  The .NET runtime detects its host
     # with `typeof importScripts`, which does not exist in a module worker; it

@@ -72,7 +72,8 @@ const check = (label, ok, detail = '') => {
 
 // ---- 0. shipped page must be browser-safe --------------------------------
 if (args.product) {
-  for (const name of ['app.js', 'worker.js', 'starts.js', 'ore.js', 'buildings.js']) {
+  for (const name of ['app.js', 'worker.js', 'starts.js', 'ore.js', 'buildings.js',
+                      'editor.js', 'mapstore.js']) {
     const p = path.join(path.resolve(args.product), name);
     if (!fs.existsSync(p)) { check(`product has ${name}`, false, p); continue; }
     const text = fs.readFileSync(p, 'utf8');

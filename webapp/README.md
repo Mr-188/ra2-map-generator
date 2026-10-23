@@ -207,6 +207,30 @@ are the renderer's own NewTheater resolution (temperate `CTOILD`/`CTHOSP`/…,
 snow `CAOILD`/`CAHOSP`/…, generic `CGMACH`/`CGPOWR`), verified with the
 renderer's `CCMAPS_VFS_TRACE` output and then by a real render.
 
+## 地图编辑器（新页面）
+
+编辑工具不再长在生成页上。生成页保留“预览 + 下载”，预览下方多一个
+**在编辑器中打开**：它把当前地图字节和生成器的 `<out>.cells` 侧车写进
+IndexedDB（`mapstore.js`），然后打开 `editor.html`。编辑器复用生成页已经写进
+OPFS 的素材缓存（`worker.js` 的 `assets-from-cache` → `collect`），所以**不需要
+再选一次游戏目录**，也不需要重新提取。
+
+编辑器是三栏布局：
+
+* 左侧工具条（数字键 1–9/0）：框选/查看、放矿石、放彩矿、清除矿、放矿柱、
+  移除矿柱、放油井、放科技商店、放科技维修厂、改出生点；
+* 中间是地图画布：滚轮缩放、Ctrl+滚轮按光标缩放、中键拖动、适应窗口；
+  工具直接在地图上拖/点，悬停显示格子或建筑地基；
+* 右侧是当前工具说明、选区统计（可放/已有/其他矿/不可放）、地图统计
+  （尺寸/剧场/建筑/矿/矿柱）和操作（还原成生成时的地图、重新读取会话）。
+* 每次改动都进撤销栈（Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y），自动重新渲染；
+  改动会防抖写回 IndexedDB，刷新编辑器不会丢；“下载地图/下载预览图”
+  随时可取当前结果。
+
+工具本身仍是纯模块：`starts.js` / `ore.js` / `buildings.js`，页面只做交互。
+生成页原来的内嵌编辑条暂时保留（等这个页面验收后再删），但**新功能只加在
+编辑器页面**。
+
 ## Serving
 
 `file://` will not work: the wasm module and the Worker cannot be loaded from a
@@ -248,6 +272,10 @@ python3 -m http.server 8000
   refusal), the exact `[Structures]` line and owner for both map layouts, the
   overlay/terrain cleanup, a Python section-by-section comparison, and a real
   render from **only the extracted loose tree** proving the building is drawn.
+* The **地图编辑器** is verified in `tools/verify_browser.mjs`: the generator hands
+  the map over, the editor loads it and restores the cached assets without the game
+  directory, the unified tool palette is present, an ore drag changes only the
+  overlay sections, and undo restores the starting map byte-for-byte.
 * The **画廊** (`gallery.html` + `gallery.js`) is the other half of 参数集: a catalogue
   whose list is a hand-editable text file (`gallery.txt`, one line per map:
   `参数集 | 作者 | 日期 | 标题 | 描述`, only the first field required) and whose every

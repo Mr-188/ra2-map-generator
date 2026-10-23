@@ -34,6 +34,10 @@ cp "$ROOT/webapp/starts.js" "$OUT/"
 cp "$ROOT/webapp/ore.js" "$OUT/"
 # 中立建筑放置 (the preview's building brush).  Same rule again.
 cp "$ROOT/webapp/buildings.js" "$OUT/"
+# 地图编辑器 (a separate page) and the generator -> editor handoff.
+cp "$ROOT/webapp/editor.html" "$OUT/"
+cp "$ROOT/webapp/editor.js"   "$OUT/"
+cp "$ROOT/webapp/mapstore.js" "$OUT/"
 # 画廊: a page plus the one file it reads.  The generator's header links to it, so a
 # deploy that forgets these ships a 404 behind that link (and a gallery that cannot
 # read its own list).

@@ -830,6 +830,94 @@ try {
           const logBuild = await page.$eval('#log', (e) => e.textContent);
           check('the run log records the building edit', /中立建筑 CAOILD/.test(logBuild));
         }
+
+        // ---- the map editor is its own page ----------------------------
+        // The generator stores the current bytes + sidecar in IndexedDB and opens
+        // editor.html.  The editor must load them, restore the cached assets
+        // without the game directory, render, edit and undo.
+        let editorPage = null;
+        try {
+          const targetPromise = browser.waitForTarget((t) => t.url().includes('editor.html'),
+            { timeout: 60000 });
+          await page.click('#open-editor');
+          const target = await targetPromise;
+          editorPage = await target.page();
+        } catch (err) {
+          check('the editor opens as its own page', false, String((err && err.message) || err));
+        }
+        check('the editor opens as its own page', !!editorPage);
+        if (editorPage) {
+          editorPage.on('pageerror', (e) => lines.push(`[editor pageerror] ${e.message}`));
+          await editorPage.setViewport({ width: 1280, height: 960 });
+          await editorPage.waitForFunction(() => {
+            const i = document.getElementById('map-img');
+            const busy = document.getElementById('busy');
+            return i && i.complete && i.naturalWidth > 0 && busy && busy.hidden
+              && document.getElementById('empty-state').hidden;
+          }, { timeout: 300000, polling: 500 });
+          const mapName = await editorPage.$eval('#map-name', (e) => e.textContent.trim());
+          check('the editor loaded the generated map', /^\S+\.(yrm|map)$/i.test(mapName), mapName);
+          const toolCount = await editorPage.$$eval('.tool', (ns) => ns.length);
+          check('the editor has the unified tool palette', toolCount >= 10, `${toolCount} tools`);
+
+          const editorSections = async () => {
+            const href = await editorPage.$eval('#download-map', (a) => a.href);
+            return await editorPage.evaluate(async (url) => {
+              const buf = await (await fetch(url)).arrayBuffer();
+              const text = new TextDecoder('latin1').decode(buf);
+              const section = (name) => {
+                const m = new RegExp('\\[' + name + '\\]([\\s\\S]*?)(?=\\n\\[|$)', 'i').exec(text);
+                return m ? m[1] : null;
+              };
+              return {
+                overlay: section('OverlayPack'),
+                overlayData: section('OverlayDataPack'),
+                waypoints: section('Waypoints'),
+                terrain: section('Terrain'),
+                structures: section('Structures'),
+              };
+            }, href);
+          };
+          const beforeEditor = await editorSections();
+          await editorPage.click('[data-tool="ore"]');
+          const ebox = await editorPage.$eval('#map-img', (e) => {
+            const r = e.getBoundingClientRect();
+            return { left: r.left, top: r.top, width: r.width, height: r.height };
+          });
+          let paintedHint = '';
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.48],
+            [0.58, 0.52], [0.50, 0.44], [0.50, 0.58], [0.38, 0.56], [0.62, 0.44]]) {
+            const ex = ebox.left + ebox.width * fx;
+            const ey = ebox.top + ebox.height * fy;
+            await editorPage.mouse.move(ex, ey);
+            await editorPage.mouse.down();
+            await editorPage.mouse.move(ex + Math.min(90, ebox.width * 0.07),
+                                        ey + Math.min(60, ebox.height * 0.07), { steps: 6 });
+            await editorPage.mouse.up();
+            paintedHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/已放 \d+ 格矿石/.test(paintedHint)) break;
+          }
+          check('dragging with the ore tool paints and reports', /已放 \d+ 格矿石/.test(paintedHint),
+                paintedHint.trim());
+          if (/已放 \d+ 格矿石/.test(paintedHint)) {
+            const afterEditor = await editorSections();
+            check('the editor edit changes only the overlay sections',
+                  afterEditor.overlay !== beforeEditor.overlay
+                  && afterEditor.overlayData !== beforeEditor.overlayData
+                  && afterEditor.waypoints === beforeEditor.waypoints
+                  && afterEditor.terrain === beforeEditor.terrain
+                  && afterEditor.structures === beforeEditor.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            const undoneEditor = await editorSections();
+            check('undo restores the map the editor started from',
+                  undoneEditor.overlay === beforeEditor.overlay
+                  && undoneEditor.overlayData === beforeEditor.overlayData);
+          }
+          await editorPage.close();
+        }
       }
     }
 

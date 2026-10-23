@@ -550,6 +550,8 @@ a.dl svg { width: 12px; height: 12px; }
   gap: 16px; flex-wrap: wrap; margin-top: 10px;
 }
 .cap { margin: 0; font: 400 13px/1.7 var(--mono); letter-spacing: .03em; color: var(--ink-3); }
+.meta-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.meta-actions .btn { width: auto; margin: 0; }
 
 /* ---- log ---------------------------------------------------------------- */
 .log-h {
@@ -1156,6 +1158,8 @@ a.dl svg { width: 12px; height: 12px; }
     </div>
     <div class="meta">
       <p class="cap" id="preview-cap"></p>
+      <div class="meta-actions">
+      <button id="open-editor" class="btn" type="button" hidden>在编辑器中打开</button>
       <a class="dl" id="preview-dl" download="preview.png">
         下载预览图
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -1163,6 +1167,7 @@ a.dl svg { width: 12px; height: 12px; }
           <path d="M12 3v13M6.5 11 12 16.5 17.5 11M4 20h16"></path>
         </svg>
       </a>
+      </div>
     </div>
   </div>
 </section>
