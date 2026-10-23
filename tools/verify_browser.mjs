@@ -754,7 +754,7 @@ try {
           const mapName = await editorPage.$eval('#map-name', (e) => e.textContent.trim());
           check('the editor loaded the generated map', /^\S+\.(yrm|map)$/i.test(mapName), mapName);
           const toolCount = await editorPage.$$eval('.tool', (ns) => ns.length);
-          check('the editor has the unified tool palette', toolCount >= 8, `${toolCount} tools`);
+          check('the editor has the unified tool palette', toolCount >= 11, `${toolCount} tools`);
 
           const editorSections = async () => {
             const href = await editorPage.$eval('#download-map', (a) => a.href);
@@ -805,43 +805,6 @@ try {
           await editorPage.click('#sel-clear');
           check('clear selection empties the brush selection', (await selTotal()) === 0);
 
-          // Selection and action are separate: after a box, clicking 放矿石
-          // applies to that selection without another drag.
-          await editorPage.click('[data-tool="select"]');
-          let actionReady = false;
-          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46]]) {
-            const x = ebox.left + ebox.width * fx;
-            const y = ebox.top + ebox.height * fy;
-            await editorPage.mouse.move(x, y);
-            await editorPage.mouse.down();
-            await editorPage.mouse.move(x + 90, y + 60, { steps: 6 });
-            await editorPage.mouse.up();
-            const empty = await editorPage.$eval('#sel-empty', (e) => e.textContent.trim());
-            if (Number(empty) > 0) { actionReady = true; break; }
-          }
-          check('a box selection leaves cells for the ore action', actionReady);
-          if (actionReady) {
-            const beforeAction = await editorSections();
-            check('the ore action is enabled only with a selection',
-                  await editorPage.$eval('#apply-ore', (e) => !e.disabled));
-            await editorPage.click('#apply-ore');
-            await editorPage.waitForFunction(
-              () => /已放 \d+ 格矿石/.test(document.getElementById('hint')?.textContent || ''),
-              { timeout: 60000 });
-            const afterAction = await editorSections();
-            check('the 放矿石 command applies to the existing selection',
-                  afterAction.overlay !== beforeAction.overlay
-                  && afterAction.overlayData !== beforeAction.overlayData
-                  && afterAction.waypoints === beforeAction.waypoints
-                  && afterAction.terrain === beforeAction.terrain
-                  && afterAction.structures === beforeAction.structures);
-            await editorPage.click('#undo');
-            await editorPage.waitForFunction(
-              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
-              { timeout: 60000 });
-            await editorPage.click('#sel-clear');
-          }
-
           // start points are editable here too, with the same undo
           await editorPage.click('[data-tool="start"]');
           const startCount = await editorPage.$$eval('#start-list button', (ns) => ns.length);
@@ -875,6 +838,7 @@ try {
 
           const beforeEditor = await editorSections();
           await editorPage.click('[data-tool="select"]');
+          await editorPage.click('[data-tool="ore"]');
           let paintedHint = '';
           for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.48],
             [0.58, 0.52], [0.50, 0.44], [0.50, 0.58], [0.38, 0.56], [0.62, 0.44]]) {
@@ -885,17 +849,10 @@ try {
             await editorPage.mouse.move(ex + Math.min(90, ebox.width * 0.07),
                                         ey + Math.min(60, ebox.height * 0.07), { steps: 6 });
             await editorPage.mouse.up();
-            const empty = await editorPage.$eval('#sel-empty', (e) => e.textContent.trim());
-            if (!(Number(empty) > 0)) { await editorPage.click('#sel-clear'); continue; }
-            await editorPage.click('#apply-ore');
-            await editorPage.waitForFunction(
-              () => /已放 \d+ 格矿石/.test(document.getElementById('hint')?.textContent || ''),
-              { timeout: 60000 });
             paintedHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
             if (/已放 \d+ 格矿石/.test(paintedHint)) break;
-            await editorPage.click('#sel-clear');
           }
-          check('box selection + 放矿石 command paints and reports',
+          check('box mode + 放矿石 tool paints and reports',
                 /已放 \d+ 格矿石/.test(paintedHint), paintedHint.trim());
           if (/已放 \d+ 格矿石/.test(paintedHint)) {
             const afterEditor = await editorSections();
@@ -914,6 +871,39 @@ try {
                   undoneEditor.overlay === beforeEditor.overlay
                   && undoneEditor.overlayData === beforeEditor.overlayData);
           }
+          // free mode: brush selection tool sets the area mode, then 放矿石
+          // paints the stroked cells on release.
+          await editorPage.click('#sel-clear');
+          const beforeFree = await editorSections();
+          await editorPage.click('[data-tool="brush"]');
+          await editorPage.click('[data-tool="ore"]');
+          let freeHint = '';
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46]]) {
+            const ex = ebox.left + ebox.width * fx;
+            const ey = ebox.top + ebox.height * fy;
+            await editorPage.mouse.move(ex, ey);
+            await editorPage.mouse.down();
+            await editorPage.mouse.move(ex + 70, ey + 45, { steps: 6 });
+            await editorPage.mouse.up();
+            freeHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/已放 \d+ 格矿石/.test(freeHint)) break;
+          }
+          check('free mode + 放矿石 tool paints on release',
+                /已放 \d+ 格矿石/.test(freeHint), freeHint.trim());
+          if (/已放 \d+ 格矿石/.test(freeHint)) {
+            const afterFree = await editorSections();
+            check('free mode changes only the overlay sections',
+                  afterFree.overlay !== beforeFree.overlay
+                  && afterFree.overlayData !== beforeFree.overlayData
+                  && afterFree.waypoints === beforeFree.waypoints
+                  && afterFree.terrain === beforeFree.terrain
+                  && afterFree.structures === beforeFree.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+          }
+
           await editorPage.close();
         }
       }

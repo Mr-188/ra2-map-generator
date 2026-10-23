@@ -207,14 +207,19 @@ button { font: inherit; color: inherit; }
     <button class="tool on" type="button" data-tool="select"><span class="k">1</span><span class="t">框选</span></button>
     <button class="tool" type="button" data-tool="brush"><span class="k">B</span><span class="t">自由</span></button>
 
+    <div class="rail-h">矿石</div>
+    <button class="tool" type="button" data-tool="ore"><span class="k">2</span><span class="t">放矿石（绿）</span></button>
+    <button class="tool" type="button" data-tool="gems"><span class="k">3</span><span class="t">放彩矿</span></button>
+    <button class="tool" type="button" data-tool="clear"><span class="k">4</span><span class="t">清除矿</span></button>
+
     <div class="rail-h">装饰</div>
-    <button class="tool" type="button" data-tool="pillar"><span class="k">2</span><span class="t">放矿柱</span></button>
-    <button class="tool" type="button" data-tool="unpillar"><span class="k">3</span><span class="t">移除矿柱</span></button>
+    <button class="tool" type="button" data-tool="pillar"><span class="k">5</span><span class="t">放矿柱</span></button>
+    <button class="tool" type="button" data-tool="unpillar"><span class="k">6</span><span class="t">移除矿柱</span></button>
 
     <div class="rail-h">中立建筑</div>
-    <button class="tool" type="button" data-tool="build-CAOILD"><span class="k">4</span><span class="t">放油井</span></button>
-    <button class="tool" type="button" data-tool="build-CAMACH"><span class="k">5</span><span class="t">放科技商店</span></button>
-    <button class="tool" type="button" data-tool="build-CAOUTP"><span class="k">6</span><span class="t">放科技维修厂</span></button>
+    <button class="tool" type="button" data-tool="build-CAOILD"><span class="k">7</span><span class="t">放油井</span></button>
+    <button class="tool" type="button" data-tool="build-CAMACH"><span class="k">8</span><span class="t">放科技商店</span></button>
+    <button class="tool" type="button" data-tool="build-CAOUTP"><span class="k">9</span><span class="t">放科技维修厂</span></button>
     <div class="tool-sub">悬停看地基，点击放置</div>
 
     <div class="rail-h">出生点</div>
@@ -257,7 +262,8 @@ button { font: inherit; color: inherit; }
   <aside class="ed-side">
     <div class="side-h">当前工具</div>
     <p id="tool-title">框选</p>
-    <p id="tool-help">拖拽框选；框完后点放矿石/放彩矿/清除矿直接对选区执行。</p>
+    <p id="tool-help">拖拽框选；选好后到左侧矿石组点放矿石/放彩矿/清除矿。</p>
+    <p class="mini" id="area-mode-readout">区域方式：框选</p>
 
     <div id="start-panel" hidden>
       <div class="side-h">出生点</div>
@@ -275,13 +281,6 @@ button { font: inherit; color: inherit; }
       <span>不可放</span><b id="sel-blocked" class="bad">—</b>
     </div>
     <button id="sel-clear" type="button" class="mini-link">清空选区</button>
-
-    <div class="side-h">选区操作</div>
-    <div class="side-actions">
-      <button id="apply-ore" class="btn" type="button" disabled>放矿石</button>
-      <button id="apply-gems" class="btn" type="button" disabled>放彩矿</button>
-      <button id="apply-clear" class="btn" type="button" disabled>清除矿</button>
-    </div>
 
     <div class="side-h">地图</div>
     <div class="stats">
