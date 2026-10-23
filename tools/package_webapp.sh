@@ -29,6 +29,10 @@ cp "$ROOT/webapp/sharebits.js" "$OUT/"
 # 出生点编辑 (the preview's start-point editor).  app.js imports it, so a deploy
 # that forgets it breaks the module graph and the page never boots at all.
 cp "$ROOT/webapp/starts.js" "$OUT/"
+# 地图内嵌缩略图 ([Preview]/[PreviewPack]).  app.js imports it the same way, so
+# leaving it out is not a missing thumbnail -- the module graph fails and the page
+# never boots at all.
+cp "$ROOT/webapp/preview-pack.js" "$OUT/"
 # 画廊: a page plus the one file it reads.  The generator's header links to it, so a
 # deploy that forgets these ships a 404 behind that link (and a gallery that cannot
 # read its own list).
