@@ -293,29 +293,27 @@ try {
   const landed = await page.evaluate(async (base, names) => {
     const dt = new DataTransfer();
     for (const n of names) {
-      // The archives are hundreds of MB, so this is a STREAM (a pause, not a
-      // re-read) rather than r.blob(): a half-finished multi-hundred-MB response
-      // fails silently in the page and looks like a CORS problem when it is a
-      // transport one.  Chunks are counted into the console so a stalled upload
-      // says where it stopped instead of just "Failed to fetch".
+      // Build each File from `response.blob()`, NOT from chunks accumulated in JS.
+      //
+      // Chunk accumulation looks harmless and is not: the resulting 470 MB of
+      // memory-backed blobs become UNREADABLE in the worker after a few tens of
+      // MB of reads.  FileReaderSync then throws "The requested file could not
+      // be read, typically due to permission problems that have occurred after a
+      // reference to a file was acquired", which the worker's mgRead turns into a
+      // silent 0, and extraction reports "no theater tiles could be extracted" for
+      // every theatre after the first.  Measured on Chrome 141 here: 600 MB of
+      // 4 MB reads, 143/150 failed and the first failure landed at 28 MB.  The
+      // same reads from a response blob are disk-backed and gave 0/150.
+      //
+      // So the earlier worry (a half-finished multi-hundred-MB response failing
+      // silently and looking like CORS) is answered by the size check below rather
+      // than by hand-rolling the buffer: a truncated body shows up as a blob whose
+      // size is not the archive's.
       const r = await fetch(base + n);
       if (!r.ok) return { error: `${n}: HTTP ${r.status}` };
-      const walk = r.body.getReader();
-      const chunks = [];
-      let got = 0;
-      // Yield to the event loop between chunks: a tight read loop inside one
-      // evaluate keeps the main thread busy for the whole ~470 MB, so the page's own
-      // progress text (提取中…) is painted, then replaced by the result without the
-      // waiters below ever seeing it - which read as "the cache never filled".
-      for (;;) {
-        const { done, value } = await walk.read();
-        if (done) break;
-        chunks.push(value);
-        got += value.byteLength;
-        await new Promise((res) => setTimeout(res, 0));
-      }
-      console.log(`[upload] ${n}: ${got} bytes`);
-      dt.items.add(new File(chunks, n));
+      const blob = await r.blob();
+      console.log(`[upload] ${n}: ${blob.size} bytes`);
+      dt.items.add(new File([blob], n));
     }
     const input = document.getElementById('dir');
     input.files = dt.files;
@@ -928,7 +926,16 @@ try {
     if (!window.__mapBlob) {
       window.__mapBlob = null;
       const orig = URL.createObjectURL.bind(URL);
-      URL.createObjectURL = (blob) => { window.__mapBlob = blob; return orig(blob); };
+      // Only the MAP is interesting here.  The page also makes object URLs for
+      // the rendered preview (image/png), and a render that finishes after this
+      // capture is armed used to overwrite __mapBlob with the PNG -- the next
+      // assertions then read a PNG as if it were the .map and reported values
+      // from a map that was never captured.  The download link is always
+      // application/octet-stream (see app.js).
+      URL.createObjectURL = (blob) => {
+        if (blob && blob.type === 'application/octet-stream') window.__mapBlob = blob;
+        return orig(blob);
+      };
     }
   });
   await page.click('#size-mode button[data-mode="rect"]');
@@ -960,7 +967,14 @@ try {
   const size = await page.evaluate(async () => {
     if (!window.__mapBlob) return null;
     const text = new TextDecoder('latin1').decode(await window.__mapBlob.arrayBuffer());
-    const m = text.match(/Size=\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)/);
+    // Anchor on [Basic].  The map now starts with [Preview]/[PreviewPack] (the
+    // game's map list reads its thumbnail from there), and the preview carries
+    // its own "Size=0,0,120,60".  Matching the first Size= in the file therefore
+    // reads the THUMBNAIL's dimensions as the map's -- which is exactly how this
+    // check reported "engine wrote Size=0,0,120,60" for a 384x112 rectangle.
+    const at = text.indexOf('[Basic]');
+    const basic = at >= 0 ? text.slice(at) : text;
+    const m = basic.match(/Size=\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)/);
     return m ? [Number(m[1]), Number(m[2])] : null;
   });
   // The writer's +4 / +12, which is what makes a request for 380x100 come out as
@@ -1037,6 +1051,13 @@ try {
   await page.click('#settings-open');
   await page.click('#auto-render');                 // back ON
   await page.click('#settings-close');
+  // Count the thumbnail-embed lines BEFORE this run: the next section arms a
+  // capture, and the rolled run's auto-render rewrites the download link
+  // ASYNCHRONOUSLY (embedPreview awaits the PNG decode).  That rewrite lands tens
+  // of seconds later, so without waiting for it the capture below fires on the
+  // PREVIOUS map and the following assertions describe a run that is already gone.
+  const embedsBefore = await page.$eval('#log',
+    (e) => (e.textContent.match(/已内嵌/g) || []).length);
   await page.click('#roll-all');
   await page.evaluate(() => { window.__mapBlob = null; document.getElementById('rolled').textContent = ''; });
   await page.click('#go');
@@ -1057,6 +1078,10 @@ try {
         `#rolled = "${rollNote}"`);
   check('自动渲染地图 renders by itself after a generation',
         autoImg === 'ok', String(autoImg));
+  // Wait for that render's thumbnail embed to finish (see embedsBefore).
+  await page.waitForFunction(
+    (n) => ((document.getElementById('log')?.textContent.match(/已内嵌/g) || []).length) > n,
+    { timeout: args.timeout }, embedsBefore);
 
   // ---- the cached extraction: a second visit without the game directory ---------
   //
@@ -1092,7 +1117,16 @@ try {
     if (!window.__captureWrapped) {
       window.__captureWrapped = true;
       const orig = URL.createObjectURL.bind(URL);
-      URL.createObjectURL = (blob) => { window.__mapBlob = blob; return orig(blob); };
+      // Only the MAP is interesting here.  The page also makes object URLs for
+      // the rendered preview (image/png), and a render that finishes after this
+      // capture is armed used to overwrite __mapBlob with the PNG -- the next
+      // assertions then read a PNG as if it were the .map and reported values
+      // from a map that was never captured.  The download link is always
+      // application/octet-stream (see app.js).
+      URL.createObjectURL = (blob) => {
+        if (blob && blob.type === 'application/octet-stream') window.__mapBlob = blob;
+        return orig(blob);
+      };
     }
     window.__mapBlob = null;
   });
