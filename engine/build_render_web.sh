@@ -53,6 +53,15 @@ export LD_LIBRARY_PATH
 CCMAPS_PATCH="$ROOT/engine/render/ccmaps-render-session.patch"
 if [ -f "$CCMAPS_PATCH" ] && [ -f "$SRC/CNCMaps.Shared/RenderSettings.cs" ] \
    && ! grep -q "KeepAlive" "$SRC/CNCMaps.Shared/RenderSettings.cs"; then
+    # The reference clone arrives with Windows line endings (it is a git checkout
+    # of a Visual Studio project, and some of us keep core.autocrlf on), while the
+    # patch is a plain LF diff.  `patch` matches context byte for byte, so every
+    # single hunk fails on the CR alone, reported as the useless "different line
+    # endings".  Strip CR from just the files this patch touches before applying:
+    # idempotent, and the C# compiler does not care either way.
+    sed -n 's/^+++ b\/ccmaps-net\/\([^	]*\).*/\1/p' "$CCMAPS_PATCH" | while IFS= read -r f; do
+        [ -f "$SRC/$f" ] && sed -i 's/\r$//' "$SRC/$f"
+    done
     echo "[render] applying ccmaps render-session patch"
     patch -p1 --no-backup-if-mismatch -r /dev/null -d "$(dirname "$SRC")" < "$CCMAPS_PATCH"
 fi
