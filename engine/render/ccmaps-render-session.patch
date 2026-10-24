@@ -1,0 +1,293 @@
+diff -ruN a/ccmaps-net/CNCMaps.Engine/Map/Map.cs b/ccmaps-net/CNCMaps.Engine/Map/Map.cs
+--- a/ccmaps-net/CNCMaps.Engine/Map/Map.cs	2026-10-23 17:19:57.012010791 +0800
++++ b/ccmaps-net/CNCMaps.Engine/Map/Map.cs	2026-10-23 17:19:57.013804765 +0800
+@@ -68,6 +68,9 @@
+ 		private MapFile _mapFile;
+ 
+ 		private bool _overlaysAltered;
++		// Objects that survived Reload by identity; their drawables/palettes are
++		// still valid, so the update skips re-assigning them.
++		private readonly HashSet<GameObject> _reusedObjects = new HashSet<GameObject>();
+ 		
+ 		public bool Initialize(MapFile mf, ModConfig config, VirtualFileSystem vfs) {
+ 			_mapFile = mf;
+@@ -146,7 +149,7 @@
+ 		}
+ 
+ 		/// <summary>Reads all objects. </summary>
+-		private void LoadAllObjects(MapFile mf) {
++		private void LoadAllObjects(MapFile mf, bool importTiles = true) {
+ 
+ 			// import tiles
+ 			// [MG-TMPDT] Instrumentation only (env-gated, no effect otherwise):
+@@ -154,7 +157,7 @@
+ 			// IsoMapPack order (tools/tmpdt.py edits them one at a time).
+ 			string ztLog = Environment.GetEnvironmentVariable("MG_TMPDT_LOG");
+ 			bool recordZT = ztLog != null;
+-			foreach (var iso in mf.Tiles) {
++			if (importTiles) foreach (var iso in mf.Tiles) {
+ 				_tiles[iso.Dx, iso.Dy / 2] = new MapTile(iso.Dx, iso.Dy, iso.Rx, iso.Ry, iso.Z, iso.TileNum, iso.SubTile, iso.IceGrowth, _tiles);
+ 				if (iso.Z == 0) {
+ 					if (recordZT) { try { System.IO.File.AppendAllText(ztLog, $"Z0 {iso.Rx},{iso.Ry},{iso.TileNum},{iso.SubTile}\n"); } catch { } }
+@@ -323,6 +326,114 @@
+ 			return true;
+ 		}
+ 
++		/// <summary>
++		/// Re-reads the same map (same theater and dimensions) into this already-loaded
++		/// Map, keeping the VFS, rules/art, theater, lighting and per-level palettes.
++		/// Used by the editor's interactive renderer: our edits only change overlays,
++		/// structures, terrain objects and waypoints -- IsoMapPack5 and the map's rule
++		/// sections stay put -- so the expensive setup is still valid while the object
++		/// layer (tiles are re-imported too) is refreshed.
++		/// </summary>
++		private static string ObjectKey(GameObject o) {
++			var t = o.Tile;
++			string k = o.GetType().Name + "|" + t.Rx + "," + t.Ry + "," + t.Z;
++			switch (o) {
++				case OverlayObject ov:
++					return k + "|" + ov.OverlayID + "|" + ov.OverlayValue;
++				case StructureObject st:
++					return k + "|" + st.Name + "|" + st.Owner + "|" + st.Direction + "|" + st.Health
++						+ "|" + st.Upgrade1 + "|" + st.Upgrade2 + "|" + st.Upgrade3 + "|" + st.PreCaptured;
++				case InfantryObject inf:
++					return k + "|" + inf.Name + "|" + inf.Owner + "|" + inf.Direction + "|" + inf.Health
++						+ "|" + inf.SubCell + "|" + inf.OnBridge;
++				case UnitObject un:
++					return k + "|" + un.Name + "|" + un.Owner + "|" + un.Direction + "|" + un.Health + "|" + un.OnBridge;
++				case AircraftObject ac:
++					return k + "|" + ac.Name + "|" + ac.Owner + "|" + ac.Direction + "|" + ac.Health + "|" + ac.OnBridge;
++				case TerrainObject tr:
++					return k + "|" + tr.Name;
++				case SmudgeObject sm:
++					return k + "|" + sm.Name;
++				default:
++					return k;
++			}
++		}
++
++		private void ReuseObjects(Dictionary<string, List<GameObject>> oldByKey) {
++			_reusedObjects.Clear();
++			ReuseList(_overlayObjects, oldByKey);
++			ReuseList(_terrainObjects, oldByKey);
++			ReuseList(_smudgeObjects, oldByKey);
++			ReuseList(_structureObjects, oldByKey);
++			ReuseList(_infantryObjects, oldByKey);
++			ReuseList(_unitObjects, oldByKey);
++			ReuseList(_aircraftObjects, oldByKey);
++		}
++
++		private void ReuseList<T>(List<T> objects, Dictionary<string, List<GameObject>> oldByKey) where T : GameObject {
++			for (int i = 0; i < objects.Count; i++) {
++				var fresh = objects[i];
++				var key = ObjectKey(fresh);
++				if (!oldByKey.TryGetValue(key, out var list) || list.Count == 0) continue;
++				var old = list[list.Count - 1];
++				list.RemoveAt(list.Count - 1);
++				fresh.Tile.RemoveObject(fresh, true);
++				fresh.Tile.AddObject(old);
++				objects[i] = (T)old;
++				_reusedObjects.Add(old);
++			}
++		}
++
++		public bool Reload(MapFile mf) {
++			if (mf.FullSize.Size != FullSize.Size) return false;
++			if (Theater.TheaterTypeFromString(mf.ReadString("Map", "Theater")) != TheaterType) return false;
++			_mapFile = mf;
++
++			_overlayObjects.Clear();
++			_smudgeObjects.Clear();
++			_terrainObjects.Clear();
++			_structureObjects.Clear();
++			_infantryObjects.Clear();
++			_unitObjects.Clear();
++			_aircraftObjects.Clear();
++			_wayPoints.Clear();
++			_overlaysAltered = false;
++
++			// Terrain is unchanged (our edits never touch IsoMapPack5), so keep the
++			// tile layer and its drawables; only the objects are replaced.  Unchanged
++			// objects are matched by cell + type + identity and reused with their
++			// drawable/palette, which avoids the bulk of the per-edit work.
++			try {
++				var oldByKey = new Dictionary<string, List<GameObject>>();
++				foreach (var tile in _tiles) {
++					if (tile == null) continue;
++					foreach (var obj in tile.AllObjects) {
++						if (obj is SmudgeObject sm && sm.FoundationCell != Point.Empty) continue;
++						var k = ObjectKey(obj);
++						if (!oldByKey.TryGetValue(k, out var list))
++							oldByKey[k] = list = new List<GameObject>();
++						list.Add(obj);
++					}
++					foreach (var obj in tile.AllObjects.ToList())
++						tile.RemoveObject(obj, true);
++				}
++				LoadAllObjects(mf, importTiles: false);
++				_wayPoints.AddRange(mf.Waypoints);
++				ReuseObjects(oldByKey);
++			} catch (Exception) { return false; }
++			try { RemoveUnknownObjects(); } catch (Exception) { return false; }
++			try { SetDrawables(includeTiles: false); } catch (Exception) { return false; }
++			try { ExpandSmudgeFootprints(); } catch (Exception) { return false; }
++			try { RevisitWallBuildings(); } catch (Exception) { return false; }
++			// Palettes/lighting are unchanged; reuse the per-level palettes from the
++			// first render and only assign palettes/remaps to the fresh objects.
++			try { LoadPalettes(); } catch (Exception) { return false; }
++			try { ApplyRemappables(); } catch (Exception) { return false; }
++			try { SetBaseTiles(); } catch (Exception) { return false; }
++			try { RecalculatePalettes(); } catch (Exception) { return false; }
++			return true;
++		}
++
+ 		// For walls given as buildings in the map instead of overlays, recalculate its SHP frame 
+ 		// so that those connect with its adjacent objects
+ 		private void RevisitWallBuildings() {
+@@ -486,14 +597,30 @@
+ 			}
+ 		}
+ 
+-		private void SetDrawables() {
++		private void SetDrawables(bool includeTiles = true) {
+ 			var tileTypes = _theater.GetTileCollection();
+-			int unknownTiles = 0;
++			if (includeTiles) {
++				int unknownTiles = 0;
++				foreach (var tile in _tiles) {
++					tile.Drawable = tileTypes.GetDrawable(tile);
++					if (tile.Drawable == null)
++						unknownTiles++;
++				}
++				if (unknownTiles > 0)
++					Logger.Warn("{0} cells use tile indices beyond this theater's {1} tiles (a terrain expansion this game data lacks); they stay black",
++						unknownTiles, tileTypes.NumTiles);
++			}
++
+ 			foreach (var tile in _tiles) {
+-				tile.Drawable = tileTypes.GetDrawable(tile);
+-				if (tile.Drawable == null)
+-					unknownTiles++;
+ 				foreach (var obj in tile.AllObjects) {
++					if (_reusedObjects.Contains(obj)) {
++						// Ore/gem frames depend on their neighbours, so a reused
++						// overlay still needs its tiberium art refreshed even though
++						// its collection/drawable are kept.
++						if (obj is OverlayObject reusedOvl)
++							Operations.ApplyTiberiumArt(tile, reusedOvl, _config.Engine);
++						continue;
++					}
+ 					obj.Collection = _theater.GetObjectCollection(obj);
+ 					// an object type without a collection must not crash the whole render
+ 					if (obj.Collection == null) {
+@@ -506,9 +633,6 @@
+ 						Operations.ApplyTiberiumArt(tile, ovl, _config.Engine);
+ 				}
+ 			}
+-			if (unknownTiles > 0)
+-				Logger.Warn("{0} cells use tile indices beyond this theater's {1} tiles (a terrain expansion this game data lacks); they stay black",
+-					unknownTiles, tileTypes.NumTiles);
+ 		}
+ 
+ 		// gamemd draws a multi-cell smudge once from every cell of its foundation (CellClass::Draw_It
+@@ -565,6 +689,7 @@
+ 				
+ 				foreach (var obj in tile.AllObjects.Union(new[] { tile }).ToList()) {
+ 					if (obj == null) continue;
++					if (obj != tile && _reusedObjects.Contains(obj)) continue;
+ 
+ 					Palette p;
+ 					LightingType lt;
+@@ -610,6 +735,7 @@
+ 
+ 			foreach (OwnableObject obj in _structureObjects.Cast<OwnableObject>().Union(_unitObjects).Union(_aircraftObjects).Union(_infantryObjects)) {
+ 				var g = obj as GameObject;
++				if (g != null && _reusedObjects.Contains(g)) continue;
+ 				if (g != null & g.Drawable != null && g.Drawable.IsRemapable) {
+ 					if (g.Palette.IsShared) // don't wanna touch somebody elses palette..
+ 						g.Palette = g.Palette.Clone();
+@@ -629,7 +755,7 @@
+ 				var tibRemaps = tiberiums.Zip(remaps, (k, v) => new { k, v }).ToDictionary(x => x.k, x => x.v);
+ 
+ 				foreach (var ovl in _overlayObjects) {
+-					if (ovl == null) continue;
++					if (ovl == null || _reusedObjects.Contains(ovl)) continue;
+ 					var tibType = SpecialOverlays.GetOverlayTibType(ovl, _config.Engine);
+ 					if (tibType != OverlayTibType.NotSpecial) {
+ 						ovl.Palette = ovl.Palette.Clone();
+diff -ruN a/ccmaps-net/CNCMaps.Engine/RenderEngine.cs b/ccmaps-net/CNCMaps.Engine/RenderEngine.cs
+--- a/ccmaps-net/CNCMaps.Engine/RenderEngine.cs	2026-10-23 17:19:57.001766507 +0800
++++ b/ccmaps-net/CNCMaps.Engine/RenderEngine.cs	2026-10-23 17:19:57.003434850 +0800
+@@ -23,6 +23,11 @@
+ 		static Logger _logger = LogManager.GetCurrentClassLogger();
+ 		private RenderSettings _settings = new RenderSettings();
+ 
++		/// <summary>The map loaded by the last Execute(), when
++		/// <see cref="RenderSettings.KeepAlive"/> kept its state alive.  The editor's
++		/// RenderUpdate reuses it instead of rebuilding VFS/rules/art/theater.</summary>
++		public Map.Map LastMap { get; private set; }
++
+ 		/// <summary>
+ 		/// Optional interactive preview, shown after drawing but before the output files are
+ 		/// saved, while game resources are still loaded (required for tile re-evaluation).
+@@ -188,7 +193,8 @@
+ 				// tiled-marked surface) lazily load TMP files from the mixes, so the VFS
+ 				// must then outlive the full-size save instead of being released here
+ 				bool lateVfsDispose = thumbMarkersRedraw ||
+-					(_settings.GeneratePreviewPack && _settings.MarkStartPos);
++					(_settings.GeneratePreviewPack && _settings.MarkStartPos) ||
++					_settings.KeepAlive;
+ 				vfs = new VirtualFileSystem();
+ 				{
+ 					// first add the dirs, then load the extra mixes, then scan the dirs
+@@ -220,6 +226,7 @@
+ 					}
+ 					progress.Report(15, "preparing");
+ 					map.Progress = progress;
++					if (_settings.KeepAlive) LastMap = map;
+ 
+ 					if (_settings.MarkStartPos && _settings.StartPositionMarking == StartPositionMarking.Tiled)
+ 						map.MarkTiledStartPositions();
+@@ -311,7 +318,7 @@
+ 				MapStats mapStats = string.IsNullOrEmpty(_settings.MetadataOutFile) ? null : map.ComputeStats();
+ 				// replacing tiled markers for the thumbnails redraws tiles, which needs the
+ 				// z-buffer and palettes (and the VFS above) that would otherwise be freed here
+-				if (!_settings.GeneratePreviewPack && !thumbMarkersRedraw) {
++				if (!_settings.GeneratePreviewPack && !thumbMarkersRedraw && !_settings.KeepAlive) {
+ 					ds.FreeNonBitmap();
+ 					map.FreeUseless();
+ 					GC.Collect();
+@@ -426,7 +433,8 @@
+ 				return EngineResult.Exception;
+ 			}
+ 			finally {
+-				vfs?.Dispose();
++				if (!_settings.KeepAlive)
++					vfs?.Dispose();
+ 			}
+ 			return EngineResult.RenderedOk;
+ 		}
+diff -ruN a/ccmaps-net/CNCMaps.Shared/RenderSettings.cs b/ccmaps-net/CNCMaps.Shared/RenderSettings.cs
+--- a/ccmaps-net/CNCMaps.Shared/RenderSettings.cs	2026-10-23 17:19:56.991681404 +0800
++++ b/ccmaps-net/CNCMaps.Shared/RenderSettings.cs	2026-10-23 17:19:56.993189333 +0800
+@@ -53,6 +53,12 @@
+ 		public bool CompressTiles { get; set; }
+ 		public bool TunnelPaths { get; set; }
+ 		public bool TunnelPosition { get; set; }
++		/// <summary>Keep the loaded renderer state (VFS, rules/art, theater, map) alive
++		/// after Execute so an interactive host can re-render the same map with
++		/// <see cref="CNCMaps.Engine.Map.Map.Reload"/> instead of rebuilding it.
++		/// Used by the editor's RenderStart/RenderUpdate pair; one-shot callers
++		/// leave it false.</summary>
++		public bool KeepAlive { get; set; }
+ 
+ 		public RenderSettings() {
+ 			PNGQuality = 4; // deflate level; with unfiltered scanlines this compresses game graphics best for its speed
+@@ -89,6 +95,7 @@
+ 			CompressTiles = false;
+ 			TunnelPaths = false;
+ 			TunnelPosition = false;
++			KeepAlive = false;
+ 			MarkStartPos = false;
+ 		}
+ 

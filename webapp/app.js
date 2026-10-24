@@ -14,15 +14,31 @@
 // classic script (the .NET runtime detects its host with `typeof importScripts`).
 import { encodeParams, decodeParams, enginePrefix, sizeFromIndex, indexFromSize }
   from './sharebits.js';
-// The preview's start-point editor: pixel -> cell and the [Waypoints] rewrite.
+// The preview's cell -> pixel transform (the editor page and the ore brush).
 // Pure code, exercised by tools/verify_starts.mjs under node.
-import {
-  parseCellGrid, pickCell, projectCell, rewriteWaypoint, readWaypoints,
-  cellFlags, CELL_IN_MAP, CELL_PASSABLE,
-} from './starts.js';
+import { parseCellGrid, pickCell, projectCell } from './starts.js';
+// The map-list thumbnail the game reads out of the .map itself ([Preview] and
+// [PreviewPack]).  Pure code, exercised by tools/verify_preview.py under python.
 import { PREVIEW_WIDTH, PREVIEW_HEIGHT, dummyPreviewSections,
          withPreviewSections, stripPreviewSections, previewSectionsFromPng }
   from './preview-pack.js';
+// The preview's ore brush: [OverlayPack]/[OverlayDataPack], the map's own ore
+// grid.  Pure code, exercised by tools/verify_ore.mjs under node.
+import {
+  readOverlayGrids, writeOverlayGrids, readOccupiedCells, cellsInRect,
+  countSelection, paintMineralCells, clearMineralCells, removeOreDecorations,
+  describePillarTarget, placePillar, removePillar,
+  classifyCell, CELL_EMPTY, CELL_ORE, CELL_OTHER, overlayIndex,
+  ORE_OVERLAY_START, GEM_OVERLAY_START, ORE_DATA, GEM_DATA,
+} from './ore.js';
+// Neutral tech buildings: [Structures] entries with the game's own types and
+// foundations, validated against the same sidecar.
+import {
+  BUILDING_TYPES, buildingType, describeBuildingPlacement, placeBuilding,
+  structureOccupiedCells,
+} from './buildings.js';
+// The generator -> editor hand-off (separate page, IndexedDB).
+import { saveGenerated } from './mapstore.js';
 
 const NEEDED = ['ra2.mix', 'ra2md.mix', 'expandmd01.mix'];
 
@@ -52,12 +68,20 @@ const previewEl = el('preview');
 const previewImg = el('preview-img');
 const previewCap = el('preview-cap');
 const previewDl = el('preview-dl');
-const startsLayer = el('starts-layer');
-const startsBar = el('starts-bar');
-const startsEditBtn = el('starts-edit');
-const startsApplyBtn = el('starts-apply');
-const startsResetBtn = el('starts-reset');
-const startsHint = el('starts-hint');
+const openEditorBtn = el('open-editor');
+const oreLayer = el('ore-layer');
+const oreBar = el('ore-bar');
+const oreHint = el('ore-hint');
+const oreMenu = el('ore-menu');
+const oreMenuPaint = oreMenu.querySelector('[data-act="paint"]');
+const oreMenuGems = oreMenu.querySelector('[data-act="gems"]');
+const oreMenuPillar = oreMenu.querySelector('[data-act="pillar"]');
+const oreMenuUnpillar = oreMenu.querySelector('[data-act="unpillar"]');
+const oreMenuClear = oreMenu.querySelector('[data-act="clear"]');
+const oreBuildButtons = {};
+for (const t of BUILDING_TYPES) {
+  oreBuildButtons[t.id] = oreMenu.querySelector(`[data-act="build-${t.id}"]`);
+}
 
 // Object URLs for the two downloads; revoked before being replaced so a session
 // that generates many maps does not leak blob storage.
@@ -68,17 +92,21 @@ let mapBaseBytes = null;  // without the embedded preview, so re-rendering is id
 let mapSerial = 0;        // a render that finishes after a new generation must not patch it
 let rendererRuntime = null;
 
-// ---- 出生点编辑（see the "start points" section near the bottom）-----------
+// ---- 预览图坐标 -----------------------------------------------------------
 let cellGrid = null;       // the generator's per-cell level/passability sidecar
+let cellGridBytes = null;  // the same sidecar, raw: the editor page needs it
 let renderMeta = null;     // the renderer's cell -> pixel transform for the image on screen
-const startEdit = {
-  on: false,
-  points: [],              // [{ number, x, y }] -- what the map WOULD carry if applied
-  original: [],            // the same list as the map on disk, for 还原
-  selected: -1,
+
+// ---- 矿石绘制（see the "ore" section near the bottom）----------------------
+const oreEdit = {
   dragging: false,
-  hover: null,             // { x, y, ok } under the pointer while dragging
-  mapText: '',             // latin1-decoded map, edited in place
+  rect: null,              // { x0, y0, x1, y1 } in the image's natural pixels
+  cells: [],               // the cells whose centres are inside rect
+  counts: null,            // green-ore counts for the menu labels
+  countsGem: null,         // gem counts (same selection, other family)
+  target: null,            // { x, y, info, buildings } under the last right-click
+  buildPreview: null,      // building type whose footprint is highlighted
+  cache: null,             // { bytes, ids, data, occupied } for mapBytes
 };
 
 // The 参数集 of the run that is in flight, and of the map currently on screen.  It
@@ -520,18 +548,20 @@ worker.addEventListener('message', async (event) => {
       // this map's, and the pixel transform belongs to the image still on screen
       // (it is replaced when the render lands).
       cellGrid = msg.cells ? parseCellGrid(msg.cells) : null;
+      cellGridBytes = msg.cells ? new Uint8Array(msg.cells) : null;
       // The transform belongs to the image that is on screen, and that image is
       // this map's PREDECESSOR until the next render lands.  Keeping the old
       // numbers here would mean picking cells with one map's camera and another
       // map's terrain, which is wrong in a way no assertion downstream catches.
       renderMeta = null;
-      resetStartEdit();
-      refreshStartTools();
+      resetOreEdit();
+      refreshOreTools();
       if (mapUrl) URL.revokeObjectURL(mapUrl);
       mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
       downloadEl.href = mapUrl;
       downloadEl.download = msg.name;
-      el('done').textContent = `${msg.name} · ${(mapBytes.length / 1024).toFixed(0)} KB`;
+      openEditorBtn.hidden = !(mapBytes && cellGridBytes);
+      el('done').textContent = `${msg.name} · ${(msg.bytes.length / 1024).toFixed(0)} KB`;
       resultEl.style.display = 'block';
       setStatus('完成。', 'ok');
       goBtn.disabled = false;
@@ -570,7 +600,7 @@ worker.addEventListener('message', async (event) => {
       setStatus('渲染完成。', 'ok');
       renderBtn.disabled = false;
       renderBtn.textContent = '重新渲染';
-      refreshStartTools();
+      refreshOreTools();
       break;
     }
     case 'assets-data':
@@ -654,12 +684,12 @@ async function renderOnMainThread(msg) {
     const png = fs.readFile('/maps/render.png');
     // The renderer's own cell -> pixel transform for THIS image (WebEntry asks
     // for it with --meta-json).  Absent means an older renderer is cached, in
-    // which case the start-point editor stays off rather than guessing.
+    // which case the ore brush stays off rather than guessing.
     try {
       renderMeta = JSON.parse(new TextDecoder().decode(fs.readFile('/maps/render.json')));
     } catch (err) {
       renderMeta = null;
-      mark('starts: 渲染器没有给出坐标元数据，出生点编辑不可用');
+      mark('预览：渲染器没有给出坐标元数据，放矿工具关闭');
     }
     await embedPreview(png);
 
@@ -675,7 +705,7 @@ async function renderOnMainThread(msg) {
     setStatus('渲染完成。', 'ok');
     renderBtn.disabled = false;
     renderBtn.textContent = '重新渲染';
-    refreshStartTools();
+    refreshOreTools();
     // This path (the main-thread renderer) is what actually runs; it used to leave
     // the 120 s watchdog armed, so a finished image was reported as "渲染超时"
     // two minutes later, on top of the picture.
@@ -1915,21 +1945,10 @@ setImportHint();
 el('landing-close').addEventListener('click', hideLanding);
 
 // ===========================================================================
-// 出生点编辑（start points）
+// 矿石绘制（ore painting）
 //
-// 生成并渲染之后，玩家可以直接在预览图上拖红方块改出生点，应用后重新出图。
-//
-// 三件事各自只有一个来源，页面不复制任何一份：
-//   * 贴图坐标  —— 渲染器自己算的 cell -> pixel 变换（--meta-json，WebEntry 里打开）
-//   * 格子高度/可通行性 —— 生成器随图导出的 <out>.cells（mg_generate 里写的）
-//   * 地图格式   —— [Waypoints] 一个数：X + 1000 * Y（MapGenMapFile.cpp 的写法）
-//
-// 所以这里没有"猜地形"的逻辑：落点能不能站人，问的是生成器算完那一刻的
-// Passability，而不是从图片颜色反推。
-// ===========================================================================
-
-/** The map file is byte-oriented; latin1 is the 1:1 decode that lets the edited
- *  text be re-encoded without touching a byte we did not mean to change. */
+// The map file is byte-oriented; latin1 is the 1:1 decode that lets the edited
+// text be re-encoded without touching a byte we did not mean to change.
 function decodeLatin1(bytes) {
   return new TextDecoder('latin1').decode(bytes);
 }
@@ -1937,88 +1956,6 @@ function encodeLatin1(text) {
   const out = new Uint8Array(text.length);
   for (let i = 0; i < text.length; ++i) out[i] = text.charCodeAt(i) & 0xff;
   return out;
-}
-
-function resetStartEdit() {
-  startEdit.on = false;
-  startEdit.points = [];
-  startEdit.original = [];
-  startEdit.selected = -1;
-  startEdit.dragging = false;
-  startEdit.hover = null;
-  startEdit.mapText = '';
-  startEdit.baseBytes = null;
-  setHint('');
-}
-
-/** Shows or hides the whole editor according to what is actually available. */
-function refreshStartTools() {
-  const ready = !!(cellGrid && renderMeta && mapBytes);
-  startsBar.classList.toggle('on', ready);
-  startsLayer.hidden = !(ready && startEdit.on);
-  startsEditBtn.textContent = startEdit.on ? '退出编辑' : '编辑出生点';
-  startsEditBtn.hidden = !ready;
-  startsApplyBtn.hidden = !(ready && startEdit.on);
-  startsResetBtn.hidden = !(ready && startEdit.on);
-  if (!ready) { setHint(''); return; }
-  if (startEdit.on) { sizeStartsLayer(); drawStarts(); }
-}
-
-function enterStartEdit() {
-  startEdit.on = true;
-  startEdit.mapText = decodeLatin1(mapBytes);
-  startEdit.baseBytes = mapBytes.slice();
-  startEdit.points = readWaypoints(startEdit.mapText).filter((w) => w.number < 8);
-  startEdit.original = startEdit.points.map((p) => ({ ...p }));
-  startEdit.selected = startEdit.points.length ? 0 : -1;
-  startEdit.hover = null;
-  refreshStartTools();
-  setHint(startEdit.points.length
-    ? `按住预览图上的方块拖动，或点一下把「出生点 ${startEdit.points[startEdit.selected].number}」放过去。`
-    : '这张图没有可编辑的出生点。');
-  mark(`starts: 进入出生点编辑（${startEdit.points.length} 个）`);
-}
-
-function leaveStartEdit() {
-  const unsaved = startEdit.on && startEdit.mapText && startEdit.points.some((p) => {
-    const now = readWaypoints(startEdit.mapText).find((w) => w.number === p.number);
-    return !now || now.x !== p.x || now.y !== p.y;
-  });
-  startEdit.on = false;
-  startEdit.dragging = false;
-  startEdit.hover = null;
-  refreshStartTools();
-  // Saying so matters: the map is only changed by 应用并重新预览, and a silently
-  // dropped drag looks like the editor did nothing.
-  setHint(unsaved ? '已退出编辑，未应用的改动没有写进地图。' : '', unsaved ? 'bad' : '');
-}
-
-function setHint(text, tone) {
-  startsHint.textContent = text;
-  startsHint.className = tone || '';
-}
-
-/** The canvas covers the image's content box, so its own rect is the right frame. */
-function toNatural(event) {
-  const rect = startsLayer.getBoundingClientRect();
-  const nw = previewImg.naturalWidth;
-  const nh = previewImg.naturalHeight;
-  if (!rect.width || !rect.height || !nw || !nh) return null;
-  return {
-    x: (event.clientX - rect.left) * nw / rect.width,
-    y: (event.clientY - rect.top) * nh / rect.height,
-  };
-}
-
-function sizeStartsLayer() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = startsLayer.clientWidth;
-  const h = startsLayer.clientHeight;
-  if (!w || !h) return;
-  const bw = Math.max(1, Math.round(w * dpr));
-  const bh = Math.max(1, Math.round(h * dpr));
-  if (startsLayer.width !== bw) startsLayer.width = bw;
-  if (startsLayer.height !== bh) startsLayer.height = bh;
 }
 
 /** One cell diamond, in CSS pixels, around a natural-pixel centre. */
@@ -2031,210 +1968,615 @@ function diamond(ctx, cx, cy, hw, hh) {
   ctx.closePath();
 }
 
-function drawStarts() {
-  if (!startEdit.on || !cellGrid || !renderMeta) return;
-  const ctx = startsLayer.getContext('2d');
+//
+// 生成并渲染之后，在预览图上拖一个框，右击选「放矿石」，框里所有"可放"的
+// 空地就铺上矿石；写回的是地图文件自己的 [OverlayPack]/[OverlayDataPack]，
+// 然后重新出图。 和出生点编辑一样，这里不猜任何地形：
+//
+//   * 格子能不能放，问生成器随图导出的 <out>.cells（可通行性 + 建筑地基位），
+//     再加上地图自己的 overlay / [Terrain] / [Structures] 占用；
+//   * 框选落在哪些格子，用渲染器发布的 cell -> pixel 变换反算（starts.js）。
+//
+// 矿石自己的格式、id 和"生长阶段"全部写在 webapp/ore.js 的抬头里，那份
+// 逻辑由 tools/verify_ore.mjs 用 node 驱动，也在真实渲染器上对过像素。
+// ===========================================================================
+
+function resetOreEdit() {
+  oreEdit.dragging = false;
+  oreEdit.rect = null;
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  oreEdit.target = null;
+  oreEdit.buildPreview = null;
+  oreEdit.cache = null;
+  hideOreMenu();
+}
+
+function setOreHint(text, tone) {
+  oreHint.textContent = text;
+  oreHint.className = tone || '';
+}
+
+/** The map's overlay grids, decoded once per mapBytes value. */
+function ensureOreContext() {
+  if (!mapBytes) return null;
+  if (oreEdit.cache && oreEdit.cache.bytes === mapBytes) return oreEdit.cache;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) {
+    oreEdit.cache = null;
+    return null;
+  }
+  // The sidecar knows every foundation the generator placed; buildings this
+  // page adds exist only in [Structures], so merge their footprints in as well
+  // (otherwise ore could be painted under a building placed a minute ago).
+  const occupied = readOccupiedCells(text);
+  for (const index of structureOccupiedCells(text)) occupied.add(index);
+  oreEdit.cache = {
+    bytes: mapBytes,
+    ids: grids.ids,
+    data: grids.data,
+    occupied,
+  };
+  return oreEdit.cache;
+}
+
+/** Shows or hides the ore bar according to what is actually available. */
+function refreshOreTools() {
+  const ctx = (cellGrid && renderMeta && mapBytes) ? ensureOreContext() : null;
+  const ready = !!ctx;
+  oreBar.classList.toggle('on', ready);
+  oreLayer.hidden = !ready;
+  if (!ready) {
+    hideOreMenu();
+    oreEdit.rect = null;
+    oreEdit.cells = [];
+    oreEdit.counts = null;
+    setOreHint('');
+    return;
+  }
+  sizeOreLayer();
+  drawOre();
+  if (!oreEdit.rect) {
+    setOreHint('在预览图上拖拽框选一片区域，或直接在格子上右击：放矿石 / 放彩矿 / 放矿柱。');
+  }
+}
+
+function sizeOreLayer() {
   const dpr = window.devicePixelRatio || 1;
-  const w = startsLayer.clientWidth;
-  const h = startsLayer.clientHeight;
+  const w = oreLayer.clientWidth;
+  const h = oreLayer.clientHeight;
   if (!w || !h) return;
-  const s = w / previewImg.naturalWidth;
+  const bw = Math.max(1, Math.round(w * dpr));
+  const bh = Math.max(1, Math.round(h * dpr));
+  if (oreLayer.width !== bw) oreLayer.width = bw;
+  if (oreLayer.height !== bh) oreLayer.height = bh;
+}
+
+/** The canvas covers the image's content box (the image has a 1px border). */
+function toNaturalOre(event) {
+  const rect = oreLayer.getBoundingClientRect();
+  const nw = previewImg.naturalWidth;
+  const nh = previewImg.naturalHeight;
+  if (!rect.width || !rect.height || !nw || !nh) return null;
+  return {
+    x: (event.clientX - rect.left) * nw / rect.width,
+    y: (event.clientY - rect.top) * nh / rect.height,
+  };
+}
+
+function clampNatural(point) {
+  const nw = previewImg.naturalWidth || 0;
+  const nh = previewImg.naturalHeight || 0;
+  return {
+    x: Math.max(0, Math.min(nw, point.x)),
+    y: Math.max(0, Math.min(nh, point.y)),
+  };
+}
+
+function addDiamond(path, cx, cy, hw, hh) {
+  path.moveTo(cx, cy - hh);
+  path.lineTo(cx + hw, cy);
+  path.lineTo(cx, cy + hh);
+  path.lineTo(cx - hw, cy);
+  path.closePath();
+}
+
+function drawOre() {
+  if (oreLayer.hidden || !previewImg.naturalWidth) return;
+  const ctx = oreLayer.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = oreLayer.clientWidth;
+  const h = oreLayer.clientHeight;
+  if (!w || !h) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
+  const s = w / previewImg.naturalWidth;
   const hw = (renderMeta.tileWidth / 2) * s;
   const hh = (renderMeta.tileHeight / 2) * s;
 
-  // The cell the pointer is over, so the user sees where it will land before
-  // letting go.  Red when the generator says the ground cannot carry a start.
-  if (startEdit.hover) {
-    const c = projectCell(cellGrid, renderMeta, startEdit.hover.x, startEdit.hover.y);
-    diamond(ctx, c.x * s, c.y * s, hw, hh);
-    ctx.fillStyle = startEdit.hover.ok ? 'rgba(242,192,105,.45)' : 'rgba(224,133,122,.45)';
+  // The cell the menu's 矿柱 action would use.  Green/red says whether it can
+  // take one before the user commits.  Drawn last (below) so the selection fill
+  // cannot hide it.
+  const drawTarget = () => {
+    if (!oreEdit.target) return;
+    const t = oreEdit.target;
+    const p = projectCell(cellGrid, renderMeta, t.x, t.y);
+    diamond(ctx, p.x * s, p.y * s, hw, hh);
+    ctx.fillStyle = t.info.ok ? 'rgba(242,192,105,.45)' : 'rgba(224,133,122,.45)';
     ctx.fill();
     ctx.lineWidth = 2;
-    ctx.strokeStyle = startEdit.hover.ok ? '#f2c069' : '#e0857a';
+    ctx.strokeStyle = t.info.ok ? '#f2c069' : '#e0857a';
     ctx.stroke();
+  };
+
+  if (!oreEdit.rect) { drawTarget(); return; }
+  const r = oreEdit.rect;
+  const x0 = Math.min(r.x0, r.x1) * s;
+  const x1 = Math.max(r.x0, r.x1) * s;
+  const y0 = Math.min(r.y0, r.y1) * s;
+  const y1 = Math.max(r.y0, r.y1) * s;
+
+  // While dragging only the rubber band is drawn: painting thousands of cell
+  // diamonds on every pointermove is the one thing that would make the drag lag.
+  if (!oreEdit.dragging && oreEdit.cells.length) {
+    const cache = ensureOreContext();
+    if (cache) {
+      const tw = (renderMeta.tileWidth / 2) * s;
+      const th = (renderMeta.tileHeight / 2) * s;
+      const emptyPath = new Path2D();
+      const orePath = new Path2D();
+      const otherPath = new Path2D();
+      for (const cell of oreEdit.cells) {
+        const kind = classifyCell(cellGrid, cache.ids, cache.occupied, cell.x, cell.y);
+        if (kind !== CELL_EMPTY && kind !== CELL_ORE && kind !== CELL_OTHER) continue;
+        const p = projectCell(cellGrid, renderMeta, cell.x, cell.y);
+        const path = kind === CELL_ORE ? orePath : (kind === CELL_OTHER ? otherPath : emptyPath);
+        addDiamond(path, p.x * s, p.y * s, tw, th);
+      }
+      ctx.fillStyle = 'rgba(242,192,105,.34)';
+      ctx.fill(emptyPath);
+      ctx.fillStyle = 'rgba(126,214,120,.32)';
+      ctx.fill(orePath);
+      ctx.fillStyle = 'rgba(130,150,240,.34)';
+      ctx.fill(otherPath);
+    }
   }
 
-  for (let i = 0; i < startEdit.points.length; ++i) {
-    const pt = startEdit.points[i];
-    const c = projectCell(cellGrid, renderMeta, pt.x, pt.y);
-    const cx = c.x * s;
-    const cy = c.y * s;
-    diamond(ctx, cx, cy, hw, hh);
-    ctx.fillStyle = i === startEdit.selected ? 'rgba(242,192,105,.35)' : 'rgba(255,255,255,.14)';
-    ctx.fill();
-    ctx.lineWidth = i === startEdit.selected ? 2 : 1;
-    ctx.strokeStyle = i === startEdit.selected ? '#f2c069' : '#ffffff';
-    ctx.stroke();
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(242,192,105,.95)';
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.setLineDash([]);
 
-    // The number, haloed rather than boxed: a box the size of a cell would hide
-    // the very terrain the user is choosing between.
-    const label = String(pt.number);
-    ctx.font = '600 11px ui-monospace, monospace';
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(12,13,16,.9)';
-    ctx.strokeText(label, cx, cy + 1);
-    ctx.fillStyle = i === startEdit.selected ? '#f2c069' : '#f2f2f2';
-    ctx.fillText(label, cx, cy + 1);
+  // Hovering a building item in the menu shows exactly which cells its
+  // foundation would cover (and whether that foundation is valid).
+  const preview = oreEdit.buildPreview;
+  const target = oreEdit.target;
+  if (preview && target && target.buildings && target.buildings[preview.id]) {
+    const info = target.buildings[preview.id];
+    const tw = (renderMeta.tileWidth / 2) * s;
+    const th = (renderMeta.tileHeight / 2) * s;
+    for (const cell of info.cells) {
+      const p = projectCell(cellGrid, renderMeta, cell.x, cell.y);
+      diamond(ctx, p.x * s, p.y * s, tw, th);
+      ctx.fillStyle = info.ok ? 'rgba(120,170,255,.38)' : 'rgba(224,133,122,.38)';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = info.ok ? 'rgba(190,220,255,.9)' : 'rgba(240,160,150,.9)';
+      ctx.stroke();
+    }
+  }
+  drawTarget();
+}
+
+/** Recomputes the selected cells and what each one offers (menu labels). */
+function refreshOreSelection() {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect) {
+    oreEdit.cells = [];
+    oreEdit.counts = null;
+    return;
+  }
+  oreEdit.cells = cellsInRect(cellGrid, renderMeta, oreEdit.rect);
+  oreEdit.counts = countSelection(cellGrid, cache.ids, cache.occupied, oreEdit.cells);
+  const c = oreEdit.counts;
+  if (!c.total) {
+    setOreHint('框选区域里没有格子。', 'bad');
+    return;
+  }
+  const tone = c.empty || c.ore || c.other ? 'ok' : 'bad';
+  setOreHint(`已框选 ${c.total} 格：可放矿石 ${c.empty} 格，已有矿石 ${c.ore} 格`
+           + (c.other ? `，其他矿 ${c.other} 格` : '')
+           + `，不可放 ${c.blocked} 格。右击选「放矿石 / 放彩矿 / 放矿柱」。`, tone);
+}
+
+function clearOreSelection() {
+  oreEdit.rect = null;
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  hideOreMenu();
+  drawOre();
+  setOreHint('在预览图上拖拽框选一片区域，或在格子上右击选「放矿柱」。');
+}
+
+function showOreMenu(clientX, clientY) {
+  const c = oreEdit.counts;
+  const t = oreEdit.target;
+  const empty = c ? c.empty : 0;
+  oreMenuPaint.textContent = `放矿石（${empty} 格）`;
+  oreMenuPaint.disabled = empty === 0;
+  oreMenuGems.textContent = `放彩矿（${empty} 格）`;
+  oreMenuGems.disabled = empty === 0;
+
+  const minerals = c ? c.ore + c.other : 0;
+  oreMenuClear.textContent = `清除矿（${minerals} 格）`;
+  oreMenuClear.disabled = minerals === 0;
+
+  if (t) {
+    oreMenuPillar.textContent = `放矿柱（${t.x}, ${t.y}）`;
+    oreMenuPillar.disabled = !t.info.ok || t.info.isPillar;
+    oreMenuPillar.title = t.info.ok
+      ? (t.info.isPillar ? '这格已经是矿柱' : (t.info.existing ? `会替换 ${t.info.existing}` : '空地'))
+      : t.info.reason;
+    oreMenuUnpillar.textContent = `移除矿柱（${t.x}, ${t.y}）`;
+    oreMenuUnpillar.disabled = !t.info.isPillar;
+    oreMenuUnpillar.title = t.info.isPillar ? `移除 ${t.info.existing}` : '这格没有矿柱';
+  } else {
+    oreMenuPillar.textContent = '放矿柱（在格子上右击）';
+    oreMenuPillar.disabled = true;
+    oreMenuPillar.title = '';
+    oreMenuUnpillar.textContent = '移除矿柱';
+    oreMenuUnpillar.disabled = true;
+    oreMenuUnpillar.title = '';
+  }
+
+  for (const type of BUILDING_TYPES) {
+    const button = oreBuildButtons[type.id];
+    const info = t && t.buildings ? t.buildings[type.id] : null;
+    button.textContent = `放${type.short}（${type.width}×${type.height}）`;
+    button.disabled = !info || !info.ok;
+    button.title = info
+      ? (info.ok
+        ? `${type.full} · ${type.role}；会清掉地基上的矿/树`
+        : info.reason)
+      : '先在格子上右击';
+  }
+
+  oreMenu.hidden = false;
+  const box = oreMenu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(clientX, window.innerWidth - box.width - 8));
+  const top = Math.max(8, Math.min(clientY, window.innerHeight - box.height - 8));
+  oreMenu.style.left = `${left}px`;
+  oreMenu.style.top = `${top}px`;
+}
+
+function hideOreMenu() {
+  oreMenu.hidden = true;
+  oreEdit.buildPreview = null;
+  if (oreEdit.target) {
+    oreEdit.target = null;
+    if (!oreLayer.hidden) drawOre();
   }
 }
 
-/** What the cell under the pointer means, in the generator's own terms. */
-function describeCell(cell) {
-  if (!cell) return { ok: false, text: '这里在地图外。' };
-  const flags = cellFlags(cellGrid, cell.x, cell.y);
-  if (!(flags & CELL_IN_MAP)) return { ok: false, text: `(${cell.x}, ${cell.y}) 在地图菱形之外。` };
-  if (!(flags & CELL_PASSABLE)) return { ok: false, text: `(${cell.x}, ${cell.y}) 不是可通行地面（水面/崖/坡）。` };
-  const clash = startEdit.points.some(
-    (p, i) => i !== startEdit.selected && p.x === cell.x && p.y === cell.y);
-  if (clash) return { ok: false, text: `(${cell.x}, ${cell.y}) 已经有别的出生点。` };
-  return { ok: true, text: `放到 (${cell.x}, ${cell.y})。` };
+/** Replaces mapBytes with an edited text and refreshes the download link. */
+function commitMapText(text) {
+  mapBytes = encodeLatin1(text);
+  // The edit rewrote the text, preview sections included.  The renderer and a
+  // following embedPreview must work from the map WITHOUT them, or the preview
+  // would be re-added on top of the old bytes and the edit (ore, ore decorations,
+  // neutral buildings) would silently disappear from the download.
+  mapBaseBytes = stripPreviewSections(mapBytes);
+  ++mapSerial;
+  if (mapUrl) URL.revokeObjectURL(mapUrl);
+  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
+  downloadEl.href = mapUrl;
+  oreEdit.cache = null;
+  refreshOreSelection();
+  drawOre();
 }
 
-function updateHover(natural) {
-  const cell = natural ? pickCell(cellGrid, renderMeta, natural.x, natural.y) : null;
-  if (!natural) { startEdit.hover = null; drawStarts(); return; }
-  const info = describeCell(cell);
-  startEdit.hover = cell ? { x: cell.x, y: cell.y, ok: info.ok } : null;
-  setHint(info.text, info.ok ? 'ok' : 'bad');
-  drawStarts();
-}
+/** Paints one mineral family (ore 102..113 or gems 27..38) into the selection. */
+function applyMineralEdit(family, label) {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
+  const text = decodeLatin1(mapBytes);
+  // Fresh arrays on purpose: the cached grids belong to the map on disk, and a
+  // failed write below must not leave them half-painted.
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能放矿。', 'bad'); return; }
 
-function commitHover() {
-  const hover = startEdit.hover;
-  if (!hover || !hover.ok || startEdit.selected < 0) return false;
-  const pt = startEdit.points[startEdit.selected];
-  pt.x = hover.x;
-  pt.y = hover.y;
-  startEdit.hover = null;
-  const info = describeCell({ x: pt.x, y: pt.y });
-  setHint(`出生点 ${pt.number} → (${pt.x}, ${pt.y})。按「应用并重新预览」出图。`,
-          info.ok ? 'ok' : '');
-  drawStarts();
-  return true;
-}
-
-/** Nearest start to the pointer, in CSS pixels, within `limit`. */
-function nearestStart(natural) {
-  if (!natural || !startsLayer.clientWidth || !previewImg.naturalWidth) return -1;
-  const s = startsLayer.clientWidth / previewImg.naturalWidth;
-  let best = -1;
-  let bestD = Infinity;
-  for (let i = 0; i < startEdit.points.length; ++i) {
-    const c = projectCell(cellGrid, renderMeta, startEdit.points[i].x, startEdit.points[i].y);
-    const d = Math.hypot((c.x - natural.x) * s, (c.y - natural.y) * s);
-    if (d < bestD) { bestD = d; best = i; }
+  const result = paintMineralCells({
+    grid: cellGrid, cells: oreEdit.cells,
+    ids: grids.ids, data: grids.data, occupied: cache.occupied,
+    family, stage: family === GEM_OVERLAY_START ? GEM_DATA : ORE_DATA,
+  });
+  if (!result.painted) {
+    setOreHint(`选区里没有可放${label}的空地。`, 'bad');
+    return;
   }
-  return bestD <= 18 ? best : -1;
+
+  const next = writeOverlayGrids(text, grids.ids, grids.data);
+  if (next === null) {
+    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
+    return;
+  }
+  commitMapText(next);
+  let detail = `${result.existing} 格已有${label}`;
+  if (result.other) detail += `，${result.other} 格其他矿`;
+  detail += `，${result.blocked} 格不可放`;
+  setOreHint(`已放 ${result.painted} 格${label}（${detail}），正在重新出图……`, 'ok');
+  mark(`ore: 已放 ${result.painted} 格${label}（${detail}），重新出图`);
+  // 地图变了，参数集没变 —— 和出生点编辑同一条规矩：分享码描述生成输入，
+  // 不描述生成后的手工编辑。
+  startRender();
 }
 
-startsEditBtn.addEventListener('click', () => {
-  if (startEdit.on) leaveStartEdit();
-  else if (cellGrid && renderMeta && mapBytes) enterStartEdit();
-  else setHint('先生成并渲染一张图。', 'bad');
-});
+/** Clears any tiberium (green ore and gems) from the selection. */
+function applyClearMinerals() {
+  const cache = ensureOreContext();
+  if (!cache || !oreEdit.rect || !oreEdit.cells.length) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]，不能清矿。', 'bad'); return; }
 
-startsLayer.addEventListener('pointerdown', (event) => {
-  if (!startEdit.on) return;
-  const natural = toNatural(event);
-  if (!natural) return;
-  const hit = nearestStart(natural);
-  if (hit >= 0) startEdit.selected = hit;
-  if (startEdit.selected < 0) return;
-  startEdit.dragging = true;
-  try { startsLayer.setPointerCapture(event.pointerId); } catch (err) { /* no capture */ }
-  updateHover(natural);
+  const result = clearMineralCells({ cells: oreEdit.cells, ids: grids.ids, data: grids.data });
+  if (!result.cleared) { setOreHint('选区里没有矿。', 'bad'); return; }
+
+  let next = writeOverlayGrids(text, grids.ids, grids.data);
+  if (next === null) {
+    setOreHint('写回 [OverlayPack] 失败，地图没有改动。', 'bad');
+    return;
+  }
+  // 清矿时把矿柱装饰树（TIBTRE）一起收掉：它们是矿石的附属物，留在草地上
+  // 就是悬空的树。 放矿不添加装饰树（overlay 本身已经能画）。
+  next = removeOreDecorations(next, result.packed);
+  commitMapText(next);
+  setOreHint(`已清除 ${result.cleared} 格矿，正在重新出图……`, 'ok');
+  mark(`ore: 已清除 ${result.cleared} 格矿，重新出图`);
+  startRender();
+}
+
+/** The single-cell 放矿柱 action.  `target` is captured before the menu closes. */
+function applyPillar(target) {
+  const cache = ensureOreContext();
+  if (!cache || !target) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]。', 'bad'); return; }
+
+  const result = placePillar({
+    grid: cellGrid, text, ids: grids.ids, data: grids.data,
+    x: target.x, y: target.y,
+  });
+  if (!result.ok) { setOreHint(result.reason, 'bad'); return; }
+  if (!result.changed) {
+    setOreHint(`(${target.x}, ${target.y}) 已经是 ${result.name}。`, 'ok');
+    return;
+  }
+
+  let next = result.removedOverlay !== null
+    ? writeOverlayGrids(result.text, grids.ids, grids.data)
+    : result.text;
+  if (next === null) { setOreHint('写回地图失败，地图没有改动。', 'bad'); return; }
+
+  let extra = '';
+  if (result.removedObject) extra += `，替换了 ${result.removedObject}`;
+  if (result.removedOverlay !== null) extra += `，去掉了 overlay ${result.removedOverlay}`;
+  commitMapText(next);
+  setOreHint(`已在 (${target.x}, ${target.y}) 放了 ${result.name}${extra}，正在重新出图……`, 'ok');
+  mark(`ore: 矿柱 ${result.name} @ (${target.x}, ${target.y})${extra}，重新出图`);
+  startRender();
+}
+
+/** Places one neutral tech building at the captured target cell. */
+function applyBuilding(typeId, target) {
+  const type = buildingType(typeId);
+  const cache = ensureOreContext();
+  if (!type || !cache || !target) return;
+  const text = decodeLatin1(mapBytes);
+  const grids = readOverlayGrids(text);
+  if (!grids) { setOreHint('这张地图没有 [OverlayPack]。', 'bad'); return; }
+  const structures = structureOccupiedCells(text);
+
+  const result = placeBuilding({
+    grid: cellGrid, text, ids: grids.ids, data: grids.data,
+    type, x: target.x, y: target.y, occupied: structures,
+  });
+  if (!result.ok) { setOreHint(result.reason, 'bad'); return; }
+
+  let next = result.clearedOverlays > 0
+    ? writeOverlayGrids(result.text, grids.ids, grids.data)
+    : result.text;
+  if (next === null) { setOreHint('写回地图失败，地图没有改动。', 'bad'); return; }
+
+  let extra = '';
+  if (result.clearedOverlays) extra += `，清掉 ${result.clearedOverlays} 格 overlay`;
+  if (result.removedObjects.length) extra += `，去掉 ${result.removedObjects.length} 个地形对象`;
+  commitMapText(next);
+  setOreHint(`已在 (${target.x}, ${target.y}) 放了${type.short}（${type.full}）`
+    + `${extra}，正在重新出图……`, 'ok');
+  mark(`ore: 已放中立建筑 ${type.id} @ (${target.x}, ${target.y})${extra}，重新出图`);
+  startRender();
+}
+
+/** Removes a TIBTRE from the cell (other [Terrain] objects stay). */
+function applyRemovePillar(target) {
+  if (!target) return;
+  const text = decodeLatin1(mapBytes);
+  const result = removePillar({ text, x: target.x, y: target.y });
+  if (!result.changed) {
+    setOreHint(result.reason || `(${target.x}, ${target.y}) 没有矿柱。`, 'bad');
+    return;
+  }
+  commitMapText(result.text);
+  setOreHint(`已移除 (${target.x}, ${target.y}) 的 ${result.removed}，正在重新出图……`, 'ok');
+  mark(`ore: 已移除矿柱 ${result.removed} @ (${target.x}, ${target.y})，重新出图`);
+  startRender();
+}
+
+oreLayer.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  const p = toNaturalOre(event);
+  if (!p) return;
+  hideOreMenu();
+  const q = clampNatural(p);
+  oreEdit.dragging = true;
+  oreEdit.rect = { x0: q.x, y0: q.y, x1: q.x, y1: q.y };
+  oreEdit.cells = [];
+  oreEdit.counts = null;
+  try { oreLayer.setPointerCapture(event.pointerId); } catch (err) { /* no capture */ }
+  drawOre();
   event.preventDefault();
 });
 
-startsLayer.addEventListener('pointermove', (event) => {
-  if (!startEdit.on) return;
-  const natural = toNatural(event);
-  if (startEdit.dragging) { updateHover(natural); return; }
-  // Hover feedback even when not dragging, but only near an existing start:
-  // a bare pointer crossing the map should not repaint the world.
-  if (nearestStart(natural) >= 0 || startEdit.hover) updateHover(natural);
+oreLayer.addEventListener('pointermove', (event) => {
+  if (!oreEdit.dragging) return;
+  const p = toNaturalOre(event);
+  if (!p) return;
+  const q = clampNatural(p);
+  oreEdit.rect = { x0: oreEdit.rect.x0, y0: oreEdit.rect.y0, x1: q.x, y1: q.y };
+  drawOre();
 });
 
-startsLayer.addEventListener('pointerup', (event) => {
-  if (!startEdit.on || !startEdit.dragging) return;
-  startEdit.dragging = false;
-  try { startsLayer.releasePointerCapture(event.pointerId); } catch (err) { /* not captured */ }
-  updateHover(toNatural(event));
-  commitHover();
+oreLayer.addEventListener('pointerup', (event) => {
+  if (!oreEdit.dragging) return;
+  oreEdit.dragging = false;
+  try { oreLayer.releasePointerCapture(event.pointerId); } catch (err) { /* not captured */ }
+  const r = oreEdit.rect;
+  if (!r) return;
+  const dragged = Math.hypot(r.x1 - r.x0, r.y1 - r.y0);
+  // A click is not a box: clearing is the least surprising answer, and it gives
+  // the user a way out without opening the menu.
+  if (dragged < 4) { clearOreSelection(); return; }
+  refreshOreSelection();
+  drawOre();
 });
 
-startsLayer.addEventListener('pointercancel', () => {
-  startEdit.dragging = false;
-  startEdit.hover = null;
-  drawStarts();
+oreLayer.addEventListener('pointercancel', () => {
+  oreEdit.dragging = false;
+  if (oreEdit.rect) { refreshOreSelection(); drawOre(); }
 });
 
-startsLayer.addEventListener('pointerleave', () => {
-  if (startEdit.dragging) return;
-  startEdit.hover = null;
-  drawStarts();
-});
-
-window.addEventListener('resize', () => {
-  if (!startEdit.on) return;
-  sizeStartsLayer();
-  drawStarts();
-});
-
-/** Writes the moved start positions into the map bytes and re-renders.
- *
- *  Only [Waypoints] changes.  [Terrain] and [Structures] keys are packed cells
- *  too, which is why the edit goes through rewriteWaypoint's section-scoped
- *  lookup instead of a text replacement. */
-function applyStartEdits() {
-  let text = startEdit.mapText;
-  let changed = 0;
-  for (const pt of startEdit.points) {
-    const now = readWaypoints(text).find((w) => w.number === pt.number);
-    if (now && now.x === pt.x && now.y === pt.y) continue;
-    const next = rewriteWaypoint(text, pt.number, pt.x, pt.y);
-    if (next === null) continue;
-    text = next;
-    changed++;
+oreLayer.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  
+  // The cell under the pointer is what 放矿柱/移除矿柱 act on; the box selection
+  // (if any) is what the region brushes act on.  Both can be offered at once.
+  const p = toNaturalOre(event);
+  const cell = p ? pickCell(cellGrid, renderMeta, p.x, p.y) : null;
+  oreEdit.buildPreview = null;
+  if (cell) {
+    const text = decodeLatin1(mapBytes);
+    const structures = structureOccupiedCells(text);
+    let info = describePillarTarget({ grid: cellGrid, text, x: cell.x, y: cell.y });
+    if (structures.has(overlayIndex(cell.x, cell.y))) {
+      info = { ok: false, reason: '这里有建筑，不能放矿柱。', existing: info.existing, isPillar: false };
+    }
+    const buildings = {};
+    for (const type of BUILDING_TYPES) {
+      buildings[type.id] = describeBuildingPlacement({
+        grid: cellGrid, type, x: cell.x, y: cell.y, occupied: structures,
+      });
+    }
+    oreEdit.target = { x: cell.x, y: cell.y, info, buildings };
+  } else {
+    oreEdit.target = null;
   }
-  if (!changed) { setHint('出生点没有变化。'); return; }
-  startEdit.mapText = text;
-  mapBytes = encodeLatin1(text);
-  // The spawn edit rewrote the text, preview sections included.  The renderer
-  // and a following embedPreview must work from the map WITHOUT them, or the
-  // preview would be re-added on top of the old bytes and the spawn edit would
-  // silently disappear from the download.
-  mapBaseBytes = stripPreviewSections(mapBytes);
-  ++mapSerial;
-  if (mapUrl) URL.revokeObjectURL(mapUrl);
-  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
-  downloadEl.href = mapUrl;
-  startEdit.original = startEdit.points.map((p) => ({ ...p }));
-  // 地图变了，参数集没变 —— 变的正是它不描述的那部分（编辑条旁边那句话说这件事）。
-  mark(`starts: 已写入 ${changed} 个出生点，重新出图`);
-  startRender();
+  if (!oreEdit.rect && !oreEdit.target) {
+    setOreHint('先拖拽框选一片区域，或在格子上右击。', 'bad');
+    return;
+  }
+  drawOre();
+  showOreMenu(event.clientX, event.clientY);
+});
+
+oreMenu.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const action = button.dataset.act;
+  // Capture the target before hiding (hiding clears the highlight).
+  const target = oreEdit.target;
+  hideOreMenu();
+  if (action === 'paint') applyMineralEdit(ORE_OVERLAY_START, '矿石');
+  else if (action === 'gems') applyMineralEdit(GEM_OVERLAY_START, '彩矿');
+  else if (action === 'pillar') applyPillar(target);
+  else if (action === 'unpillar') applyRemovePillar(target);
+  else if (action === 'clear') applyClearMinerals();
+  else if (action === 'cancel') clearOreSelection();
+  else if (action.startsWith('build-')) applyBuilding(action.slice('build-'.length), target);
+});
+
+// Hovering a building item previews its foundation on the map.
+for (const type of BUILDING_TYPES) {
+  const button = oreBuildButtons[type.id];
+  button.addEventListener('mouseenter', () => {
+    if (button.disabled) return;
+    oreEdit.buildPreview = type;
+    drawOre();
+  });
+  button.addEventListener('mouseleave', () => {
+    if (!oreEdit.buildPreview) return;
+    oreEdit.buildPreview = null;
+    drawOre();
+  });
 }
 
-startsApplyBtn.addEventListener('click', applyStartEdits);
+// Clicking anywhere else dismisses the menu; the canvas pointerdown above also
+// closes it before starting a new box.
+window.addEventListener('pointerdown', (event) => {
+  if (!oreMenu.hidden && !oreMenu.contains(event.target)) hideOreMenu();
+}, true);
 
-startsResetBtn.addEventListener('click', () => {
-  if (!startEdit.baseBytes) return;
-  mapBytes = startEdit.baseBytes.slice();
-  mapBaseBytes = stripPreviewSections(mapBytes);
-  ++mapSerial;
-  if (mapUrl) URL.revokeObjectURL(mapUrl);
-  mapUrl = URL.createObjectURL(new Blob([mapBytes], { type: 'application/octet-stream' }));
-  downloadEl.href = mapUrl;
-  startEdit.mapText = decodeLatin1(mapBytes);
-  startEdit.points = readWaypoints(startEdit.mapText).filter((w) => w.number < 8);
-  startEdit.original = startEdit.points.map((p) => ({ ...p }));
-  startEdit.selected = startEdit.points.length ? 0 : -1;
-  setHint('已还原成刚生成的地图，重新出图。');
-  mark('starts: 还原到生成时的地图');
-  startRender();
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!oreMenu.hidden) { hideOreMenu(); return; }
+  if (oreEdit.rect) clearOreSelection();
+});
+
+window.addEventListener('scroll', () => { if (!oreMenu.hidden) hideOreMenu(); }, true);
+
+window.addEventListener('resize', () => {
+  if (oreLayer.hidden) return;
+  sizeOreLayer();
+  drawOre();
+});
+
+// The render replaces the image (new natural size), so the canvases have to be
+// re-measured after it decodes.
+previewImg.addEventListener('load', () => {
+  sizeOreLayer();
+  drawOre();
+});
+
+
+// ===========================================================================
+// 地图编辑器（separate page）
+//
+// The editor is its own page now (editor.html): this button only hands it the
+// generated bytes and the generator's per-cell sidecar through IndexedDB.  The
+// extracted asset tree is already in OPFS, so the editor can render without the
+// game directory and without re-extracting.
+// ===========================================================================
+openEditorBtn.addEventListener('click', async () => {
+  if (!mapBytes || !cellGridBytes) return;
+  try {
+    const text = decodeLatin1(mapBytes);
+    const theaterMatch = /^\s*Theater\s*=\s*(\w+)/mi.exec(text);
+    const theater = theaterMatch && /snow/i.test(theaterMatch[1]) ? 1 : 0;
+    const code = (el('share-code')?.textContent || '').trim();
+    await saveGenerated({
+      bytes: mapBytes,
+      cells: cellGridBytes,
+      name: downloadEl.download || 'out.map',
+      theater,
+      code,
+    });
+    openEditorBtn.blur();
+    window.open('./editor.html', '_blank', 'noopener');
+  } catch (err) {
+    showError(`无法把地图交给编辑器：${(err && err.message) || err}`);
+  }
 });

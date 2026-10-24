@@ -33,6 +33,19 @@ cp "$ROOT/webapp/starts.js" "$OUT/"
 # leaving it out is not a missing thumbnail -- the module graph fails and the page
 # never boots at all.
 cp "$ROOT/webapp/preview-pack.js" "$OUT/"
+# 矿石绘制 (the preview's ore brush).  Same rule: app.js imports it; a missing
+# module means the whole page fails to boot (not just the brush).
+cp "$ROOT/webapp/ore.js" "$OUT/"
+# 中立建筑放置 (the preview's building brush).  Same rule again.
+cp "$ROOT/webapp/buildings.js" "$OUT/"
+# 地图编辑器 (a separate page) and the generator -> editor handoff.
+cp "$ROOT/webapp/editor.html" "$OUT/"
+cp "$ROOT/webapp/editor.js"   "$OUT/"
+cp "$ROOT/webapp/mapstore.js" "$OUT/"
+# 编辑器的中立建筑归属工具 (webapp/houses.js).  editor.js imports it, so the same
+# boot rule applies: a deploy without it serves a blank editor page, not merely one
+# missing a tool.
+cp "$ROOT/webapp/houses.js"   "$OUT/"
 # 画廊: a page plus the one file it reads.  The generator's header links to it, so a
 # deploy that forgets these ships a 404 behind that link (and a gallery that cannot
 # read its own list).

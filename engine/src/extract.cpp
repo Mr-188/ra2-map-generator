@@ -306,9 +306,15 @@ ExtractReport extractForGenerator(const ExtractOptions& opt)
     {
         struct Extra { const char* archive; const char* member; const char* name; };
         static const Extra kExtras[] = {
+            // Both theaters' palettes: the renderer is handed ONE extracted tree
+            // and the page can switch theater without re-extracting for the
+            // palette files (the tree is per theater, but these are tiny).
             {"ra2.mix",   "cache.mix",             "temperat.pal"},
             {"ra2.mix",   "cache.mix",             "isotem.pal"},
             {"ra2.mix",   "cache.mix",             "unittem.pal"},
+            {"ra2.mix",   "cache.mix",             "snow.pal"},
+            {"ra2.mix",   "cache.mix",             "isosno.pal"},
+            {"ra2.mix",   "cache.mix",             "unitsno.pal"},
             {"ra2.mix",   "cache.mix",             "anim.pal"},
             {"ra2md.mix", "localmd.mix",           "voxels.vpl"},
         };
@@ -496,6 +502,107 @@ ExtractReport extractForGenerator(const ExtractOptions& opt)
     tiles += art;
     tileBytes += artBytesWritten;
 
+    // ---- neutral tech building art (the preview's [Structures]) ------------
+    // The generator can place the six neutral tech buildings of [AI]
+    // NeutralTechBuildings.  The extracted tree used to carry only tiles, so
+    // the renderer silently drew none of them: a map with an oil derrick
+    // rendered as empty ground.  These are the renderer's own file names,
+    // including the NewTheater variants (second letter = theater: T temperate,
+    // A snow, G generic):
+    //   CAOILD/CAHOSP/CAAIRP/CAOUTP  -> CTOILD/CTHOSP/CTAIRP/CTOUTP on temperate,
+    //                                   CAOILD/... on snow
+    //   CAMACH/CAPOWR               -> CGMACH/CGPOWR (generic) on temperate,
+    //                                   CAMACH/CAPOWR on snow
+    //   CAOUTP turret               -> OUTP.vxl / OUTP.hva (voxel, local.mix)
+    // CNCMaps probes the theater name, then "G", then the original; extracting
+    // both theater spellings plus the generic one covers every fallback.
+    {
+        static const char* const kTemperateArt[] = {
+            "CTOILD.shp", "CTOILD_A.shp", "CTOILD_F.shp",
+            "CTOUTP.shp", "CTOUTP_A.shp", "CTOUTP_B.shp", "CTOUTP_C.shp",
+            "CTOUTP_D.shp", "CTOUTP_F.shp", "CTOUTPBB.shp",
+            "CTHOSP.shp", "CTHOSP_A.shp", "CTHOSP_F.shp",
+            "CTAIRP.shp", "CTAIRP_A.shp", "CTAIRP_F.shp",
+        };
+        static const char* const kSnowArt[] = {
+            "CAOILD.shp", "CAOILD_A.shp", "CAOILD_F.shp",
+            "CAOUTP.shp", "CAOUTP_A.shp", "CAOUTP_B.shp", "CAOUTP_C.shp",
+            "CAOUTP_D.shp", "CAOUTP_F.shp", "CAOUTPBB.shp",
+            "CAHOSP.shp", "CAHOSP_A.shp", "CAHOSP_F.shp",
+            "CAAIRP.shp", "CAAIRP_A.shp", "CAAIRP_F.shp",
+            "CAMACH.shp", "CAMACH_F.shp",
+            "CAPOWR.shp", "CAPOWR_A.shp",
+        };
+        const bool snow = (opt.theater == 1);
+        const char* const* names = snow ? kSnowArt : kTemperateArt;
+        const std::size_t count = snow
+            ? sizeof(kSnowArt) / sizeof(kSnowArt[0])
+            : sizeof(kTemperateArt) / sizeof(kTemperateArt[0]);
+        std::size_t buildingFiles = 0;
+        std::size_t buildingBytes = 0;
+        for (std::size_t k = 0; k < count; ++k)
+        {
+            std::vector<std::uint8_t> bytes;
+            if (!theaterSet.read(names[k], &bytes) || bytes.empty())
+            {
+                rep.missing.push_back(names[k]);
+                continue;
+            }
+            if (!writeFile(exeDir + "/" + names[k], bytes)) continue;
+            rep.written.push_back(std::string("x64/Release/") + names[k]);
+            ++buildingFiles;
+            buildingBytes += bytes.size();
+        }
+
+        // The "G" generic building art lives in a separate nested archive and is
+        // what a temperate render actually uses for CAMACH/CAPOWR.
+        ArchiveSet generic;
+        generic.addLayer(opt.gameDir, "ra2md.mix", "isogenmd.mix");
+        static const char* const kGenericArt[] = {
+            "CGMACH.shp", "CGMACH_F.shp", "CGPOWR.shp", "CGPOWR_A.shp",
+        };
+        for (const char* name : kGenericArt)
+        {
+            std::vector<std::uint8_t> bytes;
+            if (!generic.read(name, &bytes) || bytes.empty())
+            {
+                rep.missing.push_back(name);
+                continue;
+            }
+            if (!writeFile(exeDir + "/" + name, bytes)) continue;
+            rep.written.push_back(std::string("x64/Release/") + name);
+            ++buildingFiles;
+            buildingBytes += bytes.size();
+        }
+
+        // The outpost's turret is a voxel (.vxl + .hva), not a SHP.
+        ArchiveSet local;
+        local.addLayer(opt.gameDir, "ra2.mix", "local.mix");
+        static const char* const kVoxelArt[] = {"OUTP.vxl", "OUTP.hva"};
+        for (const char* name : kVoxelArt)
+        {
+            std::vector<std::uint8_t> bytes;
+            if (!local.read(name, &bytes) || bytes.empty())
+            {
+                rep.missing.push_back(name);
+                continue;
+            }
+            if (!writeFile(exeDir + "/" + name, bytes)) continue;
+            rep.written.push_back(std::string("x64/Release/") + name);
+            ++buildingFiles;
+            buildingBytes += bytes.size();
+        }
+
+        rep.bytes += buildingBytes;
+        if (buildingFiles > 0)
+        {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                          "x64/Release/*.shp/.vxl/.hva (%zu neutral tech "
+                          "building assets)", buildingFiles);
+            rep.written.push_back(buf);
+        }
+    }
 
     rep.bytes += tileBytes;
     if (tiles == 0)

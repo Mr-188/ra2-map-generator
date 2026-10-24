@@ -359,6 +359,10 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
     //   index = y * side + x
     //   flags bit 0 -- the cell exists in the map diamond (CellExists)
     //   flags bit 1 -- the ground is PassabilityType_Passable
+    //   flags bit 2 -- a building foundation cell (AltCellFlags_ContainsBuilding).
+    //                  [Structures] names only the anchor cell, so the other
+    //                  foundation cells cannot be found from the map text; the
+    //                  ore brush must not paint under a building.
     //
     // `side` is the DIAMOND, not the map's Width/Height: RA2 cell coordinates
     // (the ones [Waypoints] packs as X + 1000*Y) live in the padded diamond
@@ -395,6 +399,8 @@ EMSCRIPTEN_KEEPALIVE int mg_generate(int land, int theater, int timeOfDay, doubl
                     if (rmg.CellExists(x, y)) pair[1] |= 1;
                     if (cell && cell->Passability == PassabilityType_Passable)
                         pair[1] |= 2;
+                    if (cell && (cell->AltFlags & AltCellFlags_ContainsBuilding) != 0)
+                        pair[1] |= 4;
                     std::fwrite(pair, sizeof pair, 1, f);
                 }
             }

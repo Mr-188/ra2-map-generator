@@ -45,6 +45,8 @@ export function parseCellGrid(bytes) {
 /** flags bits, as written by mg_generate. */
 export const CELL_IN_MAP = 1;
 export const CELL_PASSABLE = 2;
+/** A building foundation cell (the ore brush must not paint under a building). */
+export const CELL_BUILDING = 4;
 
 export function cellFlags(grid, x, y) {
   if (!grid || x < 0 || y < 0 || x >= grid.width || y >= grid.height) return 0;

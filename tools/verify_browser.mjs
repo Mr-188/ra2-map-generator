@@ -453,120 +453,460 @@ try {
     check('the preview marks the start positions (red squares)',
           marks.red >= 1000, `${marks.red} red px, box ${JSON.stringify(marks.box)}`);
 
-    // ---- the start-point editor -----------------------------------------
-    //
-    // The feature's claim is "click the picture, the marker moves, the picture
-    // comes back".  That spans every piece (worker -> main thread -> renderer
-    // metadata -> [Waypoints] rewrite), so this is the only honest place to test
-    // it.  The click target is the amber marker the editor itself draws, read
-    // back off the overlay canvas -- which also catches the failure this had
-    // once: the overlay drawn somewhere other than the renderer's red square,
-    // because a canvas is a replaced element and `inset` alone does not stretch
-    // it (it kept its intrinsic 300x150).
-    const editorOn = await page.$eval('#starts-bar', (e) => e.classList.contains('on'))
-      .catch(() => false);
-    check('the start-point editor is offered after a render', editorOn);
+    // The generator page no longer hosts the start-point editor: that moved to
+    // editor.html, where the same render metadata and .cells sidecar are used.
+    const startUiLeft = await page.$$eval(
+      '#starts-bar, #starts-edit, #starts-layer, #starts-apply, #starts-reset',
+      (ns) => ns.length);
+    check('the generator no longer offers the start editor', startUiLeft === 0,
+          `${startUiLeft} start-editor nodes`);
 
-    if (editorOn) {
-      const waypointLines = async () => {
+    // ---- the ore brush -----------------------------------------------------
+    //
+    // The claim is "drag a box, right-click, the cells get ore and the picture
+    // comes back".  The map edit has to be the overlay sections and nothing else
+    // -- a text rewrite that also touched [Waypoints] or [Terrain] would look
+    // fine on screen and corrupt the map.  So this reads the download blob
+    // before and after and compares every other section.
+    const oreOn = await page.$eval('#ore-bar', (e) => e.classList.contains('on'))
+      .catch(() => false);
+    check('the ore brush is offered after a render', oreOn);
+
+    if (oreOn) {
+      const oreNote = await page.$eval('#ore-bar .starts-note', (e) => e.textContent.trim())
+        .catch(() => '');
+      check('the ore bar says the edit is not part of 参数集', /参数集/.test(oreNote), oreNote);
+
+      const mapSections = async () => {
         const href = await page.$eval('#download', (a) => a.href);
         return await page.evaluate(async (url) => {
           const buf = await (await fetch(url)).arrayBuffer();
           const text = new TextDecoder('latin1').decode(buf);
-          const sec = (/\[Waypoints\]([\s\S]*?)(?=\n\[|$)/i.exec(text) || [])[1] || '';
-          return sec.split('\n').map((s) => s.trim()).filter((s) => /^\d+\s*=/.test(s));
+          const section = (name) => {
+            const m = new RegExp('\\[' + name + '\\]([\\s\\S]*?)(?=\\n\\[|$)', 'i').exec(text);
+            return m ? m[1] : null;
+          };
+          return {
+            overlay: section('OverlayPack'),
+            overlayData: section('OverlayDataPack'),
+            waypoints: section('Waypoints'),
+            terrain: section('Terrain'),
+            structures: section('Structures'),
+          };
         }, href);
       };
 
-      const before = await waypointLines();
-      check('the map carries start waypoints', before.length > 0, before.join(' '));
-
-      await page.click('#starts-edit');
-      check('the editor opens on the preview',
-            await page.$eval('#starts-layer', (e) => !e.hidden));
-
-      const spot = await page.evaluate(() => {
-        const img = document.getElementById('preview-img');
-        const cv = document.getElementById('starts-layer');
-        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-        let n = 0, sx = 0, sy = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          if (d[i + 3] < 180) continue;
-          if (Math.abs(d[i] - 242) < 30 && Math.abs(d[i + 1] - 192) < 40
-              && Math.abs(d[i + 2] - 105) < 60) {
-            const p = i / 4;
-            n++; sx += p % cv.width; sy += Math.floor(p / cv.width);
-          }
-        }
-        if (!n) return null;
-        const r = cv.getBoundingClientRect();
-        const k = r.width / cv.width;
-        return { x: r.left + (sx / n) * k, y: r.top + (sy / n) * k,
-                 cellW: 60 * (r.width / img.naturalWidth), n };
+      // The page scrolls the preview into view smoothly; measure after that
+      // settles, otherwise a drag uses coordinates from a moving image.
+      await page.evaluate(() => document.getElementById('preview')?.scrollIntoView({ block: 'start' }));
+      await new Promise((r) => setTimeout(r, 250));
+      const box = await page.$eval('#preview-img', (e) => {
+        const r = e.getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
       });
-      check('the editor draws the selected start on the preview', !!spot,
-            spot ? `${spot.n} amber px` : 'none');
+      // Try a few spots: a box over water/cliffs selects cells but none can take
+      // ore, and the point is to find one that can.
+      const spots = [
+        [0.50, 0.50], [0.42, 0.52], [0.58, 0.48],
+        [0.50, 0.38], [0.50, 0.62], [0.36, 0.42], [0.64, 0.58],
+      ];
+      let picked = null;
+      for (const [fx, fy] of spots) {
+        const x = box.left + box.width * fx;
+        const y = box.top + box.height * fy;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x + Math.min(90, box.width * 0.08),
+                              y + Math.min(60, box.height * 0.08), { steps: 5 });
+        await page.mouse.up();
+        const hint = await page.$eval('#ore-hint', (e) => e.textContent).catch(() => '');
+        if (/可放矿石\s*[1-9]/.test(hint)) { picked = { x, y, hint }; break; }
+      }
+      check('dragging a box selects cells and says what can be painted',
+            !!picked, picked ? picked.hint.trim() : 'no placeable selection found');
 
-      if (spot) {
-        // One cell to the side: starts sit on cleared ground, so the neighbour is
-        // ground too.  Directions are tried because a start can sit at the edge of
-        // its clearing.
-        const dx = spot.cellW / 2;
-        const dy = spot.cellW / 4;
-        const targets = [
-          { x: spot.x + dx, y: spot.y + dy },
-          { x: spot.x - dx, y: spot.y - dy },
-          { x: spot.x + dx, y: spot.y - dy },
-          { x: spot.x - dx, y: spot.y + dy },
+      if (picked) {
+        await page.mouse.click(picked.x, picked.y, { button: 'right' });
+        const menuOpen = await page.$eval('#ore-menu', (e) => !e.hidden).catch(() => false);
+        check('right-click opens the ore menu', menuOpen);
+        const label = await page.$eval('#ore-menu [data-act="paint"]', (e) => e.textContent)
+          .catch(() => '');
+        check('the menu says how many cells the brush will fill',
+              /放矿石（[1-9]\d* 格）/.test(label), label.trim());
+
+        const before = await mapSections();
+        const codeBefore = await page.$eval('#share-code', (e) => e.textContent.trim());
+        const srcBefore = await page.$eval('#preview-img', (e) => e.src);
+
+        await page.click('#ore-menu [data-act="paint"]');
+        const painted = await page.waitForFunction((prev) => {
+          const i = document.getElementById('preview-img');
+          const err = document.getElementById('error')?.textContent || '';
+          if (err) return 'error:' + err;
+          const hint = document.getElementById('ore-hint')?.textContent || '';
+          if (!/已放 \d+ 格矿石/.test(hint)) return false;
+          return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+        }, { timeout: args.timeout, polling: 500 }, srcBefore);
+        check('the brush writes ore and re-renders', (await painted.jsonValue()) === true);
+
+        const hint = await page.$eval('#ore-hint', (e) => e.textContent);
+        check('the brush reports how many cells it painted', /已放 \d+ 格矿石/.test(hint),
+              hint.trim());
+
+        const after = await mapSections();
+        check('the [OverlayPack] section changed',
+              !!before.overlay && !!after.overlay && before.overlay !== after.overlay);
+        check('the [OverlayDataPack] section changed',
+              !!before.overlayData && !!after.overlayData
+              && before.overlayData !== after.overlayData);
+        check('waypoints, terrain and structures are untouched by the ore edit',
+              before.waypoints === after.waypoints
+              && before.terrain === after.terrain
+              && before.structures === after.structures);
+
+        const codeAfter = await page.$eval('#share-code', (e) => e.textContent.trim());
+        check('the share code is unchanged by the ore edit',
+              codeBefore === codeAfter, `${codeBefore} vs ${codeAfter}`);
+        const log = await page.$eval('#log', (e) => e.textContent);
+        check('the run log records the ore edit', /ore: 已放 \d+ 格矿石/.test(log));
+        check('the menu closed after painting',
+              await page.$eval('#ore-menu', (e) => e.hidden));
+
+        // ---- 彩矿 (gems) on a fresh box --------------------------------
+        // The green brush filled the first box's empty cells, so a new box is
+        // needed; the hint's 可放矿石 count is exactly the empty cells the gem
+        // brush will fill.
+        const gemSpots = [
+          [0.45, 0.42], [0.55, 0.42], [0.45, 0.58], [0.55, 0.58],
+          [0.40, 0.50], [0.60, 0.50], [0.50, 0.34], [0.50, 0.66],
+          [0.34, 0.50], [0.66, 0.50], [0.38, 0.38], [0.62, 0.62],
         ];
-        let moved = false;
-        let hint = '';
-        for (const t of targets) {
-          await page.mouse.click(t.x, t.y);
-          hint = await page.$eval('#starts-hint', (e) => e.textContent);
-          if (/出生点\s*\d+\s*→/.test(hint)) { moved = true; break; }
+        let gemBox = null;
+        for (const [fx, fy] of gemSpots) {
+          const x = box.left + box.width * fx;
+          const y = box.top + box.height * fy;
+          await page.mouse.move(x, y);
+          await page.mouse.down();
+          await page.mouse.move(x + Math.min(80, box.width * 0.07),
+                                y + Math.min(55, box.height * 0.07), { steps: 5 });
+          await page.mouse.up();
+          const hint = await page.$eval('#ore-hint', (e) => e.textContent).catch(() => '');
+          if (/可放矿石\s*[1-9]/.test(hint)) { gemBox = { x, y, hint }; break; }
         }
-        check('clicking the preview picks a cell for the selected start', moved, hint.trim());
+        check('a fresh box is found for the gem brush', !!gemBox,
+              gemBox ? gemBox.hint.trim() : 'no empty cells left');
 
-        if (moved) {
-          const codeBefore = await page.$eval('#share-code', (e) => e.textContent.trim());
-          const srcBefore = await page.$eval('#preview-img', (e) => e.src);
-          await page.click('#starts-apply');
-          await page.waitForFunction((prev) => {
+        if (gemBox) {
+          await page.mouse.click(gemBox.x, gemBox.y, { button: 'right' });
+          const gemLabel = await page.$eval('#ore-menu [data-act="gems"]', (e) => e.textContent)
+            .catch(() => '');
+          check('the menu offers 彩矿 with a cell count',
+                /放彩矿（[1-9]\d* 格）/.test(gemLabel), gemLabel.trim());
+          const beforeGem = await mapSections();
+          const codeGem = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcGem = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="gems"]');
+          const gemDone = await page.waitForFunction((prev) => {
             const i = document.getElementById('preview-img');
             const err = document.getElementById('error')?.textContent || '';
             if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/已放 \d+ 格彩矿/.test(hint)) return false;
             return i && i.src !== prev && i.complete && i.naturalWidth > 0;
-          }, { timeout: args.timeout, polling: 500 }, srcBefore);
-          const after = await waypointLines();
-          check('the moved start is written into the map and re-rendered',
-                JSON.stringify(before) !== JSON.stringify(after),
-                `${before.join(' ')} -> ${after.join(' ')}`);
+          }, { timeout: args.timeout, polling: 500 }, srcGem);
+          check('the gem brush writes 彩矿 and re-renders', (await gemDone.jsonValue()) === true);
+          const afterGem = await mapSections();
+          check('彩矿 changes the overlay sections only',
+                afterGem.overlay !== beforeGem.overlay
+                && afterGem.overlayData !== beforeGem.overlayData
+                && afterGem.waypoints === beforeGem.waypoints
+                && afterGem.terrain === beforeGem.terrain
+                && afterGem.structures === beforeGem.structures);
+          check('the share code is unchanged by the gem edit',
+                codeGem === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logGem = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the gem edit', /已放 \d+ 格彩矿/.test(logGem));
+        }
 
-          // 参数集 carries the generation inputs only, so it cannot reproduce a
-          // hand-moved start.  Two things have to hold: the editor says so, and the
-          // code itself is left alone (silently rewriting it would be worse).
-          const note = await page.$eval('#starts-note', (e) => e.textContent.trim());
-          check('the editor says a moved start is not part of 参数集',
-                /参数集/.test(note), note);
-          const codeAfter = await page.$eval('#share-code', (e) => e.textContent.trim());
-          check('the share code itself is unchanged by the edit',
-                codeBefore === codeAfter, `${codeBefore} vs ${codeAfter}`);
+        // ---- 矿柱 (a single cell, TIBTRE) ------------------------------
+        const pillarSpots = [
+          [0.50, 0.50], [0.48, 0.46], [0.52, 0.54], [0.44, 0.52], [0.56, 0.48],
+          [0.50, 0.40], [0.50, 0.60], [0.40, 0.44], [0.60, 0.56], [0.46, 0.58],
+        ];
+        let pillar = null;
+        for (const [fx, fy] of pillarSpots) {
+          const px = box.left + box.width * fx;
+          const py = box.top + box.height * fy;
+          await page.mouse.click(px, py, { button: 'right' });
+          const item = await page.$eval('#ore-menu [data-act="pillar"]', (b) => ({
+            disabled: b.disabled, label: b.textContent.trim(), title: b.title,
+          })).catch(() => null);
+          if (item && !item.disabled) { pillar = { px, py, ...item }; break; }
+        }
+        check('right-click on a cell offers 放矿柱', !!pillar,
+              pillar ? pillar.label : 'no passable cell under the tried points');
 
-          // Put the map back: the steps after this read the download blob and
-          // expect the freshly generated one.
-          const srcReset = await page.$eval('#preview-img', (e) => e.src);
-          await page.click('#starts-reset');
-          await page.waitForFunction((prev) => {
+        if (pillar) {
+          check('the pillar item names the target cell',
+                /放矿柱（\d+, \d+）/.test(pillar.label), pillar.label);
+          const beforePillar = await mapSections();
+          const codePillar = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcPillar = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="pillar"]');
+          const pillarDone = await page.waitForFunction((prev) => {
             const i = document.getElementById('preview-img');
+            const err = document.getElementById('error')?.textContent || '';
+            if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/已在 \(\d+, \d+\) 放了 TIBTRE/.test(hint)) return false;
             return i && i.src !== prev && i.complete && i.naturalWidth > 0;
-          }, { timeout: args.timeout, polling: 500 }, srcReset);
-          const restored = await waypointLines();
-          check('还原 restores the generated map',
-                JSON.stringify(restored) === JSON.stringify(before), restored.join(' '));
+          }, { timeout: args.timeout, polling: 500 }, srcPillar);
+          check('the pillar is written and re-rendered', (await pillarDone.jsonValue()) === true);
+          const afterPillar = await mapSections();
+          check('矿柱 changes [Terrain] and leaves the rest alone',
+                afterPillar.terrain !== beforePillar.terrain
+                && afterPillar.waypoints === beforePillar.waypoints
+                && afterPillar.structures === beforePillar.structures);
+          check('the pillar text names a TIBTRE',
+                /TIBTRE0[1-3]/.test(afterPillar.terrain || ''));
+          check('the share code is unchanged by the pillar edit',
+                codePillar === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logPillar = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the pillar edit', /矿柱 TIBTRE0[1-3]/.test(logPillar));
+        }
+
+        // ---- 放中立建筑：油井（2×2） ---------------------------------
+        // The tree now carries the building art, so this also checks the whole
+        // path from the menu to a real [Structures] line and a re-render.
+        const buildSpots = [
+          [0.50, 0.50], [0.46, 0.44], [0.54, 0.56], [0.42, 0.54], [0.58, 0.46],
+          [0.50, 0.36], [0.50, 0.64], [0.38, 0.46], [0.62, 0.54], [0.44, 0.60],
+          [0.60, 0.40], [0.34, 0.58], [0.66, 0.42], [0.48, 0.32], [0.52, 0.68],
+        ];
+        let buildSpot = null;
+        for (const [fx, fy] of buildSpots) {
+          const px = box.left + box.width * fx;
+          const py = box.top + box.height * fy;
+          await page.mouse.click(px, py, { button: 'right' });
+          const item = await page.$eval('#ore-menu [data-act="build-CAOILD"]', (b) => ({
+            disabled: b.disabled, label: b.textContent.trim(), title: b.title,
+          })).catch(() => null);
+          if (item && !item.disabled) { buildSpot = { px, py, ...item }; break; }
+        }
+        check('right-click on flat ground offers 放油井', !!buildSpot,
+              buildSpot ? buildSpot.label : 'no valid 2x2 foundation under the tried points');
+
+        if (buildSpot) {
+          check('the oil-derrick item names its foundation',
+                /放油井（2×2）/.test(buildSpot.label), buildSpot.label);
+          const beforeBuild = await mapSections();
+          const codeBuild = await page.$eval('#share-code', (e) => e.textContent.trim());
+          const srcBuild = await page.$eval('#preview-img', (e) => e.src);
+          await page.click('#ore-menu [data-act="build-CAOILD"]');
+          const built = await page.waitForFunction((prev) => {
+            const i = document.getElementById('preview-img');
+            const err = document.getElementById('error')?.textContent || '';
+            if (err) return 'error:' + err;
+            const hint = document.getElementById('ore-hint')?.textContent || '';
+            if (!/放了油井/.test(hint)) return false;
+            return i && i.src !== prev && i.complete && i.naturalWidth > 0;
+          }, { timeout: args.timeout, polling: 500 }, srcBuild);
+          check('the building is written and re-rendered', (await built.jsonValue()) === true);
+
+          const afterBuild = await mapSections();
+          const newLine = (afterBuild.structures || '').split('\n')
+            .find((l) => /,CAOILD,/.test(l) && !(beforeBuild.structures || '').includes(l));
+          check('a Neutral CAOILD [Structures] line appears',
+                !!newLine && /^\d+=Neutral,CAOILD,256,\d+,\d+,0,None,0,0,1,0,0,None,None,None,1,0$/
+                  .test(newLine.trim()),
+                newLine ? newLine.trim() : 'no new line');
+          check('the building edit leaves [Waypoints] and the share code alone',
+                afterBuild.waypoints === beforeBuild.waypoints
+                && codeBuild === await page.$eval('#share-code', (e) => e.textContent.trim()));
+          const logBuild = await page.$eval('#log', (e) => e.textContent);
+          check('the run log records the building edit', /中立建筑 CAOILD/.test(logBuild));
+        }
+
+        // ---- the map editor is its own page ----------------------------
+        // The generator stores the current bytes + sidecar in IndexedDB and opens
+        // editor.html.  The editor must load them, restore the cached assets
+        // without the game directory, render, edit and undo.
+        let editorPage = null;
+        try {
+          const targetPromise = browser.waitForTarget((t) => t.url().includes('editor.html'),
+            { timeout: 60000 });
+          await page.click('#open-editor');
+          const target = await targetPromise;
+          editorPage = await target.page();
+        } catch (err) {
+          check('the editor opens as its own page', false, String((err && err.message) || err));
+        }
+        check('the editor opens as its own page', !!editorPage);
+        if (editorPage) {
+          editorPage.on('pageerror', (e) => lines.push(`[editor pageerror] ${e.message}`));
+          await editorPage.setViewport({ width: 1280, height: 960 });
+          await editorPage.waitForFunction(() => {
+            const i = document.getElementById('map-img');
+            const busy = document.getElementById('busy');
+            return i && i.complete && i.naturalWidth > 0 && busy && busy.hidden
+              && document.getElementById('empty-state').hidden;
+          }, { timeout: 300000, polling: 500 });
+          const mapName = await editorPage.$eval('#map-name', (e) => e.textContent.trim());
+          check('the editor loaded the generated map', /^\S+\.(yrm|map)$/i.test(mapName), mapName);
+          const toolCount = await editorPage.$$eval('.tool', (ns) => ns.length);
+          check('the editor has the unified tool palette', toolCount >= 11, `${toolCount} tools`);
+
+          const editorSections = async () => {
+            const href = await editorPage.$eval('#download-map', (a) => a.href);
+            return await editorPage.evaluate(async (url) => {
+              const buf = await (await fetch(url)).arrayBuffer();
+              const text = new TextDecoder('latin1').decode(buf);
+              const section = (name) => {
+                const m = new RegExp('\\[' + name + '\\]([\\s\\S]*?)(?=\\n\\[|$)', 'i').exec(text);
+                return m ? m[1] : null;
+              };
+              return {
+                overlay: section('OverlayPack'),
+                overlayData: section('OverlayDataPack'),
+                waypoints: section('Waypoints'),
+                terrain: section('Terrain'),
+                structures: section('Structures'),
+              };
+            }, href);
+          };
+          const ebox = await editorPage.$eval('#map-img', (e) => {
+            const r = e.getBoundingClientRect();
+            return { left: r.left, top: r.top, width: r.width, height: r.height };
+          });
+          // freeform selection: the brush is a browsing tool next to the box
+          await editorPage.click('[data-tool="brush"]');
+          check('the brush is a browsing tool and highlights',
+                await editorPage.$eval('[data-tool="brush"]', (e) => e.classList.contains('on')));
+          const selTotal = async () => {
+            const t = await editorPage.$eval('#sel-total', (e) => e.textContent.trim());
+            return t === '—' ? 0 : Number(t);
+          };
+          const bx = ebox.left + ebox.width * 0.50;
+          const by = ebox.top + ebox.height * 0.50;
+          await editorPage.mouse.move(bx - 40, by - 20);
+          await editorPage.mouse.down({ button: 'left' });
+          await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
+          await editorPage.mouse.up({ button: 'left' });
+          const brushAdded = await selTotal();
+          check('the brush paints cells into the selection', brushAdded > 0,
+                `${brushAdded} cells`);
+          await editorPage.mouse.move(bx - 40, by - 20);
+          await editorPage.mouse.down({ button: 'right' });
+          await editorPage.mouse.move(bx + 40, by + 20, { steps: 8 });
+          await editorPage.mouse.up({ button: 'right' });
+          const brushErased = await selTotal();
+          check('right-drag erases cells from the selection', brushErased < brushAdded,
+                `${brushAdded} -> ${brushErased}`);
+          await editorPage.click('#sel-clear');
+          check('clear selection empties the brush selection', (await selTotal()) === 0);
+
+          // start points are editable here too, with the same undo
+          await editorPage.click('[data-tool="start"]');
+          const startCount = await editorPage.$$eval('#start-list button', (ns) => ns.length);
+          check('the editor exposes the start points', startCount >= 1, `${startCount} starts`);
+          const beforeStart = await editorSections();
+          let startHint = '';
+          let startMoved = false;
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.46],
+            [0.58, 0.54], [0.50, 0.42], [0.50, 0.60]]) {
+            const sx = ebox.left + ebox.width * fx;
+            const sy = ebox.top + ebox.height * fy;
+            await editorPage.mouse.click(sx, sy);
+            startHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/出生点 \d+ →/.test(startHint)) { startMoved = true; break; }
+          }
+          check('clicking a cell moves the selected start', startMoved, startHint.trim());
+          if (startMoved) {
+            const afterStart = await editorSections();
+            check('the start edit changes only [Waypoints]',
+                  afterStart.waypoints !== beforeStart.waypoints
+                  && afterStart.terrain === beforeStart.terrain
+                  && afterStart.structures === beforeStart.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            const undoneStart = await editorSections();
+            check('undo restores the start point',
+                  undoneStart.waypoints === beforeStart.waypoints);
+          }
+
+          const beforeEditor = await editorSections();
+          await editorPage.click('[data-tool="select"]');
+          await editorPage.click('[data-tool="ore"]');
+          let paintedHint = '';
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46], [0.42, 0.48],
+            [0.58, 0.52], [0.50, 0.44], [0.50, 0.58], [0.38, 0.56], [0.62, 0.44]]) {
+            const ex = ebox.left + ebox.width * fx;
+            const ey = ebox.top + ebox.height * fy;
+            await editorPage.mouse.move(ex, ey);
+            await editorPage.mouse.down();
+            await editorPage.mouse.move(ex + Math.min(90, ebox.width * 0.07),
+                                        ey + Math.min(60, ebox.height * 0.07), { steps: 6 });
+            await editorPage.mouse.up();
+            paintedHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/已放 \d+ 格矿石/.test(paintedHint)) break;
+          }
+          check('box mode + 放矿石 tool paints and reports',
+                /已放 \d+ 格矿石/.test(paintedHint), paintedHint.trim());
+          if (/已放 \d+ 格矿石/.test(paintedHint)) {
+            const afterEditor = await editorSections();
+            check('the editor edit changes only the overlay sections',
+                  afterEditor.overlay !== beforeEditor.overlay
+                  && afterEditor.overlayData !== beforeEditor.overlayData
+                  && afterEditor.waypoints === beforeEditor.waypoints
+                  && afterEditor.terrain === beforeEditor.terrain
+                  && afterEditor.structures === beforeEditor.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+            const undoneEditor = await editorSections();
+            check('undo restores the map the editor started from',
+                  undoneEditor.overlay === beforeEditor.overlay
+                  && undoneEditor.overlayData === beforeEditor.overlayData);
+          }
+          // free mode: brush selection tool sets the area mode, then 放矿石
+          // paints the stroked cells on release.
+          await editorPage.click('#sel-clear');
+          const beforeFree = await editorSections();
+          await editorPage.click('[data-tool="brush"]');
+          await editorPage.click('[data-tool="ore"]');
+          let freeHint = '';
+          for (const [fx, fy] of [[0.50, 0.50], [0.46, 0.54], [0.54, 0.46]]) {
+            const ex = ebox.left + ebox.width * fx;
+            const ey = ebox.top + ebox.height * fy;
+            await editorPage.mouse.move(ex, ey);
+            await editorPage.mouse.down();
+            await editorPage.mouse.move(ex + 70, ey + 45, { steps: 6 });
+            await editorPage.mouse.up();
+            freeHint = await editorPage.$eval('#hint', (e) => e.textContent).catch(() => '');
+            if (/已放 \d+ 格矿石/.test(freeHint)) break;
+          }
+          check('free mode + 放矿石 tool paints on release',
+                /已放 \d+ 格矿石/.test(freeHint), freeHint.trim());
+          if (/已放 \d+ 格矿石/.test(freeHint)) {
+            const afterFree = await editorSections();
+            check('free mode changes only the overlay sections',
+                  afterFree.overlay !== beforeFree.overlay
+                  && afterFree.overlayData !== beforeFree.overlayData
+                  && afterFree.waypoints === beforeFree.waypoints
+                  && afterFree.terrain === beforeFree.terrain
+                  && afterFree.structures === beforeFree.structures);
+            await editorPage.click('#undo');
+            await editorPage.waitForFunction(
+              () => /已撤销/.test(document.getElementById('hint')?.textContent || ''),
+              { timeout: 60000 });
+          }
+
+          await editorPage.close();
         }
       }
-      await page.click('#starts-edit').catch(() => {});
     }
 
     if (args.shot) {
@@ -776,7 +1116,9 @@ try {
   let decoded = null;
   try { decoded = decodeParams(shareCode); } catch (err) { decoded = { error: String(err.message || err) }; }
   check('参数集 appears with the map and decodes to the run that made it',
-        shareBlockShown && shareCode.length === 13
+        // The run pins a terrain seed (map-seed 4242 below), so the code is
+        // the 19-character form (78 + 32 bits); 13 is the no-terrain-seed form.
+        shareBlockShown && shareCode.length === 19
           && decoded.land === 1 && decoded.theater === 0 && decoded.time === 0
           && decoded.players === 2 && decoded.ore === 1 && decoded.single === false
           && decoded.symmetry === 0 && decoded.seed === 20260913
@@ -1086,6 +1428,10 @@ try {
   await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
   check('gallery page opened', true, galleryUrl);
 
+  // Request interception is enabled only for the empty-gallery fixture; the
+  // handler is registered unconditionally, so it must not call req.continue()
+  // on a page whose interception is off (puppeteer throws then).
+  let galIntercepting = false;
   if (listText.fixture) {
     const shipped = await gal.evaluate(() => ({
       count: document.getElementById('count').textContent.trim(),
@@ -1099,9 +1445,11 @@ try {
           shipped.maps === 0 && /还没有收录地图/.test(shipped.empty) && shipped.tile
             && shipped.more === true && shipped.banner === '' && /^0 \/ 0/.test(shipped.count),
           JSON.stringify(shipped));
+    galIntercepting = true;
     await gal.setRequestInterception(true);
   }
   gal.on('request', (req) => {
+    if (!galIntercepting) return;
     const url = req.url().split('?')[0];
     if (listText.fixture && url.endsWith('/gallery.txt')) {
       return req.respond({ contentType: 'text/plain; charset=utf-8', body: listText.text });
@@ -1286,14 +1634,17 @@ try {
   const overlap = Math.min(backAgain.length, afterAgain.length);
   const sameSpots = afterAgain.slice(0, overlap).filter((c, i) => c === backAgain[i]).length;
   check('换一批 draws a new order without a reload',
-        overlap > 1 && sameSpots < overlap && afterAgain.every((c) => fileCodes.includes(c)),
+        overlap >= 1 && (overlap <= 1 || sameSpots < overlap)
+          && afterAgain.every((c) => fileCodes.includes(c)),
         `same positions: ${sameSpots}/${overlap} drawn=${afterAgain.length}`);
 
   await gal.goto(galleryUrl, { waitUntil: 'networkidle2', timeout: 60000 });
   await gal.waitForFunction(() => document.getElementById('grid') !== null, { timeout: 30000 });
   const nextLoad = await drawnCodes();
+  // With exactly one entry there is no other order to come back in; the shuffle
+  // itself is exercised by the fixture only when the shipped list is empty.
   check('a reload comes back in a different order (1 in 26! by chance)',
-        nextLoad.join() !== afterAgain.join(),
+        nextLoad.length <= 1 || nextLoad.join() !== afterAgain.join(),
         `same positions: ${nextLoad.filter((c, i) => c === afterAgain[i]).length}/${nextLoad.length}`);
   await gal.select('#f-sort', 'new');
   await new Promise((r) => setTimeout(r, 250));
@@ -1302,7 +1653,7 @@ try {
   await new Promise((r) => setTimeout(r, 250));
   const oldest = await gal.$eval('.card:not(.tile) .meta', (m) => m.textContent.trim());
   check('最新 / 最早 are still real date sorts (and disagree)',
-        newest !== oldest, `${newest} vs ${oldest}`);
+        afterAgain.length <= 1 || newest !== oldest, `${newest} vs ${oldest}`);
   await gal.select('#f-sort', 'random');
   await new Promise((r) => setTimeout(r, 250));
   }

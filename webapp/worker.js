@@ -120,7 +120,11 @@ const CACHE_DIR = 'ra2-rmg-assets';
 // theatre cache meant "roll the theatre and you may have to pick the folder again",
 // which is exactly the freedom 随机 in the 剧场 row is supposed to give.  v1 files are
 // removed on the next save.
-const CACHE_VERSION = 2;
+// v3: the extraction now also carries the neutral tech-building SHP/VXL art and
+// both theatres' palettes, so the preview can draw [Structures].  A v2 cache has
+// none of those files and would keep rendering buildings invisible; bumping the
+// version discards it.
+const CACHE_VERSION = 3;
 const CACHE_BIN = 'assets.bin';
 const CACHE_JSON = 'assets.json';
 // The theatres whose assets have been extracted into the CURRENT MEMFS tree.  The

@@ -46,6 +46,17 @@ export DOTNET_NOLOGO=1
 [ -d "$UNWIND" ] && LD_LIBRARY_PATH="$UNWIND${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LD_LIBRARY_PATH
 
+# The editor's incremental render session needs three small hooks in the
+# reference source (KeepAlive / LastMap / Map.Reload).  They live here as a
+# patch, not as committed reference code: reference_impl/ is fetched separately
+# and is not ours to commit.  Skip when this copy already has the hook.
+CCMAPS_PATCH="$ROOT/engine/render/ccmaps-render-session.patch"
+if [ -f "$CCMAPS_PATCH" ] && [ -f "$SRC/CNCMaps.Shared/RenderSettings.cs" ] \
+   && ! grep -q "KeepAlive" "$SRC/CNCMaps.Shared/RenderSettings.cs"; then
+    echo "[render] applying ccmaps render-session patch"
+    patch -p1 --no-backup-if-mismatch -r /dev/null -d "$(dirname "$SRC")" < "$CCMAPS_PATCH"
+fi
+
 # Our entry point lives in the tracked tree; the reference project is gitignored,
 # so it is copied in on every build rather than edited in place.
 cp "$ROOT/engine/render/WebEntry.cs" "$SRC/CNCMaps.Renderer/WebEntry.cs"

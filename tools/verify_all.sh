@@ -22,6 +22,17 @@
 #                   describes the map it was written from, pixel <-> cell inverts
 #                   the renderer's own transform, and the [Waypoints] rewrite
 #                   changes exactly one number in exactly one section
+#   verify_houses   the editor's neutral-building handover: [Structures] tag +
+#                   trigger/event/action (4475+slot-1), multiplayer only, clear
+#                   removes exactly those lines, foreign triggers stay intact
+#   verify_ore      the preview's ore brush: Format80 matches the Python oracle in
+#                   both directions, the [OverlayPack]/[OverlayDataPack] rewrite
+#                   changes nothing else, the brush skips water/gems/objects, and
+#                   (with a native renderer) painted cells' pixels really change
+#   verify_buildings the neutral tech-building brush: foundations come from the
+#                   sidecar (water/cliffs/slopes/existing buildings refused), the
+#                   [Structures] line is the writer's shape, and the extracted
+#                   tree really draws the placed building in a native render
 #   verify_render   the extracted loose tree renders identically to the .mix files
 #   verify_uicontract  the page and the worker agree on their message vocabulary
 #   verify_deploy   the deployment path refuses to publish unbuilt or stale bytes
@@ -168,6 +179,40 @@ if [ -f build/engine-web-node/mg_engine.js ]; then
     # shellcheck disable=SC2086
     step verify_starts node tools/verify_starts.mjs \
         --web build/engine-web-node --game "$GD2" --product webapp $STARTS_ARGS
+fi
+
+# The preview's ore brush.  The codec and the overlay rewrite need only the node
+# wasm build (and python3 for the maptools oracle); the pixel evidence needs the
+# native renderer, and proves the painted cells are what the image is drawn from.
+if [ -f build/engine-web-node/mg_engine.js ]; then
+    GD3=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}
+    ORE_ARGS=""
+    ORE_RENDERER=reference_impl/ccmaps-net/CNCMaps.Renderer/bin/Release/net10.0/CNCMaps.Renderer.dll
+    if [ -f "$ORE_RENDERER" ] && [ -d build/flat ]; then
+        ORE_ARGS="--renderer $ORE_RENDERER --mixdir build/flat"
+    fi
+    # shellcheck disable=SC2086
+    step verify_ore node tools/verify_ore.mjs \
+        --web build/engine-web-node --game "$GD3" --product webapp $ORE_ARGS
+fi
+
+# The editor's neutral-building ownership tool (webapp/houses.js).  Pure node:
+# the rewrite is a text transform, so it needs neither the engine nor a browser.
+step verify_houses node tools/verify_houses.mjs
+
+# The preview's neutral tech buildings (oil derrick / machine shop / outpost).
+# The map side needs only the node wasm build; the pixel evidence also needs the
+# native renderer and mgextract, and proves the extracted tree carries the art.
+if [ -f build/engine-web-node/mg_engine.js ]; then
+    GD4=${GAME:-$(python3 -c 'import sys;sys.path.insert(0,".");from maptools.game_dir import find_game_dir;print(find_game_dir() or "")')}
+    BUILD_ARGS=""
+    BUILD_RENDERER=reference_impl/ccmaps-net/CNCMaps.Renderer/bin/Release/net10.0/CNCMaps.Renderer.dll
+    if [ -f "$BUILD_RENDERER" ] && [ -x build/engine/mgextract ]; then
+        BUILD_ARGS="--mgextract build/engine/mgextract --renderer $BUILD_RENDERER"
+    fi
+    # shellcheck disable=SC2086
+    step verify_buildings node tools/verify_buildings.mjs \
+        --web build/engine-web-node --game "$GD4" --product webapp $BUILD_ARGS
 fi
 
 # The render path needs the reference renderer and the .NET SDK, neither of which
