@@ -91,6 +91,7 @@ let mapBytes = null;      // the renderer runs on this thread and reads these
 let mapBaseBytes = null;  // without the embedded preview, so re-rendering is idempotent
 let mapSerial = 0;        // a render that finishes after a new generation must not patch it
 let rendererRuntime = null;
+let rendererBoot = null;  // the in-flight dotnet.create(); see bootRenderer()
 
 // ---- 预览图坐标 -----------------------------------------------------------
 let cellGrid = null;       // the generator's per-cell level/passability sidecar
@@ -644,18 +645,39 @@ async function embedPreview(pngBytes) {
 // dotnet.create() -- silently, in a module worker and in a classic one alike.
 // On the main thread `window` exists, the detection is unambiguous, and there is
 // no second filesystem to copy into.
+// The .NET runtime can be created ONCE per page.  A second dotnet.create() throws
+// "Runtime module already loaded" out of the runtime module's own guard, and that
+// is not recoverable -- the page never renders again.  So the boot must be a
+// single SHARED promise, not a `rendererRuntime ||` check: renders really do
+// overlap here (every ore/building edit calls startRender(), and a disabled
+// button does not stop those), and two overlapping calls both saw a null runtime
+// and both called create().
+function bootRenderer() {
+  if (!rendererBoot) {
+    rendererBoot = (async () => {
+      const { dotnet } = await import('./render/_framework/dotnet.js');
+      mark('renderer: module loaded, starting the runtime (the page will pause)');
+      const runtime = await dotnet.create({
+        print: (line) => logEl.textContent += `[dotnet] ${line}\n`,
+        printErr: (line) => logEl.textContent += `[dotnet:err] ${line}\n`,
+      });
+      const config = runtime.getConfig();
+      mark(`renderer: runtime started (${config.mainAssemblyName})`);
+      rendererRuntime = runtime;
+      return runtime;
+    })();
+    // A boot that failed must not leave a rejected promise cached forever; the
+    // next attempt gets to try (and to report) instead of silently reusing it.
+    rendererBoot.catch(() => { rendererBoot = null; });
+  }
+  return rendererBoot;
+}
+
 async function renderOnMainThread(msg) {
   mark('renderer: booting on the main thread');
   try {
-    const { dotnet } = await import('./render/_framework/dotnet.js');
-    mark('renderer: module loaded, starting the runtime (the page will pause)');
-    const runtime = rendererRuntime || await dotnet.create({
-      print: (line) => logEl.textContent += `[dotnet] ${line}\n`,
-      printErr: (line) => logEl.textContent += `[dotnet:err] ${line}\n`,
-    });
-    rendererRuntime = runtime;
+    const runtime = await bootRenderer();
     const config = runtime.getConfig();
-    mark(`renderer: runtime started (${config.mainAssemblyName})`);
     const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
     const Render = exports?.CNCMaps?.WebEntry?.Render;
     if (typeof Render !== 'function') {
@@ -1343,6 +1365,7 @@ setStatus('正在加载引擎……');
 const RENDER_WATCHDOG_MS = 120000;
 let renderWatchdog = null;
 let renderInFlight = false;
+let renderQueued = false;
 
 // Called by EVERY way a render can finish (the worker's preview message, the
 // main-thread renderer, an error).  One definition on purpose: a path that
@@ -1350,9 +1373,24 @@ let renderInFlight = false;
 function endRenderWatch() {
   renderInFlight = false;
   clearTimeout(renderWatchdog);
+  // An edit made while a render was running asked for a new picture.  The last
+  // one wins, so start it now rather than dropping it (dropping it left a stale
+  // preview on screen after painting several ore cells in a row).
+  if (renderQueued) {
+    renderQueued = false;
+    startRender();
+  }
 }
 
 function startRender() {
+  if (renderInFlight) {
+    // Never start a second render on top of one that is still running: the .NET
+    // runtime can only be created once per page, and two boots used to fail the
+    // whole page with "Runtime module already loaded" (see bootRenderer()).
+    renderQueued = true;
+    mark('renderer: 已有一张在渲染，等它结束后按当前地图再出一张');
+    return;
+  }
   renderBtn.disabled = true;
   errorEl.textContent = '';
   renderInFlight = true;

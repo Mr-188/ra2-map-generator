@@ -85,6 +85,7 @@ const state = {
   rendering: false,
   renderDirty: false,
   renderer: null,
+  rendererBoot: null,      // the in-flight dotnet.create(); see bootRenderer()
   renderFs: null,
   Render: null,
   assets: null,
@@ -267,6 +268,19 @@ async function extractFromPickedDir(fileList) {
 // ---------------------------------------------------------------------------
 async function ensureRenderer() {
   if (state.Render) return;
+  // Once per page: a second dotnet.create() throws "Runtime module already loaded"
+  // and cannot be recovered, so every caller that lands before the boot finishes
+  // has to await the SAME promise instead of calling create() again.
+  if (!state.rendererBoot) {
+    state.rendererBoot = bootRenderer().catch((err) => {
+      state.rendererBoot = null;      // let a later edit retry and report
+      throw err;
+    });
+  }
+  return state.rendererBoot;
+}
+
+async function bootRenderer() {
   setBusy('正在启动渲染器（首次约十几秒）……');
   const { dotnet } = await import('./render/_framework/dotnet.js');
   const runtime = await dotnet.create({
