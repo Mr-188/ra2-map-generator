@@ -1652,7 +1652,3 @@ loadFromSession().catch((err) => {
   setEmpty('编辑器启动失败', String((err && err.message) || err), false);
   log(String((err && err.stack) || err));
 });
-// TEMP DEBUG (remove after diagnosing owner selection)
-window.__mgEditor = state;
-window.__mgProjectCell = projectCell;
-window.__mgPickCell = pickCell;
