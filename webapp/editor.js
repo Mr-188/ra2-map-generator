@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js?v=20261026e';
+} from './houses.js?v=20261026f';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -591,6 +591,15 @@ function startCellInfo(cell) {
   return { ok: true, reason: '' };
 }
 
+/**
+ * The player slot a start waypoint belongs to.  Multiplayer slot A is waypoint
+ * 0, so the number shown on a start is waypoint + 1 -- the same 1-based number
+ * the ownership badges use.  (The waypoint number stays available in tooltips.)
+ */
+function playerNumberOf(pt) {
+  return pt.number + 1;
+}
+
 function updateStartPanel() {
   const panel = el('start-panel');
   const show = state.tool === 'start';
@@ -609,19 +618,20 @@ function updateStartPanel() {
     const pt = state.startPoints[i];
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = String(pt.number);
-    b.title = `出生点 ${pt.number} @ (${pt.x}, ${pt.y})`;
+    b.textContent = String(playerNumberOf(pt));
+    b.title = `玩家 ${playerNumberOf(pt)}（waypoint ${pt.number}）@ (${pt.x}, ${pt.y})`;
     b.classList.toggle('on', i === state.selectedStart);
     b.addEventListener('click', () => {
       state.selectedStart = i;
       updateStartPanel();
       draw();
-      setHint(`选中出生点 ${pt.number}；拖红方块或点目标格。`, 'ok');
+      setHint(`选中玩家 ${playerNumberOf(pt)}；拖红方块或点目标格。`, 'ok');
     });
     list.appendChild(b);
   }
   const pt = state.startPoints[state.selectedStart];
-  el('start-current').textContent = `选中 出生点 ${pt.number} · (${pt.x}, ${pt.y})`;
+  el('start-current').textContent =
+    `选中 玩家 ${playerNumberOf(pt)} · (${pt.x}, ${pt.y}) · waypoint ${pt.number}`;
 }
 
 function setTool(tool) {
@@ -657,7 +667,7 @@ function setTool(tool) {
     if (state.selectedStart < 0 || state.selectedStart >= state.startPoints.length) {
       state.selectedStart = 0;
     }
-    setHint(`选中出生点 ${state.startPoints[state.selectedStart].number}；`
+    setHint(`选中玩家 ${playerNumberOf(state.startPoints[state.selectedStart])}；`
       + '拖红方块，或点目标格。', 'ok');
   }
   state.dragging = null;
@@ -833,7 +843,7 @@ function draw() {
       ctx.lineWidth = 2;
       ctx.strokeStyle = info.ok ? '#f2c069' : '#e0857a';
       ctx.stroke();
-      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(pt.number), true);
+      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(playerNumberOf(pt)), true);
     }
   }
 
@@ -848,7 +858,7 @@ function draw() {
       ctx.lineWidth = i === state.selectedStart ? 2 : 1.5;
       ctx.strokeStyle = i === state.selectedStart ? '#f2c069' : '#f06a5a';
       ctx.stroke();
-      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(pt.number),
+      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(playerNumberOf(pt)),
         i === state.selectedStart);
     }
   }
@@ -1301,8 +1311,10 @@ function applyStartMove() {
   if (!info.ok) { setHint(info.reason, 'bad'); return; }
   const next = rewriteWaypoint(state.text, pt.number, state.hoverCell.x, state.hoverCell.y);
   if (next === null) { setHint('地图里没有这个出生点。', 'bad'); return; }
-  commitEdit(encodeLatin1(next), `出生点 ${pt.number} → (${state.hoverCell.x}, ${state.hoverCell.y})。`);
-  log(`编辑：出生点 ${pt.number} → (${state.hoverCell.x}, ${state.hoverCell.y})`);
+  commitEdit(encodeLatin1(next),
+    `玩家 ${playerNumberOf(pt)} 的出生点 → (${state.hoverCell.x}, ${state.hoverCell.y})。`);
+  log(`编辑：玩家 ${playerNumberOf(pt)} 的出生点（waypoint ${pt.number}）→ `
+    + `(${state.hoverCell.x}, ${state.hoverCell.y})`);
 }
 
 function applyCurrentArea() {
@@ -1720,7 +1732,7 @@ window.addEventListener('beforeunload', () => {
 
 // Build marker: visible in the tab title, so "which version am I looking at"
 // can be answered without DevTools.  Bump with editor.js/editor.html changes.
-document.title = '地图编辑器 · 2026-10-26e';
+document.title = '地图编辑器 · 2026-10-26f';
 
 loadFromSession().catch((err) => {
   setBusy(null);
