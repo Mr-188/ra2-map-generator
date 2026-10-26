@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js?v=20261026g';
+} from './houses.js?v=20261026h';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -1216,7 +1216,14 @@ function updateOwnerPanel() {
   }
   const picked = selectedStructures();
   if (!picked.length) {
-    count.textContent = '未选中建筑：用框选/自由，或「改归属」点一下建筑本体。';
+    const bySlot = new Map();
+    for (const h of state.handovers.values()) {
+      bySlot.set(h.slot, (bySlot.get(h.slot) || 0) + 1);
+    }
+    const summary = [...bySlot.entries()].sort((a, b) => a[0] - b[0])
+      .map(([slot, n]) => `${slot} 号位 ×${n}`).join('、');
+    count.textContent = '未选中建筑：用框选/自由，或「改归属」点一下建筑本体。'
+      + (summary ? ` 本图已归属：${summary}。` : '');
     return;
   }
   count.textContent = `选中 ${picked.length} 栋：${picked.map(describeSelected).join('、')}`;
@@ -1759,7 +1766,7 @@ window.addEventListener('beforeunload', () => {
 
 // Build marker: visible in the tab title, so "which version am I looking at"
 // can be answered without DevTools.  Bump with editor.js/editor.html changes.
-document.title = '地图编辑器 · 2026-10-26g';
+document.title = '地图编辑器 · 2026-10-26h';
 
 loadFromSession().catch((err) => {
   setBusy(null);
