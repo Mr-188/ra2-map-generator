@@ -214,6 +214,16 @@ check('overlapping art boxes resolve to the nearest centre', () => {
   assert.equal(structureAtScreenPoint([a, b], pa.x, pa.y, opts), a);
   assert.equal(structureAtScreenPoint([a, b], pb.x, pb.y, opts), b);
 });
+check('the drawing lift can be tightened independently of the hit box', () => {
+  const project = (x, y) => ({ x: x * 40, y: (x + y) * 20 });
+  const st = { type: 'CAOILD', x: 10, y: 10 };
+  const hit = buildingScreenRect(st, project, 60, 30, 1);          // 4.2 tiles
+  const frame = buildingScreenRect(st, project, 60, 30, 1, 2.6);   // drawing
+  assert(frame.y0 > hit.y0);
+  assert.equal(Math.round(hit.y0 - frame.y0), Math.round((4.2 - 2.6) * 30));
+  assert.equal(frame.y1, hit.y1, 'the bottom edge is the same');
+});
+
 check('scale is applied to the box as well as the point', () => {
   const project = (x, y) => ({ x: x * 40, y: (x + y) * 20 });
   const opts = { project, tileWidth: 60, tileHeight: 30, scale: 0.5 };

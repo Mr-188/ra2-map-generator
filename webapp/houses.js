@@ -90,7 +90,8 @@ export const ART_LIFT_TILES = 4.2;
  * not in the footprint -- which is why an exact cell hit alone made buildings
  * feel unselectable.
  */
-export function buildingScreenRect(structure, project, tileWidth, tileHeight, scale) {
+export function buildingScreenRect(structure, project, tileWidth, tileHeight, scale,
+                                  liftTiles = ART_LIFT_TILES) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const c of structureCells(structure.type, structure.x, structure.y)) {
     const p = project(c.x, c.y);
@@ -98,7 +99,7 @@ export function buildingScreenRect(structure, project, tileWidth, tileHeight, sc
     y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
   }
   const padX = tileWidth * 0.35;
-  const lift = tileHeight * ART_LIFT_TILES;
+  const lift = tileHeight * liftTiles;
   const padY = tileHeight * 0.6;
   return {
     x0: (x0 - padX) * scale, y0: (y0 - lift) * scale,

@@ -1004,10 +1004,22 @@ function structureAtCell(cell) {
     structureCells(st.type, st.x, st.y).some((c) => c.x === cell.x && c.y === cell.y)) || null;
 }
 
-/** A building's art box in display pixels (see houses.js's buildingScreenRect). */
+// Frame height per type, in tile heights, for the SELECTION FRAME only.  The
+// hit box keeps the generous 4.2 so clicking a tower still selects; the frame
+// should hug the art instead of leaving a big empty area above it.  Measured on
+// the renderer: derrick art ends ~2.7 tiles above the anchor, hospital ~3.3.
+const FRAME_LIFT_TILES = {
+  CAOILD: 2.6, CATHOSP: 3.2, CAAIRP: 3.0, CAMACH: 2.4, CAOUTP: 2.6, CAPOWR: 2.4,
+};
+
+function frameLiftOf(type) {
+  return FRAME_LIFT_TILES[String(type || '').toUpperCase()] ?? 2.8;
+}
+
+/** The drawing rect: footprint + a per-type art lift (tighter than the hit box). */
 function screenRectOf(st, s) {
   return buildingScreenRect(st, (x, y) => projectCell(state.grid, state.meta, x, y),
-    state.meta.tileWidth, state.meta.tileHeight, s);
+    state.meta.tileWidth, state.meta.tileHeight, s, frameLiftOf(st.type));
 }
 
 /** The building under a natural-pixel point: exact cell first, then the art box. */
