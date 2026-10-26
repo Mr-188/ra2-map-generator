@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js?v=20261026b';
+} from './houses.js?v=20261026d';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -1684,7 +1684,7 @@ window.addEventListener('beforeunload', () => {
 
 // Build marker: visible in the tab title, so "which version am I looking at"
 // can be answered without DevTools.  Bump with editor.js/editor.html changes.
-document.title = '地图编辑器 · 2026-10-26c';
+document.title = '地图编辑器 · 2026-10-26d';
 
 loadFromSession().catch((err) => {
   setBusy(null);
