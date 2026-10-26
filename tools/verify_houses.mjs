@@ -13,7 +13,8 @@
 import assert from 'node:assert/strict';
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
-  assignable, structureCells, footprintOf,
+  assignable, structureCells, footprintOf, buildingScreenRect, structureAtScreenPoint,
+  ART_LIFT_TILES,
 } from '../webapp/houses.js';
 import { readStructures } from '../webapp/buildings.js';
 
@@ -186,6 +187,39 @@ check('our assignment leaves a foreign trigger alone', () => {
   const back = applyHandovers({ text: res.text, structures: readStructures(res.text), indices: [0], slot: null });
   assert.match(back.text, /0C000001=0,SomeoneElse,0D000001/);
   assert.match(back.text, /0D000001=1,16,0,0,0,0,0,0,A/);
+});
+
+console.log('  screen hit test (clicking the tower, not the base)');
+check('a building\'s art box covers the space above its footprint', () => {
+  const project = (x, y) => ({ x: x * 40, y: (x + y) * 20 });
+  const anchor = project(10, 10);
+  const r = buildingScreenRect({ type: 'CAOILD', x: 10, y: 10 }, project, 60, 30, 1);
+  assert.equal(ART_LIFT_TILES, 4.2);
+  assert(r.y0 <= anchor.y - 100, `lift only ${anchor.y - r.y0} px`);
+  assert(r.y1 >= anchor.y);
+  const opts = { project, tileWidth: 60, tileHeight: 30, scale: 1 };
+  const derrick = { type: 'CAOILD', x: 10, y: 10 };
+  assert.equal(structureAtScreenPoint([derrick], anchor.x, anchor.y - 80, opts), derrick);
+  assert.equal(structureAtScreenPoint([derrick], anchor.x, anchor.y - 100, opts), derrick);
+  assert.equal(structureAtScreenPoint([derrick], anchor.x, anchor.y - 200, opts), null);
+  assert.equal(structureAtScreenPoint([derrick], anchor.x + 500, anchor.y, opts), null);
+});
+check('overlapping art boxes resolve to the nearest centre', () => {
+  const project = (x, y) => ({ x: x * 10, y: (x + y) * 5 });
+  const opts = { project, tileWidth: 60, tileHeight: 30, scale: 1 };
+  const a = { type: 'CAOILD', x: 0, y: 0 };
+  const b = { type: 'CAOILD', x: 2, y: 2 };
+  const pa = project(0, 0);
+  const pb = project(2, 2);
+  assert.equal(structureAtScreenPoint([a, b], pa.x, pa.y, opts), a);
+  assert.equal(structureAtScreenPoint([a, b], pb.x, pb.y, opts), b);
+});
+check('scale is applied to the box as well as the point', () => {
+  const project = (x, y) => ({ x: x * 40, y: (x + y) * 20 });
+  const opts = { project, tileWidth: 60, tileHeight: 30, scale: 0.5 };
+  const st = { type: 'CAOILD', x: 10, y: 10 };
+  const anchor = project(10, 10);
+  assert.equal(structureAtScreenPoint([st], anchor.x * 0.5, anchor.y * 0.5 - 40, opts), st);
 });
 
 console.log('  line endings');

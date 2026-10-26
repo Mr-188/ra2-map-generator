@@ -71,6 +71,62 @@ export function structureCells(type, x, y) {
   return out;
 }
 
+/**
+ * How far a building's art may rise above its footprint, in tile heights.
+ * Measured against the real renderer: the oil derrick's tower is ~80 px and the
+ * tech hospital's roof ~100 px above the anchor at a 30 px tile height.  The
+ * page has no art sizes, so this is deliberately generous.
+ */
+export const ART_LIFT_TILES = 4.2;
+
+/**
+ * The screen rectangle a building occupies: the projected footprint plus the
+ * art's overhang.  `project(cellX, cellY)` is the renderer's cell -> natural
+ * pixel transform (starts.js's projectCell); the result is in display pixels
+ * (`scale` = natural -> display).
+ *
+ * The renderer draws a building's SHP from its anchor upward, so the tower/roof
+ * covers cells ABOVE the foundation.  Clicking there lands on a cell that is
+ * not in the footprint -- which is why an exact cell hit alone made buildings
+ * feel unselectable.
+ */
+export function buildingScreenRect(structure, project, tileWidth, tileHeight, scale) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of structureCells(structure.type, structure.x, structure.y)) {
+    const p = project(c.x, c.y);
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+    y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+  }
+  const padX = tileWidth * 0.35;
+  const lift = tileHeight * ART_LIFT_TILES;
+  const padY = tileHeight * 0.6;
+  return {
+    x0: (x0 - padX) * scale, y0: (y0 - lift) * scale,
+    x1: (x1 + padX) * scale, y1: (y1 + padY) * scale,
+  };
+}
+
+/**
+ * The building whose art box contains a display-space point.  Callers check the
+ * exact cell first; this is the "clicked the tower, not the base" fallback.
+ * Overlaps resolve to the building whose anchor cell is nearest.
+ */
+export function structureAtScreenPoint(structures, px, py, { project, tileWidth, tileHeight, scale }) {
+  let best = null;
+  let bestD = Infinity;
+  for (const st of structures || []) {
+    const r = buildingScreenRect(st, project, tileWidth, tileHeight, scale);
+    if (px < r.x0 || px > r.x1 || py < r.y0 || py > r.y1) continue;
+    // Rank by distance to the anchor cell, not the box centre: a click on the
+    // tower is far above the box centre, and the anchor is the point that still
+    // identifies the right building when two art boxes overlap.
+    const a = project(st.x, st.y);
+    const d = Math.hypot(px - a.x, py - a.y);
+    if (d < bestD) { bestD = d; best = st; }
+  }
+  return best;
+}
+
 /** A multiplayer .yrm has [Houses] and no [Neutral House] section. */
 export function isMultiplayerMap(text) {
   return !scanSection(text, 'Neutral House');

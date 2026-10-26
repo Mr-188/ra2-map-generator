@@ -26,7 +26,7 @@ import {
 } from './buildings.js';
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
-  assignable, structureCells,
+  assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
 } from './houses.js';
 import { loadSession, saveCurrent } from './mapstore.js';
 
@@ -557,8 +557,8 @@ const TOOLS = {
   },
   owner: {
     title: '改归属',
-    help: '先框选或点一栋中立建筑（油井/科技商店/科技维修厂…），再到右栏点号位；'
-      + '「中立」清除。只改 [Structures] 的标签和触发器，不改房主字段。',
+    help: '点建筑（点塔身也算，不必点地基）或拖框选中，再到右栏点号位；'
+      + '「中立」清除。选中会画框并标出当前归属。只改 [Structures] 的标签和触发器，不改房主字段。',
   },
   start: {
     title: '改出生点',
@@ -775,9 +775,9 @@ function draw() {
     }
   }
 
-  // owner tool: highlight the whole foundation under the pointer
-  if (state.tool === 'owner' && state.hoverCell) {
-    const st = structureAtCell(state.hoverCell);
+  // owner tool: highlight the building under the pointer (tower included)
+  if (state.tool === 'owner' && state.hover) {
+    const st = structureAtPoint(state.hover);
     if (st) {
       const ok = assignable(state.text, st);
       for (const c of structureCells(st.type, st.x, st.y)) {
@@ -789,6 +789,35 @@ function draw() {
         ctx.strokeStyle = ok ? 'rgba(190,220,255,.9)' : 'rgba(240,160,150,.9)';
         ctx.stroke();
       }
+      const r = screenRectOf(st, s);
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = ok ? 'rgba(190,220,255,.9)' : 'rgba(240,160,150,.9)';
+      ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      ctx.setLineDash([]);
+    }
+  }
+
+  // selected buildings: a solid frame around the art + a slot label.  The
+  // renderer keeps Neutral buildings grey, so this is the only "it is selected
+  // and it belongs to slot N" feedback the editor can give.
+  if (state.tool === 'owner' && state.selCells.length) {
+    for (const st of selectedStructures()) {
+      const h = state.handovers.get(st.index);
+      const color = h ? SLOT_COLORS[(h.slot - 1) % SLOT_COLORS.length] : '#f2c069';
+      const r = screenRectOf(st, s);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, 6);
+      else ctx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      ctx.save();
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.restore();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      drawPill(ctx, (r.x0 + r.x1) / 2, r.y0 - 12, h ? `${h.slot} 号位` : '中立', color);
     }
   }
 
@@ -961,23 +990,64 @@ const SLOT_COLORS = [
   '#e08a4f', '#a06fdf', '#4fc9d8', '#e06fb0',
 ];
 
+const STRUCTURE_SHORT = {
+  CAOILD: '油井', CAMACH: '科技商店', CAOUTP: '维修厂',
+  CAAIRP: '机场', CATHOSP: '医院', CAPOWR: '电厂',
+};
+
+function structureShort(st) {
+  return STRUCTURE_SHORT[String(st.type).toUpperCase()] || st.type;
+}
+
 function structureAtCell(cell) {
   if (!cell) return null;
   return state.structures.find((st) =>
     structureCells(st.type, st.x, st.y).some((c) => c.x === cell.x && c.y === cell.y)) || null;
 }
 
-/** The neutral, assignable buildings covered by the current cell selection. */
-function ownerTargets() {
-  if (!state.selCells.length) return [];
-  const cells = new Set(state.selCells.map((c) => `${c.x},${c.y}`));
-  return state.structures.filter((st) => assignable(state.text, st)
-    && structureCells(st.type, st.x, st.y).some((c) => cells.has(`${c.x},${c.y}`)));
+/** A building's art box in display pixels (see houses.js's buildingScreenRect). */
+function screenRectOf(st, s) {
+  return buildingScreenRect(st, (x, y) => projectCell(state.grid, state.meta, x, y),
+    state.meta.tileWidth, state.meta.tileHeight, s);
 }
 
-/** Click without dragging: make the building under the pointer the selection. */
-function selectStructureAt(cell) {
-  const st = structureAtCell(cell);
+/** The building under a natural-pixel point: exact cell first, then the art box. */
+function structureAtPoint(natural) {
+  if (!state.grid || !state.meta || !natural) return null;
+  const exact = structureAtCell(cellAt(natural));
+  if (exact) return exact;
+  const s = displayScale();
+  if (!s) return null;
+  return structureAtScreenPoint(state.structures, natural.x * s, natural.y * s, {
+    project: (x, y) => projectCell(state.grid, state.meta, x, y),
+    tileWidth: state.meta.tileWidth,
+    tileHeight: state.meta.tileHeight,
+    scale: s,
+  });
+}
+
+/** Every building intersecting the current cell selection. */
+function selectedStructures() {
+  if (!state.selCells.length) return [];
+  const cells = new Set(state.selCells.map((c) => `${c.x},${c.y}`));
+  return state.structures.filter((st) =>
+    structureCells(st.type, st.x, st.y).some((c) => cells.has(`${c.x},${c.y}`)));
+}
+
+/** The neutral, assignable buildings covered by the current cell selection. */
+function ownerTargets() {
+  return selectedStructures().filter((st) => assignable(state.text, st));
+}
+
+function describeSelected(st) {
+  if (!assignable(state.text, st)) return `${structureShort(st)}（不可归属）`;
+  const h = state.handovers.get(st.index);
+  return `${structureShort(st)}（${h ? `${h.slot} 号位` : '中立'}）`;
+}
+
+/** Click without dragging: select the building under the pointer (tower included). */
+function selectStructureAt(natural) {
+  const st = structureAtPoint(natural);
   if (!st) { clearSelection(); setHint('这里没有建筑。', 'bad'); return; }
   state.selCells = structureCells(st.type, st.x, st.y)
     .filter((c) => c.x >= 0 && c.y >= 0 && c.x < 512 && c.y < 512)
@@ -987,10 +1057,28 @@ function selectStructureAt(cell) {
   refreshSelectionCounts();
   updateOwnerPanel();
   const ok = assignable(state.text, st);
-  setHint(ok
-    ? `选中 ${st.type}（#[${st.index}]）${state.handovers.has(st.index)
-        ? `，当前 ${state.handovers.get(st.index).slot} 号位` : '，当前中立'}。`
-    : `${st.type} 不是可归属的中立建筑（桥修小屋/已有归属的房主字段）。`, ok ? 'ok' : 'bad');
+  setHint(`${ok ? '选中' : '选中（不可归属）'} ${structureShort(st)}（#[${st.index}]）`
+    + (state.handovers.has(st.index) ? `，当前 ${state.handovers.get(st.index).slot} 号位。` : '，当前中立。'),
+    ok ? 'ok' : 'bad');
+}
+
+/** Draws a pill label (screen pixels) used for the selection frame / slot badge. */
+function drawPill(ctx, x, y, text, bg) {
+  ctx.font = '600 12px ui-monospace, monospace';
+  const w = ctx.measureText(text).width + 14;
+  const h = 18;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x - w / 2, y - h / 2, w, h, 4);
+  else ctx.rect(x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(12,13,16,.9)';
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y + 0.5);
 }
 
 function updateOwnerPanel() {
@@ -1026,21 +1114,12 @@ function updateOwnerPanel() {
     count.textContent = '单人 .map：没有玩家号位，不能按号位归属。';
     return;
   }
-  const picked = ownerTargets();
+  const picked = selectedStructures();
   if (!picked.length) {
-    count.textContent = '未选中中立建筑';
+    count.textContent = '未选中建筑';
     return;
   }
-  const bySlot = new Map();
-  let ours = 0;
-  for (const st of picked) {
-    const h = state.handovers.get(st.index);
-    if (h) { ours++; bySlot.set(h.slot, (bySlot.get(h.slot) || 0) + 1); }
-  }
-  const detail = [...bySlot.entries()].sort((a, b) => a[0] - b[0])
-    .map(([slot, n]) => `${slot} 号位 ×${n}`).join('、');
-  count.textContent = `选中 ${picked.length} 栋中立建筑`
-    + (ours ? `（已归属 ${detail}）` : '（都还是中立）');
+  count.textContent = `选中 ${picked.length} 栋：${picked.map(describeSelected).join('、')}`;
 }
 
 function applyOwner(slot) {
@@ -1317,13 +1396,19 @@ overlay.addEventListener('pointerup', (event) => {
     const r = state.selection;
     const dragged = r ? Math.hypot(r.x1 - r.x0, r.y1 - r.y0) : 0;
     state.dragging = null;
-    if (!r || dragged < 4) {
-      if (state.tool === 'owner') { selectStructureAt(state.hoverCell); draw(); return; }
+    if (!r || dragged < 6) {
+      if (state.tool === 'owner') { selectStructureAt(state.hover); draw(); return; }
       clearSelection(); draw(); return;
     }
     setSelectionFromRect(r);
     draw();
-    if (state.tool === 'owner') { updateOwnerPanel(); return; }
+    if (state.tool === 'owner') {
+      // A tiny/short drag can select no cells; fall back to the building under
+      // the pointer so a shaky click still selects.
+      if (!state.selCells.length) { selectStructureAt(state.hover); draw(); return; }
+      updateOwnerPanel();
+      return;
+    }
     applyCurrentArea();
     return;
   }
@@ -1567,3 +1652,7 @@ loadFromSession().catch((err) => {
   setEmpty('编辑器启动失败', String((err && err.message) || err), false);
   log(String((err && err.stack) || err));
 });
+// TEMP DEBUG (remove after diagnosing owner selection)
+window.__mgEditor = state;
+window.__mgProjectCell = projectCell;
+window.__mgPickCell = pickCell;
