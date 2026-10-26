@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js?v=20261026f';
+} from './houses.js?v=20261026g';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -813,7 +813,7 @@ function draw() {
   if (state.tool === 'owner' && state.selCells.length) {
     for (const st of selectedStructures()) {
       const h = state.handovers.get(st.index);
-      const color = h ? SLOT_COLORS[(h.slot - 1) % SLOT_COLORS.length] : '#f2c069';
+      const color = '#f2c069';
       const r = screenRectOf(st, s);
       ctx.beginPath();
       if (ctx.roundRect) ctx.roundRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, 6);
@@ -830,6 +830,19 @@ function draw() {
     }
   }
 
+  // starts linked to the current selection / hovered building: ring them, so
+  // "which start is this building's player" needs no colour code
+  const linkedSlots = new Set();
+  for (const st of selectedStructures()) {
+    const h = state.handovers.get(st.index);
+    if (h) linkedSlots.add(h.slot);
+  }
+  if (state.tool === 'owner' && state.hover) {
+    const st = structureAtPoint(state.hover);
+    const h = st ? state.handovers.get(st.index) : null;
+    if (h) linkedSlots.add(h.slot);
+  }
+
   // while dragging a start, show where it would land
   if (state.dragging === 'start' && state.startPoints.length && state.selectedStart >= 0) {
     const pt = state.startPoints[state.selectedStart];
@@ -843,7 +856,8 @@ function draw() {
       ctx.lineWidth = 2;
       ctx.strokeStyle = info.ok ? '#f2c069' : '#e0857a';
       ctx.stroke();
-      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(playerNumberOf(pt)), true);
+      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(playerNumberOf(pt)),
+        true, linkedSlots.has(playerNumberOf(pt)));
     }
   }
 
@@ -859,7 +873,7 @@ function draw() {
       ctx.strokeStyle = i === state.selectedStart ? '#f2c069' : '#f06a5a';
       ctx.stroke();
       drawStartBadge(ctx, startBadgeCenter(p, s, th), String(playerNumberOf(pt)),
-        i === state.selectedStart);
+        i === state.selectedStart, linkedSlots.has(playerNumberOf(pt)));
     }
   }
 
@@ -873,7 +887,7 @@ function draw() {
       const r = Math.max(6, Math.min(tw, th) * 0.52);
       ctx.beginPath();
       ctx.arc(p.x * s, p.y * s, r, 0, Math.PI * 2);
-      ctx.fillStyle = SLOT_COLORS[(h.slot - 1) % SLOT_COLORS.length];
+      ctx.fillStyle = BADGE_FILL;
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = 'rgba(12,13,16,.85)';
@@ -979,12 +993,12 @@ function brushPaint(natural, erase = false) {
 // ---------------------------------------------------------------------------
 // neutral building ownership (webapp/houses.js does the map rewrite)
 // ---------------------------------------------------------------------------
-// Slot colours are editor-only: the renderer keeps a Neutral building grey, so
-// the badge on the overlay is the only place a player slot is visible.
-const SLOT_COLORS = [
-  '#4d7fff', '#e05a4f', '#e0c14f', '#58c46a',
-  '#e08a4f', '#a06fdf', '#4fc9d8', '#e06fb0',
-];
+// Numbers are player slots; the badge colour is NOT a player colour.  RA2 picks
+// player colours in the lobby, so a fixed palette per slot would invent a
+// mapping the game does not have, and two "1"s in different colours read as two
+// different things.  One neutral badge everywhere; shape says what it is
+// (pin = start, circle = owned building) and the number says which player.
+const BADGE_FILL = '#2e3440';
 
 const STRUCTURE_SHORT = {
   CAOILD: '油井', CAMACH: '科技商店', CAOUTP: '维修厂',
@@ -1105,10 +1119,9 @@ function startBadgeCenter(p, s, th) {
   return { x, y };
 }
 
-function drawStartBadge(ctx, c, label, selected) {
+function drawStartBadge(ctx, c, label, selected, linked = false) {
   const r = START_BADGE_R;
-  const fill = selected ? '#f2c069' : '#e05a4f';
-  const ink = selected ? '#1b1e24' : '#fff';
+  const fill = BADGE_FILL;
   ctx.beginPath();
   ctx.moveTo(c.x - 4, c.y + r - 1);
   ctx.lineTo(c.x + 4, c.y + r - 1);
@@ -1126,8 +1139,27 @@ function drawStartBadge(ctx, c, label, selected) {
   ctx.font = '700 13px ui-monospace, monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = ink;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(12,13,16,.9)';
+  ctx.strokeText(label, c.x, c.y + 0.5);
+  ctx.fillStyle = '#fff';
   ctx.fillText(label, c.x, c.y + 0.5);
+  if (selected) {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r + 3.5, 0, Math.PI * 2);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#f2c069';
+    ctx.stroke();
+  }
+  if (linked) {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r + 6.5, 0, Math.PI * 2);
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,.95)';
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 }
 
 function drawPill(ctx, x, y, text, bg) {
@@ -1166,11 +1198,6 @@ function updateOwnerPanel() {
       btn.type = 'button';
       btn.className = 'slot';
       btn.dataset.slot = slot === null ? 'neutral' : String(slot);
-      if (slot !== null) {
-        const dot = document.createElement('i');
-        dot.style.background = SLOT_COLORS[(slot - 1) % SLOT_COLORS.length];
-        btn.append(dot);
-      }
       btn.append(document.createTextNode(label));
       btn.addEventListener('click', () => applyOwner(slot));
       row.append(btn);
@@ -1732,7 +1759,7 @@ window.addEventListener('beforeunload', () => {
 
 // Build marker: visible in the tab title, so "which version am I looking at"
 // can be answered without DevTools.  Bump with editor.js/editor.html changes.
-document.title = '地图编辑器 · 2026-10-26f';
+document.title = '地图编辑器 · 2026-10-26g';
 
 loadFromSession().catch((err) => {
   setBusy(null);

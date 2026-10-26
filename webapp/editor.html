@@ -293,9 +293,10 @@ button { font: inherit; color: inherit; }
       <p class="mini" id="owner-count">未选中建筑</p>
       <div class="slot-row" id="owner-slots"></div>
       <p class="mini" id="owner-last">上次点击：—</p>
-      <p class="mini">用「框选 / 自由」或左栏「改归属」选中建筑（点塔身也算），再点号位；
-        「中立」清除。归属写进触发器（开局 event 8 → action 14，目标码 4475+号位-1），
-        房主字段仍是 Neutral，所以预览图的建筑颜色不会变，框和角标是编辑器画的。</p>
+      <p class="mini">数字 = 玩家号。出生点是 pin、己方建筑是圆点，同色同号；选中/悬停一栋
+        建筑时，对应玩家的出生点会亮起白色虚线圈。归属写进触发器（开局 event 8 →
+        action 14，目标码 4475+号位-1），房主字段仍是 Neutral，所以预览图的建筑颜色
+        不会变，框和角标是编辑器画的。</p>
     </div>
 
     <div class="side-h">选区</div>
@@ -329,6 +330,6 @@ button { font: inherit; color: inherit; }
   </aside>
 </main>
 <input id="asset-pick" type="file" webkitdirectory multiple>
-<script type="module" src="./editor.js?v=20261026f"></script>
+<script type="module" src="./editor.js?v=20261026g"></script>
 </body>
 </html>
