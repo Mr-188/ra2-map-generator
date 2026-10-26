@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js?v=20261026d';
+} from './houses.js?v=20261026e';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
@@ -833,14 +833,7 @@ function draw() {
       ctx.lineWidth = 2;
       ctx.strokeStyle = info.ok ? '#f2c069' : '#e0857a';
       ctx.stroke();
-      ctx.font = '600 12px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(12,13,16,.9)';
-      ctx.strokeText(String(pt.number), p.x * s, p.y * s + 1);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(String(pt.number), p.x * s, p.y * s + 1);
+      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(pt.number), true);
     }
   }
 
@@ -855,14 +848,8 @@ function draw() {
       ctx.lineWidth = i === state.selectedStart ? 2 : 1.5;
       ctx.strokeStyle = i === state.selectedStart ? '#f2c069' : '#f06a5a';
       ctx.stroke();
-      ctx.font = '600 12px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(12,13,16,.9)';
-      ctx.strokeText(String(pt.number), p.x * s, p.y * s + 1);
-      ctx.fillStyle = '#f4f4f5';
-      ctx.fillText(String(pt.number), p.x * s, p.y * s + 1);
+      drawStartBadge(ctx, startBadgeCenter(p, s, th), String(pt.number),
+        i === state.selectedStart);
     }
   }
 
@@ -1089,6 +1076,50 @@ function selectStructureAt(natural) {
 }
 
 /** Draws a pill label (screen pixels) used for the selection frame / slot badge. */
+const START_BADGE_R = 11;
+
+/**
+ * Where the start-point number badge sits: above the cell, fixed size in screen
+ * pixels.  The cell is one diamond and the number cannot grow with it without
+ * lying about the footprint, so the label is decoupled from the cell; a little
+ * pointer keeps it attached.  Clamped so a start at the map edge stays visible.
+ */
+function startBadgeCenter(p, s, th) {
+  const cw = overlay.width / dpr();
+  const ch = overlay.height / dpr();
+  const x = Math.min(Math.max(p.x * s, START_BADGE_R + 2),
+                     Math.max(START_BADGE_R + 2, cw - START_BADGE_R - 2));
+  const lift = Math.max(18, th + 16);
+  const y = Math.min(Math.max(p.y * s - lift, START_BADGE_R + 8),
+                     Math.max(START_BADGE_R + 8, ch - START_BADGE_R - 12));
+  return { x, y };
+}
+
+function drawStartBadge(ctx, c, label, selected) {
+  const r = START_BADGE_R;
+  const fill = selected ? '#f2c069' : '#e05a4f';
+  const ink = selected ? '#1b1e24' : '#fff';
+  ctx.beginPath();
+  ctx.moveTo(c.x - 4, c.y + r - 1);
+  ctx.lineTo(c.x + 4, c.y + r - 1);
+  ctx.lineTo(c.x, c.y + r + 6);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(12,13,16,.9)';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.font = '700 13px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = ink;
+  ctx.fillText(label, c.x, c.y + 0.5);
+}
+
 function drawPill(ctx, x, y, text, bg) {
   ctx.font = '600 12px ui-monospace, monospace';
   const w = ctx.measureText(text).width + 14;
@@ -1352,10 +1383,15 @@ overlay.addEventListener('pointerdown', (event) => {
     // Pick the nearest start in screen pixels; otherwise the currently selected one.
     let best = -1, bestD = Infinity;
     const s = displayScale();
+    const th = (state.meta.tileHeight / 2) * s;
     for (let i = 0; i < state.startPoints.length; ++i) {
       const sp = state.startPoints[i];
       const q = projectCell(state.grid, state.meta, sp.x, sp.y);
-      const d = Math.hypot((q.x - p.x) * s, (q.y - p.y) * s);
+      const b = startBadgeCenter(q, s, th);
+      // Either the cell or its number badge selects the start; the badge is
+      // ~30 px above the cell, so a click on the number used to miss.
+      const d = Math.min(Math.hypot((q.x - p.x) * s, (q.y - p.y) * s),
+                         Math.hypot(b.x - p.x * s, b.y - p.y * s));
       if (d < bestD) { bestD = d; best = i; }
     }
     if (bestD <= 18) state.selectedStart = best;
@@ -1684,7 +1720,7 @@ window.addEventListener('beforeunload', () => {
 
 // Build marker: visible in the tab title, so "which version am I looking at"
 // can be answered without DevTools.  Bump with editor.js/editor.html changes.
-document.title = '地图编辑器 · 2026-10-26d';
+document.title = '地图编辑器 · 2026-10-26e';
 
 loadFromSession().catch((err) => {
   setBusy(null);
