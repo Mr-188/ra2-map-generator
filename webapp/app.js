@@ -2533,7 +2533,7 @@ openEditorBtn.addEventListener('click', async () => {
       code,
     });
     openEditorBtn.blur();
-    window.open('./editor.html', '_blank', 'noopener');
+    window.open('./editor.html?v=20261026c', '_blank', 'noopener');
   } catch (err) {
     showError(`无法把地图交给编辑器：${(err && err.message) || err}`);
   }

@@ -1670,6 +1670,10 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
+// Build marker: visible in the tab title, so "which version am I looking at"
+// can be answered without DevTools.  Bump with editor.js/editor.html changes.
+document.title = '地图编辑器 · 2026-10-26c';
+
 loadFromSession().catch((err) => {
   setBusy(null);
   setEmpty('编辑器启动失败', String((err && err.message) || err), false);
