@@ -220,7 +220,7 @@ check('the drawing lift can be tightened independently of the hit box', () => {
   const hit = buildingScreenRect(st, project, 60, 30, 1);          // 4.2 tiles
   const frame = buildingScreenRect(st, project, 60, 30, 1, 2.6);   // drawing
   assert(frame.y0 > hit.y0);
-  assert.equal(Math.round(hit.y0 - frame.y0), Math.round((4.2 - 2.6) * 30));
+  assert.equal(Math.round(frame.y0 - hit.y0), Math.round((4.2 - 2.6) * 30));
   assert.equal(frame.y1, hit.y1, 'the bottom edge is the same');
 });
 
