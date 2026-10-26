@@ -378,7 +378,6 @@ function parseMapState() {
   state.startPoints = readWaypoints(state.text).filter((w) => w.number < 8);
   const ownerTool = el('owner-tool');
   if (ownerTool) {
-    ownerTool.disabled = !state.ownerMultiplayer;
     ownerTool.title = state.ownerMultiplayer
       ? '给中立建筑指定开局归哪个玩家号位'
       : '单人 .map 不支持按号位归属（触发器只能按房主名）';
@@ -1045,10 +1044,23 @@ function describeSelected(st) {
   return `${structureShort(st)}（${h ? `${h.slot} 号位` : '中立'}）`;
 }
 
+/** Writes the "what did the last click hit" line in the owner panel. */
+function setOwnerLast(text) {
+  const node = el('owner-last');
+  if (node) node.textContent = text;
+}
+
 /** Click without dragging: select the building under the pointer (tower included). */
 function selectStructureAt(natural) {
   const st = structureAtPoint(natural);
-  if (!st) { clearSelection(); setHint('这里没有建筑。', 'bad'); return; }
+  if (!st) {
+    const cell = natural ? cellAt(natural) : null;
+    setOwnerLast(`上次点击：格 ${cell ? `(${cell.x}, ${cell.y})` : '—'} · 未命中建筑`);
+    log(`[owner] click ${cell ? `(${cell.x}, ${cell.y})` : '—'} -> no building`);
+    clearSelection();
+    setHint('这里没有建筑：点建筑本体（塔身也算），或先用框选。', 'bad');
+    return;
+  }
   state.selCells = structureCells(st.type, st.x, st.y)
     .filter((c) => c.x >= 0 && c.y >= 0 && c.x < 512 && c.y < 512)
     .filter((c) => cellFlags(state.grid, c.x, c.y) & CELL_IN_MAP);
@@ -1056,6 +1068,8 @@ function selectStructureAt(natural) {
   state.selection = null;
   refreshSelectionCounts();
   updateOwnerPanel();
+  setOwnerLast(`上次点击：格 (${st.x}, ${st.y}) · 命中 ${structureShort(st)} #${st.index}`);
+  log(`[owner] click (${st.x}, ${st.y}) -> ${st.type} #${st.index}`);
   const ok = assignable(state.text, st);
   setHint(`${ok ? '选中' : '选中（不可归属）'} ${structureShort(st)}（#[${st.index}]）`
     + (state.handovers.has(st.index) ? `，当前 ${state.handovers.get(st.index).slot} 号位。` : '，当前中立。'),
@@ -1084,8 +1098,10 @@ function drawPill(ctx, x, y, text, bg) {
 function updateOwnerPanel() {
   const panel = el('owner-panel');
   if (!panel) return;
-  panel.hidden = state.tool !== 'owner';
-  if (panel.hidden) return;
+  // Always visible: a map that cannot take a handover (single player, or no
+  // neutral buildings this seed) must SAY so instead of looking like a dead
+  // control.  A user who selects with 框选 still sees the slot buttons.
+  panel.hidden = false;
   const row = el('owner-slots');
   const count = el('owner-count');
   if (!row || !count) return;
@@ -1114,9 +1130,13 @@ function updateOwnerPanel() {
     count.textContent = '单人 .map：没有玩家号位，不能按号位归属。';
     return;
   }
+  if (!state.structures.length) {
+    count.textContent = '这张图没有中立建筑（科技建筑是随机放的，这局可能没出）。';
+    return;
+  }
   const picked = selectedStructures();
   if (!picked.length) {
-    count.textContent = '未选中建筑';
+    count.textContent = '未选中建筑：用框选/自由，或「改归属」点一下建筑本体。';
     return;
   }
   count.textContent = `选中 ${picked.length} 栋：${picked.map(describeSelected).join('、')}`;
@@ -1406,6 +1426,9 @@ overlay.addEventListener('pointerup', (event) => {
       // A tiny/short drag can select no cells; fall back to the building under
       // the pointer so a shaky click still selects.
       if (!state.selCells.length) { selectStructureAt(state.hover); draw(); return; }
+      const picked = selectedStructures().length;
+      setOwnerLast(`上次框选：${state.selCells.length} 格 · 命中 ${picked} 栋建筑`);
+      log(`[owner] box ${state.selCells.length} cells -> ${picked} buildings`);
       updateOwnerPanel();
       return;
     }
