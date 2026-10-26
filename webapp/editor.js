@@ -27,7 +27,7 @@ import {
 import {
   SLOT_BASE, playerSlots, isMultiplayerMap, readHandovers, applyHandovers,
   assignable, structureCells, buildingScreenRect, structureAtScreenPoint,
-} from './houses.js';
+} from './houses.js?v=20261026b';
 import { loadSession, saveCurrent } from './mapstore.js';
 
 const el = (id) => document.getElementById(id);
